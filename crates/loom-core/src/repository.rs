@@ -762,7 +762,7 @@ impl Repository {
         Ok(history.into_keys().filter(|path| {
             prefix.is_none()
                 || prefix.is_some_and(|p| path.as_str() == p)
-                || directory_prefix.as_ref().is_some_and(|p| path.starts_with(p))
+                || directory_prefix.as_ref().is_some_and(|p| path.starts_with(p.as_str()))
         }).collect())
     }
 
