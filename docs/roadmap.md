@@ -131,7 +131,7 @@ P4 and P5 may be developed independently after the native state/metadata contrac
 - [ ] Test network partitions, duplicate/reordered requests, simultaneous writers, server restarts and unsupported protocol peers.
 - [ ] Ship self-hosted single-node deployment, TLS setup, install/update docs, health/readiness, logs, metrics and backups.
 
-**Gate P5:** no unauthorized object leaks, no missing object closure, lossless offline divergence resolution, reproducible 100-writer race tests, secure interoperation between mixed supported versions.
+**Gate P4:** no unauthorized object leaks, no missing object closure, lossless offline divergence resolution, reproducible 100-writer race tests, secure interoperation between mixed supported versions.
 
 ## P5 — Git interoperability ([issue #5](https://github.com/GaryWenneker/Loom/issues/5))
 
@@ -143,7 +143,7 @@ P4 and P5 may be developed independently after the native state/metadata contrac
 - [ ] Implement GitHub/GitLab fetch/push via a distinct bridge, with ahead/behind state, remote ref CAS, no automatic force-push and recoverable interruptions.
 - [ ] Add representative public-repo fixtures, signed fixtures and protocol conformance tests; benchmark migration disk and bandwidth.
 
-**Gate P4:** declared feature matrix passes deterministic Git → Loom → Git and Loom → Git → Loom content/history tests; unsafe feature conversion is blocked; no destructive remote update by default.
+**Gate P5:** declared feature matrix passes deterministic Git → Loom → Git and Loom → Git → Loom content/history tests; unsafe feature conversion is blocked; no destructive remote update by default.
 
 ## P6 — Agent-scale workspaces and developer platform ([issues #4](https://github.com/GaryWenneker/Loom/issues/4) and [#6](https://github.com/GaryWenneker/Loom/issues/6))
 
