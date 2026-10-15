@@ -271,6 +271,32 @@ mod tests {
     }
 
     #[test]
+    fn empty_tree_matches_independent_canonical_byte_vector() {
+        // Golden serialization vector: LOOM-NUL, v2, TREE, 4-byte
+        // payload length, then a zero u32 entry count.
+        let bytes = NativeTree { entries: vec![] }.encode().unwrap();
+        assert_eq!(bytes, vec![
+            0x4c, 0x4f, 0x4f, 0x4d, 0x00, 0x02, 0x03,
+            0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ]);
+        assert_eq!(NativeTree::decode(&bytes).unwrap().entries.len(), 0);
+    }
+
+    #[test]
+    fn old_blob_and_changeset_object_versions_remain_separate() {
+        let blob = crate::format::encode_object(crate::format::BLOB, b"unchanged").unwrap();
+        assert_eq!(blob[5], crate::format::VERSION);
+        let tree = NativeTree { entries: vec![] }.encode().unwrap();
+        let mut incorrect = blob.clone();
+        incorrect[5] = crate::format::TREE_VERSION;
+        assert!(crate::format::decode_object(&incorrect).is_err());
+        let mut reversed = tree;
+        reversed[5] = crate::format::VERSION;
+        assert!(NativeTree::decode(&reversed).is_err());
+    }
+
+    #[test]
     fn reject_noncanonical_names_and_directory_flags() {
         let cases = ["../escape", "two/components", ".loom", ".git", "a\\b", ""];
         for name in cases {
