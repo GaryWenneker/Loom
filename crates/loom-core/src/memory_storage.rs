@@ -142,7 +142,7 @@ mod tests {
             let refs = Arc::clone(&refs);
             std::thread::spawn(move || refs.compare_and_swap("main", None, Some(ObjectId([n; 32]))).unwrap())
         }).collect();
-        assert_eq!(handles.into_iter().filter(|h| h.join().unwrap()).count(), 1);
+        assert_eq!(handles.into_iter().map(|h| h.join().unwrap()).filter(|won| *won).count(), 1);
         assert!(refs.read_ref("main").unwrap().is_some());
     }
 
