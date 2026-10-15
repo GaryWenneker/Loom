@@ -101,6 +101,10 @@ impl Repository {
                  revision_oid TEXT PRIMARY KEY NOT NULL,
                  entry_count INTEGER NOT NULL CHECK(entry_count >= 0)
              );
+             CREATE TABLE IF NOT EXISTS revision_native_tree (
+                 revision_oid TEXT PRIMARY KEY NOT NULL,
+                 root_oid TEXT NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS workspace_journal (
                  id INTEGER PRIMARY KEY CHECK(id=1),
                  operation TEXT NOT NULL,
@@ -930,6 +934,43 @@ impl Repository {
         Ok(())
     }
 
+    /// Publish a canonical immutable directory DAG for an existing v1
+    /// changeset without rewriting its identity or changing worktree files.
+    /// Native tree nodes use the separately versioned v2 object envelope.
+    /// The revision -> root mapping is a rebuildable derived index.
+    pub fn native_tree_root(&self, revision: ObjectId) -> Result<ObjectId> {
+        self.get_changeset(revision)?;
+        let key = revision.to_string();
+        let cached: Option<String> = self.db.query_row(
+            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+            [&key], |row| row.get(0),
+        ).optional()?;
+        if let Some(raw) = cached {
+            let root = ObjectId::parse(&raw)?;
+            crate::tree::NativeTree::decode(&self.store.get(root)?)?;
+            return Ok(root);
+        }
+        // Use canonical history rather than a possibly stale derived SQLite
+        // path index when creating an immutable source-of-truth object.
+        let state = self.state_at(Some(revision))?;
+        let root = crate::tree::write_snapshot(&self.store, &state)?;
+        self.db.execute(
+            "INSERT OR IGNORE INTO revision_native_tree(revision_oid,root_oid)
+             VALUES(?1,?2)",
+            params![&key, root.to_string()],
+        )?;
+        let published: String = self.db.query_row(
+            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+            [&key], |row| row.get(0),
+        )?;
+        if published != root.to_string() {
+            return Err(Error::Conflict(
+                "another native tree root was published for this revision".into()
+            ));
+        }
+        Ok(root)
+    }
+
     /// List paths in any immutable historical revision without switching
     /// branches or changing the user worktree. A first query materializes a
     /// derived snapshot; repeat and prefix queries use indexed SQLite ranges.
@@ -1370,6 +1411,22 @@ impl Repository {
                     }
                 }
             }
+            if kind == crate::format::TREE {
+                let node = crate::tree::NativeTree::decode(&data)?;
+                for entry in node.entries {
+                    let target = self.store.get(entry.object)?;
+                    let (actual_kind, _) = decode_object(&target)?;
+                    let expected = match entry.kind {
+                        crate::tree::TreeEntryKind::File => BLOB,
+                        crate::tree::TreeEntryKind::Directory => crate::format::TREE,
+                    };
+                    if actual_kind != expected {
+                        return Err(Error::Invalid(format!(
+                            "native tree entry references wrong object type: {}", entry.name
+                        )));
+                    }
+                }
+            }
             checked += 1;
         }
         // Staged blobs are independent durability roots: a prepared commit
@@ -1496,6 +1553,26 @@ impl Repository {
             if actual.len() as i64 != expected_count || actual != expected {
                 return Err(Error::Invalid(format!(
                     "historical tree cache differs from immutable changesets: {raw_revision}"
+                )));
+            }
+        }
+        // A native v2 tree is a durable immutable DAG. Its optional mapping
+        // to a v1 revision is derived and must reflect that revision exactly.
+        let mut roots = self.db.prepare(
+            "SELECT revision_oid,root_oid FROM revision_native_tree"
+        )?;
+        let items = roots.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for item in items {
+            let (revision_raw, root_raw) = item?;
+            let revision = ObjectId::parse(&revision_raw)?;
+            let root = ObjectId::parse(&root_raw)?;
+            let actual = crate::tree::flatten_snapshot(&self.store, root)?;
+            let expected = self.state_at(Some(revision))?;
+            if actual != expected {
+                return Err(Error::Invalid(format!(
+                    "native immutable tree differs from revision {revision_raw}"
                 )));
             }
         }
@@ -2126,6 +2203,83 @@ mod tests {
         assert!(r.list_revision_files(ObjectId([5; 32]), None).is_err());
         assert!(r.list_revision_files(empty, Some("../unsafe")).is_err());
         assert!(r.fsck().is_ok());
+    }
+
+
+    #[test]
+    fn native_tree_roots_are_deterministic_and_preserve_v1_history() {
+        let (dir, r) = repo();
+        fs::create_dir_all(dir.path().join("src/deep")).unwrap();
+        fs::write(dir.path().join("README"), b"readme").unwrap();
+        fs::write(dir.path().join("src/deep/file.rs"), b"source").unwrap();
+        let original = r.commit("tester", "original changeset").unwrap();
+        let root = r.native_tree_root(original).unwrap();
+        assert_eq!(r.native_tree_root(original).unwrap(), root);
+        assert_eq!(r.get_changeset(original).unwrap().message, "original changeset");
+        let tree = crate::tree::NativeTree::decode(&r.store.get(root).unwrap()).unwrap();
+        assert_eq!(tree.entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+                   vec!["README", "src"]);
+        assert_eq!(tree.entries[1].kind, crate::tree::TreeEntryKind::Directory);
+        assert_eq!(crate::tree::flatten_snapshot(&r.store, root).unwrap(),
+                   r.state_at(Some(original)).unwrap());
+        assert!(r.fsck().is_ok());
+
+        // The SQLite root mapping is disposable; immutable nodes are
+        // deduplicated and recreating from the same history gives the same ID.
+        r.db.execute("DELETE FROM revision_native_tree", []).unwrap();
+        assert_eq!(r.native_tree_root(original).unwrap(), root);
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn native_tree_reuses_unchanged_subdirectories_across_revisions() {
+        let (dir, r) = repo();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/unchanged.rs"), b"stable").unwrap();
+        fs::write(dir.path().join("README"), b"v1").unwrap();
+        let first = r.commit("tester", "first").unwrap();
+        let old_root = r.native_tree_root(first).unwrap();
+        fs::write(dir.path().join("README"), b"v2").unwrap();
+        let second = r.commit("tester", "second").unwrap();
+        let new_root = r.native_tree_root(second).unwrap();
+        assert_ne!(old_root, new_root);
+        let old_node = crate::tree::NativeTree::decode(&r.store.get(old_root).unwrap()).unwrap();
+        let new_node = crate::tree::NativeTree::decode(&r.store.get(new_root).unwrap()).unwrap();
+        let child = |tree: crate::tree::NativeTree| -> ObjectId {
+            tree.entries.into_iter().find(|e| e.name == "src").unwrap().object
+        };
+        assert_eq!(child(old_node), child(new_node));
+        assert_eq!(crate::tree::flatten_snapshot(&r.store, old_root).unwrap(),
+                   r.state_at(Some(first)).unwrap());
+        assert_eq!(crate::tree::flatten_snapshot(&r.store, new_root).unwrap(),
+                   r.state_at(Some(second)).unwrap());
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn fsck_rejects_native_tree_root_mismatch_and_missing_children() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("a"), b"a").unwrap();
+        let first = r.commit("tester", "first").unwrap();
+        fs::write(dir.path().join("a"), b"b").unwrap();
+        let second = r.commit("tester", "second").unwrap();
+        let old_root = r.native_tree_root(first).unwrap();
+        let new_root = r.native_tree_root(second).unwrap();
+        r.db.execute(
+            "UPDATE revision_native_tree SET root_oid=?1 WHERE revision_oid=?2",
+            params![old_root.to_string(), second.to_string()]
+        ).unwrap();
+        assert!(r.fsck().is_err(), "stale native tree root must be detected");
+        r.db.execute(
+            "UPDATE revision_native_tree SET root_oid=?1 WHERE revision_oid=?2",
+            params![new_root.to_string(), second.to_string()]
+        ).unwrap();
+        assert!(r.fsck().is_ok());
+
+        let tree = crate::tree::NativeTree::decode(&r.store.get(new_root).unwrap()).unwrap();
+        let blob = tree.entries[0].object;
+        fs::remove_file(r.store.path_for_test(blob)).unwrap();
+        assert!(r.fsck().is_err(), "missing native tree child must be detected");
     }
 
     #[test] fn corrupt_object_detected() {

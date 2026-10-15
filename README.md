@@ -10,7 +10,7 @@ Loom has its own native storage engine and object format. A separate Git interop
 
 ## Implemented today
 
-- Portable native binary changeset and blob envelopes addressed by BLAKE3-256.
+- Native v1 blob/changeset envelopes and optional hierarchical v2 tree objects addressed by BLAKE3-256. Existing v1 commit IDs remain unchanged.
 - Local immutable object storage with on-read integrity verification.
 - SQLite branch refs with compare-and-swap protection.
 - Cross-process advisory worktree write lock around local commits, merges, branch creation and switching.
@@ -23,6 +23,7 @@ Loom has its own native storage engine and object format. A separate Git interop
 - `loom review` displays both prepared commit content and remaining uncommitted workspace edits in one view. Text patches use unified diff output; large/binary changes are reported without textual hunks.
 - `loom cat BRANCH PATH` for binary-safe direct access to native snapshot files without checkout.
 - `loom cat @CHANGESET_ID PATH` reads a single file at a historical revision without checkout, with an optional, rebuildable result cache.
+- `loom tree @CHANGESET_ID` publishes and prints the canonical immutable directory-tree root for an existing revision (experimental; metadata from v1 history cannot be reconstructed).
 - `loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]` to enumerate tracked paths in a branch or immutable historical revision without checkout. Current branch tips use a derived index; historical tree queries build a reusable SQLite snapshot from first-parent changesets or a cached ancestor. `--null` is safe for automated filename processing.
 - Cross-platform compilation, tests and Rust dependency auditing in GitHub Actions.
 
@@ -73,7 +74,7 @@ Run `loom help` for the supported CLI. The example assumes the binary is accessi
 
 ## Plan
 
-The [architecture](docs/architecture.md), [implementation contracts](docs/implementation-contracts.md), [release gates](docs/release-gates.md), [native format](docs/format-v1.md), [ADRs](docs/adr-001-native-engine.md) and [complete delivery roadmap](docs/roadmap.md) document decisions, priorities, dependencies and objective acceptance criteria. The roadmap distinguishes merged features from planned work.
+The [architecture](docs/architecture.md), [implementation contracts](docs/implementation-contracts.md), [release gates](docs/release-gates.md), [v1 format](docs/format-v1.md), [v2 native tree objects](docs/format-v2-trees.md), [ADRs](docs/adr-001-native-engine.md) and [complete delivery roadmap](docs/roadmap.md) document decisions, priorities, dependencies and objective acceptance criteria. The roadmap distinguishes merged features from planned work.
 
 Tracked delivery issues: [native safety](https://github.com/GaryWenneker/Loom/issues/1), [full local VCS](https://github.com/GaryWenneker/Loom/issues/2), [merges/recovery](https://github.com/GaryWenneker/Loom/issues/3), [server/agents](https://github.com/GaryWenneker/Loom/issues/4), [Git bridge](https://github.com/GaryWenneker/Loom/issues/5), [scale](https://github.com/GaryWenneker/Loom/issues/6), and [production hardening](https://github.com/GaryWenneker/Loom/issues/7).
 

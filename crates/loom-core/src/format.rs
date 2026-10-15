@@ -6,6 +6,9 @@ pub const MAGIC: &[u8; 5] = b"LOOM\0";
 pub const VERSION: u8 = 1;
 pub const BLOB: u8 = 1;
 pub const CHANGESET: u8 = 2;
+/// Version-2 immutable directory tree nodes, independent of v1 changesets.
+pub const TREE: u8 = 3;
+pub const TREE_VERSION: u8 = 2;
 pub const MAX_OBJECT_SIZE: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -30,21 +33,23 @@ impl fmt::Display for ObjectId {
 
 pub(crate) fn encode_object(kind: u8, payload: &[u8]) -> Result<Vec<u8>> {
     if payload.len() > MAX_OBJECT_SIZE { return Err(Error::Invalid("object exceeds 64 MiB v1 cap".into())); }
-    if kind != BLOB && kind != CHANGESET { return Err(Error::Invalid("unknown object kind".into())); }
+    if kind != BLOB && kind != CHANGESET && kind != TREE { return Err(Error::Invalid("unknown object kind".into())); }
     let mut b = Vec::with_capacity(payload.len() + 15);
     b.extend_from_slice(MAGIC);
-    b.push(VERSION);
+    b.push(if kind == TREE { TREE_VERSION } else { VERSION });
     b.push(kind);
     b.extend_from_slice(&(payload.len() as u64).to_le_bytes());
     b.extend_from_slice(payload);
     Ok(b)
 }
 pub(crate) fn decode_object(b: &[u8]) -> Result<(u8, &[u8])> {
-    if b.len() < 15 || &b[..5] != MAGIC || b[5] != VERSION {
+    if b.len() < 15 || &b[..5] != MAGIC {
         return Err(Error::Invalid("unrecognized object envelope".into()));
     }
     let kind = b[6];
-    if kind != BLOB && kind != CHANGESET { return Err(Error::Invalid("invalid object kind".into())); }
+    if !matches!((b[5], kind), (VERSION, BLOB | CHANGESET) | (TREE_VERSION, TREE)) {
+        return Err(Error::Invalid("unsupported object version or kind".into()));
+    }
     let len = u64::from_le_bytes(b[7..15].try_into().expect("8 bytes"));
     if len > MAX_OBJECT_SIZE as u64 || len != (b.len() - 15) as u64 {
         return Err(Error::Invalid("object payload length mismatch".into()));

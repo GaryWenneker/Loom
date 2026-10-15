@@ -4,9 +4,11 @@ mod format;
 mod repository;
 mod store;
 mod text_merge;
+mod tree;
 
 pub use format::{Change, ChangeKind, Changeset, ObjectId};
 pub use repository::{FileDiff, Repository, StatusEntry, StatusKind};
+pub use tree::{NativeTree, TreeEntry, TreeEntryKind};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
