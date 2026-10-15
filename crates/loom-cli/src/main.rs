@@ -30,6 +30,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
     let Some(cmd) = args.first().map(String::as_str) else { usage(); return Err("missing command".into()); };
     if matches!(cmd, "--help" | "-h" | "help") { usage(); return Ok(()); }
+    // Explicit compatibility bridge. Never silently reinterpret a native
+    // Loom command as Git or mutate a native repository on Git's behalf.
+    if cmd == "git" {
+        if args.get(1).map(String::as_str) != Some("--") || args.len() < 3 {
+            return Err("usage: loom git -- GIT_ARGS...".into());
+        }
+        let status = std::process::Command::new("git")
+            .args(&args[2..])
+            .status()
+            .map_err(|error| format!("cannot launch Git compatibility bridge: {error}"))?;
+        if !status.success() {
+            return Err(format!("Git compatibility command failed with status {status}").into());
+        }
+        return Ok(());
+    }
     if cmd == "init" {
         let path = args.get(1).map_or(".", String::as_str);
         if !Path::new(path).exists() { std::fs::create_dir_all(path)?; }
