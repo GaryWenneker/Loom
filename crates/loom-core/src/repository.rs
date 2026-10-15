@@ -718,42 +718,60 @@ impl Repository {
     /// A prefix matches the exact file name and descendants of that directory,
     /// but never similarly named siblings (e.g. 'src2' for prefix 'src').
     ///
-    /// The ref marker and all indexed entries are observed in one SQLite
-    /// statement, ensuring that a concurrent ref/index transaction cannot
-    /// produce a mixed-version listing.
+    /// One SQLite read transaction pins the same snapshot for the ref marker
+    /// and indexed path reads. Prefix lookups use the (branch,path) index for
+    /// one exact lookup plus one bounded range, not a full branch path scan.
     pub fn list_branch_files(
         &self, branch: &str, prefix: Option<&str>
     ) -> Result<Vec<String>> {
         if let Some(path) = prefix { validate_path(path)?; }
-        let lower = prefix.map(|p| format!("{p}/"));
-        let upper = prefix.map(|p| format!("{p}0"));
-        let mut stmt = self.db.prepare(
-            "SELECT i.path FROM refs AS r
+        let tx = self.db.unchecked_transaction()?;
+        let current: Option<i64> = tx.query_row(
+            "SELECT 1 FROM refs AS r
              JOIN branch_path_index_tip AS t
                ON t.branch=r.name AND t.oid=COALESCE(r.oid,'')
-             LEFT JOIN branch_path_index AS i
-               ON i.branch=r.name
-              AND (?2 IS NULL OR i.path=?2
-                   OR (i.path>=?3 AND i.path<?4))
-             WHERE r.name=?1
-             ORDER BY i.path"
-        )?;
-        let values = stmt.query_map(
-            params![branch, prefix, lower, upper],
-            |row| row.get::<_, Option<String>>(0),
-        )?;
-        let mut cached = Vec::new();
-        for entry in values {
-            cached.push(entry?);
-        }
-        if !cached.is_empty() {
-            let mut files = Vec::new();
-            for path in cached.into_iter().flatten() {
-                validate_path(&path)?;
-                files.push(path);
+             WHERE r.name=?1",
+            [branch],
+            |row| row.get(0),
+        ).optional()?;
+        if current.is_some() {
+            let mut paths = Vec::new();
+            if let Some(p) = prefix {
+                let lower = format!("{p}/");
+                let upper = format!("{p}0");
+                let mut stmt = tx.prepare(
+                    "SELECT path FROM branch_path_index
+                       WHERE branch=?1 AND path=?2
+                     UNION ALL
+                     SELECT path FROM branch_path_index
+                       WHERE branch=?1 AND path>=?3 AND path<?4
+                     ORDER BY path"
+                )?;
+                let rows = stmt.query_map(
+                    params![branch, p, lower, upper],
+                    |row| row.get::<_, String>(0),
+                )?;
+                for row in rows {
+                    let path = row?;
+                    validate_path(&path)?;
+                    paths.push(path);
+                }
+            } else {
+                let mut stmt = tx.prepare(
+                    "SELECT path FROM branch_path_index
+                     WHERE branch=?1 ORDER BY path"
+                )?;
+                let rows = stmt.query_map([branch], |row| row.get::<_, String>(0))?;
+                for row in rows {
+                    let path = row?;
+                    validate_path(&path)?;
+                    paths.push(path);
+                }
             }
-            return Ok(files);
+            tx.commit()?;
+            return Ok(paths);
         }
+        drop(tx);
         // A legacy branch, new branch, or stale/evicted cache is served from
         // immutable first-parent history without treating derived data as
         // authoritative. New staged commits rebuild the index when needed.
