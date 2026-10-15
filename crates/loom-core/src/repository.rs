@@ -546,7 +546,7 @@ impl Repository {
         let branch = self.current_branch()?;
         let prev = self.branch_tip(&branch)?;
         let old = self.state_at(prev)?;
-        let files = self.scan_files()?;
+        let files = self.scan_files_tracked(&old)?;
         let staged = self.staging_enabled()?;
         let changes = if staged {
             self.staged_changes(&old)?
