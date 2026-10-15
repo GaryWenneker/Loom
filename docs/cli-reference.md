@@ -20,6 +20,7 @@
 | `loom switch NAME` | Switch branches if workspace is clean |
 | `loom merge NAME [-m MESSAGE]` | Conservative merge; unresolved conflicts reject |
 | `loom cat BRANCH PATH` | Stream exact file bytes from a native snapshot |
+| `loom files BRANCH [PREFIX] [--null]` | List tracked native files without checkout; prefix matches exact path or directory descendants. Text mode quotes filenames; `--null` emits NUL-separated paths for scripts. |
 | `loom fsck` | Perform basic object and reference integrity checks |
 
 The first `loom add` enables persistent explicit staging in v1. Earlier commit-all behavior is transitional. A missing tracked file can be staged as a deletion. Directory-wide staging and partial hunk selection are unavailable.

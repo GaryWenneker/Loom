@@ -8,6 +8,7 @@
 | Local init, status, commits, log | Basic | Worktree scans and first-parent history |
 | Immutable staged file snapshots | Basic | Individual paths and persistent opt-in mode |
 | `review`, staged/unstaged diff | Available | Text patches have size limits |
+| Direct indexed branch file and prefix listing | Experimental | Current branch tips use a derived index with history fallback; no arbitrary revision/sparse remote API |
 | Branch create, list, switch | Basic | Untracked/dirty worktrees block switching |
 | Three-way text merge | Limited | No interactive conflict continuation |
 | Object hash verification | Basic | Not a backup or comprehensive repair |

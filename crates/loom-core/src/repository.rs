@@ -714,6 +714,76 @@ impl Repository {
 
     /// Read native snapshot content by branch and relative path, with no checkout.
     /// Returns None when a file is absent from that branch.
+    /// Enumerate tracked native paths without materializing a worktree.
+    /// A prefix matches the exact file name and descendants of that directory,
+    /// but never similarly named siblings (e.g. 'src2' for prefix 'src').
+    ///
+    /// One SQLite read transaction pins the same snapshot for the ref marker
+    /// and indexed path reads. Prefix lookups use the (branch,path) index for
+    /// one exact lookup plus one bounded range, not a full branch path scan.
+    pub fn list_branch_files(
+        &self, branch: &str, prefix: Option<&str>
+    ) -> Result<Vec<String>> {
+        if let Some(path) = prefix { validate_path(path)?; }
+        let tx = self.db.unchecked_transaction()?;
+        let current: Option<i64> = tx.query_row(
+            "SELECT 1 FROM refs AS r
+             JOIN branch_path_index_tip AS t
+               ON t.branch=r.name AND t.oid=COALESCE(r.oid,'')
+             WHERE r.name=?1",
+            [branch],
+            |row| row.get(0),
+        ).optional()?;
+        if current.is_some() {
+            let mut paths = Vec::new();
+            if let Some(p) = prefix {
+                let lower = format!("{p}/");
+                let upper = format!("{p}0");
+                let mut stmt = tx.prepare(
+                    "SELECT path FROM branch_path_index
+                       WHERE branch=?1 AND path=?2
+                     UNION ALL
+                     SELECT path FROM branch_path_index
+                       WHERE branch=?1 AND path>=?3 AND path<?4
+                     ORDER BY path"
+                )?;
+                let rows = stmt.query_map(
+                    params![branch, p, lower, upper],
+                    |row| row.get::<_, String>(0),
+                )?;
+                for row in rows {
+                    let path = row?;
+                    validate_path(&path)?;
+                    paths.push(path);
+                }
+            } else {
+                let mut stmt = tx.prepare(
+                    "SELECT path FROM branch_path_index
+                     WHERE branch=?1 ORDER BY path"
+                )?;
+                let rows = stmt.query_map([branch], |row| row.get::<_, String>(0))?;
+                for row in rows {
+                    let path = row?;
+                    validate_path(&path)?;
+                    paths.push(path);
+                }
+            }
+            tx.commit()?;
+            return Ok(paths);
+        }
+        drop(tx);
+        // A legacy branch, new branch, or stale/evicted cache is served from
+        // immutable first-parent history without treating derived data as
+        // authoritative. New staged commits rebuild the index when needed.
+        let history = self.state_at(self.branch_tip(branch)?)?;
+        let directory_prefix = prefix.map(|p| format!("{p}/"));
+        Ok(history.into_keys().filter(|path| {
+            prefix.is_none()
+                || prefix.is_some_and(|p| path.as_str() == p)
+                || directory_prefix.as_ref().is_some_and(|p| path.starts_with(p.as_str()))
+        }).collect())
+    }
+
     /// Read a file from a branch tip using the derived path index when it
     /// represents the same commit as the live ref. The joined lookup uses
     /// one SQLite read snapshot, so a concurrent ref/index transaction cannot
@@ -1393,6 +1463,37 @@ mod tests {
         assert!(r.read_branch_file("does-not-exist", "value").is_err());
         assert!(r.fsck().is_ok());
     }
+
+    #[test]
+    fn indexed_native_listing_falls_back_for_evicted_and_stale_caches() {
+        let (dir, r) = repo();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/alpha"), b"alpha").unwrap();
+        fs::write(dir.path().join("src/beta"), b"beta").unwrap();
+        fs::write(dir.path().join("src2"), b"sibling").unwrap();
+        r.commit("tester", "base").unwrap();
+        assert_eq!(r.list_branch_files("main", Some("src")).unwrap(),
+                   vec!["src/alpha", "src/beta"]);
+        fs::write(dir.path().join("src/alpha"), b"updated").unwrap();
+        r.add("src/alpha").unwrap();
+        r.commit("tester", "warm cache").unwrap();
+        let expected = vec!["src/alpha".to_owned(), "src/beta".to_owned()];
+        assert_eq!(r.list_branch_files("main", Some("src")).unwrap(), expected);
+        r.db.execute("DELETE FROM branch_path_index_tip", []).unwrap();
+        assert_eq!(r.list_branch_files("main", Some("src")).unwrap(), expected);
+        r.db.execute(
+            "INSERT INTO branch_path_index_tip(branch,oid) VALUES('main',?1)",
+            [ObjectId([9; 32]).to_string()],
+        ).unwrap();
+        assert_eq!(r.list_branch_files("main", Some("src")).unwrap(), expected);
+        assert_eq!(r.list_branch_files("main", Some("src2")).unwrap(),
+                   vec!["src2"]);
+        assert_eq!(r.list_branch_files("main", Some("missing")).unwrap(),
+                   Vec::<String>::new());
+        assert!(r.list_branch_files("missing", None).is_err());
+        assert!(r.list_branch_files("main", Some("../unsafe")).is_err());
+    }
+
     #[test] fn corrupt_object_detected() {
         let (_dir, r) = repo();
         let oid = r.store.put(BLOB, b"x").unwrap();

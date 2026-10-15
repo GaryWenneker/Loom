@@ -21,7 +21,7 @@ For larger evaluations, use `--files 100000 1000000` and ensure you have disk sp
 
 - Time to `add` exactly one selected file amid other untracked files.
 - Time to commit the frozen snapshot, with a growing sequence of first-parent commits.
-- Time for `status` over the full untracked fixture, direct branch file access and `fsck`.
+- Time for `status` over the full untracked fixture, indexed direct branch file access (`cat`), checkout-free tracked path enumeration (`files`) and `fsck`.
 - Raw CLI wall-clock samples plus p50/p95/p99 summaries and the binary SHA-256 hash.
 
 The fixture generator is deterministic, spreads files across 256 directories, does not need Git or a server, and avoids silently committing its background data.
