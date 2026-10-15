@@ -1316,6 +1316,83 @@ mod tests {
         assert!(r.fsck().is_ok());
     }
 
+
+    #[test]
+    fn branch_file_reads_follow_indexed_commits_additions_and_deletions() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("first.txt"), b"original").unwrap();
+        fs::write(dir.path().join("keep.txt"), b"unchanged").unwrap();
+        r.commit("tester", "initial").unwrap();
+        // Legacy commits have no derived index; history is the fallback.
+        assert_eq!(r.read_branch_file("main", "first.txt").unwrap(),
+            Some(b"original".to_vec()));
+        assert_eq!(r.read_branch_file("main", "missing.txt").unwrap(), None);
+
+        fs::write(dir.path().join("first.txt"), b"indexed").unwrap();
+        r.add("first.txt").unwrap();
+        r.commit("tester", "create indexed tip").unwrap();
+        assert_eq!(r.read_branch_file("main", "first.txt").unwrap(),
+            Some(b"indexed".to_vec()));
+        assert_eq!(r.read_branch_file("main", "keep.txt").unwrap(),
+            Some(b"unchanged".to_vec()));
+        assert_eq!(r.read_branch_file("main", "missing.txt").unwrap(), None);
+
+        fs::remove_file(dir.path().join("first.txt")).unwrap();
+        r.add("first.txt").unwrap();
+        r.commit("tester", "delete indexed path").unwrap();
+        assert_eq!(r.read_branch_file("main", "first.txt").unwrap(), None);
+        assert_eq!(r.read_branch_file("main", "keep.txt").unwrap(),
+            Some(b"unchanged".to_vec()));
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn branch_file_reads_fall_back_when_index_is_stale_or_evicted() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("a"), b"one").unwrap();
+        r.commit("tester", "base").unwrap();
+        fs::write(dir.path().join("a"), b"two").unwrap();
+        r.add("a").unwrap();
+        r.commit("tester", "indexed change").unwrap();
+        let current = r.head().unwrap().unwrap();
+        assert_eq!(r.read_branch_file("main", "a").unwrap(),
+            Some(b"two".to_vec()));
+        // Simulate index eviction: the immutable changesets remain usable.
+        r.db.execute("DELETE FROM branch_path_index_tip", []).unwrap();
+        assert_eq!(r.read_branch_file("main", "a").unwrap(),
+            Some(b"two".to_vec()));
+        // A stale marker must not masquerade as the current branch revision.
+        r.db.execute(
+            "INSERT INTO branch_path_index_tip(branch,oid) VALUES('main',?1)",
+            [ObjectId([7; 32]).to_string()],
+        ).unwrap();
+        assert_eq!(r.read_branch_file("main", "a").unwrap(),
+            Some(b"two".to_vec()));
+        assert_eq!(r.head().unwrap(), Some(current));
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn branch_file_reads_are_branch_isolated_after_switches() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("value"), b"base").unwrap();
+        r.commit("tester", "base").unwrap();
+        r.create_branch("feature").unwrap();
+        r.switch_branch("feature").unwrap();
+        fs::write(dir.path().join("value"), b"feature").unwrap();
+        r.add("value").unwrap();
+        r.commit("tester", "feature commit").unwrap();
+        r.switch_branch("main").unwrap();
+        fs::write(dir.path().join("value"), b"main").unwrap();
+        r.add("value").unwrap();
+        r.commit("tester", "main commit").unwrap();
+        assert_eq!(r.read_branch_file("feature", "value").unwrap(),
+            Some(b"feature".to_vec()));
+        assert_eq!(r.read_branch_file("main", "value").unwrap(),
+            Some(b"main".to_vec()));
+        assert!(r.read_branch_file("does-not-exist", "value").is_err());
+        assert!(r.fsck().is_ok());
+    }
     #[test] fn corrupt_object_detected() {
         let (_dir, r) = repo();
         let oid = r.store.put(BLOB, b"x").unwrap();
