@@ -110,7 +110,8 @@ P4 and P5 may be developed independently after the native state/metadata contrac
 - [x] Cross-process local mutation lock and initial journal-based process-crash recovery.
 
 **To complete**
-- [ ] Implement correct DAG common ancestors with **multiple merge bases** and criss-cross merges; define recursive/virtual-base strategy and fast-forward semantics.
+- [x] Enumerate undominated common ancestors across the full DAG. Refuse criss-cross merges with multiple best bases and unrelated histories instead of guessing by shortest distance or using an implicit empty base; expose read-only `loom merge-bases` for inspection.
+- [ ] Implement recursive/virtual-base merging for multiple best bases, explicit fast-forward semantics and scalable derived ancestry indexes.
 - [ ] Implement full typed three-way conflicts: edit/edit, delete/edit, add/add, rename/rename, rename/delete, binary, mode, symlink and file/directory collisions.
 - [ ] Persist conflicts and support `merge --continue/--abort`, reproducible conflict markers, custom merge drivers and safe retries.
 - [ ] Implement rebase, cherry-pick, revert, squash, bisect and an operation log supporting safe undo/redo; retain old unreachable heads for explicit recovery.

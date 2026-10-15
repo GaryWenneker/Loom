@@ -2,7 +2,7 @@ use crate::format::{decode_object, encode_object, object_id, validate_path, Chan
 use crate::store::ObjectStore;
 use crate::{Error, Result};
 use rusqlite::{params, Connection, OptionalExtension};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1432,26 +1432,63 @@ impl Repository {
     }
 
 
-    fn ancestor_distances(&self, start: ObjectId) -> Result<HashMap<ObjectId, usize>> {
-        let mut distances = HashMap::new();
-        let mut queue = VecDeque::from([(start, 0usize)]);
-        while let Some((id, distance)) = queue.pop_front() {
-            if distances.contains_key(&id) { continue; }
-            if distances.len() >= 1_000_000 { return Err(Error::Invalid("ancestry traversal limit reached".into())); }
-            distances.insert(id, distance);
+    fn ancestor_ids(&self, start: ObjectId) -> Result<HashSet<ObjectId>> {
+        let mut seen = HashSet::new();
+        let mut queue = VecDeque::from([start]);
+        while let Some(id) = queue.pop_front() {
+            if seen.contains(&id) { continue; }
+            if seen.len() >= 1_000_000 {
+                return Err(Error::Invalid("ancestry traversal limit reached".into()));
+            }
+            // Fetch even when a node was seen in another traversal. Missing
+            // immutable ancestors are errors, not silent "no common base".
             let commit = self.get_changeset(id)?;
-            for parent in commit.parents {
-                queue.push_back((parent, distance + 1));
+            seen.insert(id);
+            queue.extend(commit.parents);
+        }
+        Ok(seen)
+    }
+
+    /// Return all *best* merge bases: common ancestors which are not
+    /// ancestors of another common ancestor. The common set is closed
+    /// under parent links; marking every common node's immediate parents
+    /// therefore removes ALL dominated ancestors in O(V+E), without
+    /// heuristically choosing the shortest summed distance.
+    fn best_merge_bases(&self, ours: ObjectId, theirs: ObjectId) -> Result<Vec<ObjectId>> {
+        let ours_ancestors = self.ancestor_ids(ours)?;
+        let theirs_ancestors = self.ancestor_ids(theirs)?;
+        let common: HashSet<ObjectId> = ours_ancestors
+            .intersection(&theirs_ancestors).copied().collect();
+        let mut dominated = HashSet::new();
+        for id in &common {
+            for parent in self.get_changeset(*id)?.parents {
+                if common.contains(&parent) { dominated.insert(parent); }
             }
         }
-        Ok(distances)
+        let mut best: Vec<ObjectId> = common.difference(&dominated).copied().collect();
+        best.sort();
+        Ok(best)
+    }
+
+    /// Inspect ancestry without switching branches or mutating worktree.
+    /// An unborn branch has no common ancestor with a committed branch.
+    pub fn branch_merge_bases(&self, left: &str, right: &str) -> Result<Vec<ObjectId>> {
+        match (self.branch_tip(left)?, self.branch_tip(right)?) {
+            (Some(a), Some(b)) => self.best_merge_bases(a, b),
+            _ => Ok(Vec::new()),
+        }
     }
 
     fn merge_base(&self, ours: ObjectId, theirs: ObjectId) -> Result<Option<ObjectId>> {
-        let left = self.ancestor_distances(ours)?;
-        let right = self.ancestor_distances(theirs)?;
-        Ok(left.iter().filter_map(|(id, l)| right.get(id).map(|r| (*id, l+r)))
-            .min_by(|a,b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0))).map(|(id,_)| id))
+        let bases = self.best_merge_bases(ours, theirs)?;
+        match bases.as_slice() {
+            [] => Ok(None),
+            [id] => Ok(Some(*id)),
+            _ => Err(Error::Conflict(format!(
+                "multiple independent merge bases (criss-cross history): {};                  refusing unsafe merge until virtual-base merging is supported",
+                bases.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+            ))),
+        }
     }
 
     /// Conservative merge: independent lines merge, ambiguous changes reject safely.
@@ -1473,7 +1510,12 @@ impl Repository {
         let ours = self.head()?.ok_or_else(|| Error::Invalid("cannot merge into unborn branch".into()))?;
         let theirs = self.branch_tip(name)?.ok_or_else(|| Error::Invalid("cannot merge unborn branch".into()))?;
         if ours == theirs { return Ok(ours); }
-        let base = self.state_at(self.merge_base(ours, theirs)?)?;
+        let base_id = self.merge_base(ours, theirs)?.ok_or_else(|| {
+            Error::Conflict(
+                "branches have unrelated histories; refusing merge without a common ancestor".into()
+            )
+        })?;
+        let base = self.state_at(Some(base_id))?;
         let our_files = self.state_at(Some(ours))?;
         let their_files = self.state_at(Some(theirs))?;
         let mut keys = BTreeSet::new();
@@ -2890,6 +2932,129 @@ mod tests {
         fs::write(r.store.path_for_test(oid), b"corrupt").unwrap();
         assert!(r.fsck().is_err());
     }
+
+    #[test]
+    fn merge_bases_choose_youngest_shared_ancestor_in_the_full_dag() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("base"), b"base").unwrap();
+        let root = r.commit("tester", "root").unwrap();
+        fs::write(dir.path().join("shared"), b"new").unwrap();
+        let ancestor = r.commit("tester", "shared ancestor").unwrap();
+        r.create_branch("feature").unwrap();
+        r.switch_branch("feature").unwrap();
+        fs::write(dir.path().join("feature"), b"feature").unwrap();
+        let feature = r.commit("tester", "feature side").unwrap();
+        r.switch_branch("main").unwrap();
+        fs::write(dir.path().join("main"), b"main").unwrap();
+        let main = r.commit("tester", "main side").unwrap();
+
+        assert_eq!(r.best_merge_bases(main, feature).unwrap(), vec![ancestor]);
+        assert_eq!(r.branch_merge_bases("main", "feature").unwrap(), vec![ancestor]);
+        assert_eq!(r.best_merge_bases(main, root).unwrap(), vec![root]);
+        assert_eq!(r.best_merge_bases(main, main).unwrap(), vec![main]);
+        assert!(r.branch_merge_bases("main", "nonexistent").is_err());
+
+        let merged = r.merge_branch("feature", "tester", "safe merge").unwrap();
+        // Full-parent ancestry sees the second parent of the merge, not just
+        // the first-parent snapshot reconstruction path.
+        assert_eq!(r.best_merge_bases(merged, feature).unwrap(), vec![feature]);
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn criss_cross_merge_bases_are_all_returned_and_merge_fails_closed() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("base"), b"base").unwrap();
+        let root = r.commit("tester", "root").unwrap();
+        r.create_branch("feature").unwrap();
+        r.switch_branch("feature").unwrap();
+        fs::write(dir.path().join("feature"), b"feature contents").unwrap();
+        let b = r.commit("tester", "branch b").unwrap();
+        r.switch_branch("main").unwrap();
+        fs::write(dir.path().join("main"), b"main contents").unwrap();
+        let a = r.commit("tester", "branch a").unwrap();
+
+        // Two independent two-parent merge commits form the classic
+        // criss-cross DAG. Each first parent defines its file state.
+        // Their best common ancestors are A and B, not the older root.
+        let add_merge = |parents: Vec<ObjectId>, label: &str| {
+            let commit = Changeset {
+                parents,
+                author: "tester".into(),
+                message: label.into(),
+                timestamp_seconds: 1,
+                changes: vec![],
+            };
+            let encoded = commit.encode().unwrap();
+            let (_, payload) = decode_object(&encoded).unwrap();
+            r.store.put(CHANGESET, payload).unwrap()
+        };
+        let left = add_merge(vec![a, b], "merge a <- b");
+        let right = add_merge(vec![b, a], "merge b <- a");
+        let mut expected = vec![a, b];
+        expected.sort();
+        assert_eq!(r.best_merge_bases(left, right).unwrap(), expected);
+        assert_eq!(r.best_merge_bases(right, left).unwrap(), expected);
+        assert_eq!(r.best_merge_bases(left, root).unwrap(), vec![root]);
+
+        // Put the synthetic merge revisions on both branch refs. The
+        // current worktree already matches the left merge's first parent.
+        r.db.execute(
+            "UPDATE refs SET oid=?1 WHERE name='main'",
+            [left.to_string()],
+        ).unwrap();
+        r.db.execute(
+            "UPDATE refs SET oid=?1 WHERE name='feature'",
+            [right.to_string()],
+        ).unwrap();
+        assert!(r.status().unwrap().is_empty());
+        assert_eq!(r.branch_merge_bases("main", "feature").unwrap(), expected);
+        let err = r.merge_branch("feature", "tester", "ambiguous merge").unwrap_err();
+        assert!(format!("{err}").contains("multiple independent merge bases"));
+        assert_eq!(r.head().unwrap(), Some(left));
+        assert!(r.pending_transition().unwrap().is_none());
+        assert_eq!(fs::read(dir.path().join("main")).unwrap(), b"main contents");
+        assert!(!dir.path().join("feature").exists());
+        // No attempted changeset or branch mutation, and all v1 history
+        // remains reconstructable.
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn unrelated_histories_have_no_common_merge_base() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("file"), b"one").unwrap();
+        let first = r.commit("tester", "first").unwrap();
+        let unrelated_blob = r.store.put(BLOB, b"unrelated").unwrap();
+        let change = Changeset {
+            parents: vec![],
+            author: "tester".into(),
+            message: "unrelated root".into(),
+            timestamp_seconds: 2,
+            changes: vec![Change {
+                kind: ChangeKind::Add,
+                path: "unrelated".into(),
+                blob: Some(unrelated_blob),
+            }],
+        };
+        let raw = change.encode().unwrap();
+        let (_, payload) = decode_object(&raw).unwrap();
+        let other = r.store.put(CHANGESET, payload).unwrap();
+        assert_eq!(r.best_merge_bases(first, other).unwrap(), Vec::<ObjectId>::new());
+        r.create_branch("unrelated").unwrap();
+        r.db.execute(
+            "UPDATE refs SET oid=?1 WHERE name='unrelated'",
+            [other.to_string()],
+        ).unwrap();
+        assert!(r.branch_merge_bases("main", "unrelated").unwrap().is_empty());
+        let err = r.merge_branch("unrelated", "tester", "must refuse").unwrap_err();
+        assert!(format!("{err}").contains("unrelated histories"));
+        assert_eq!(r.head().unwrap(), Some(first));
+        assert!(r.pending_transition().unwrap().is_none());
+        assert_eq!(fs::read(dir.path().join("file")).unwrap(), b"one");
+        assert!(r.fsck().is_ok());
+    }
+
     #[test] fn non_overlapping_merge_and_conflict_rejection() {
         let (dir, r) = repo();
         fs::write(dir.path().join("a"), b"base-a").unwrap();
