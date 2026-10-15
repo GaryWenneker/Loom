@@ -1650,6 +1650,21 @@ impl Repository {
         let our_files = self.state_at(Some(ours))?;
         let their_files = self.state_at(Some(theirs))?;
         let merged = self.merge_states(&base, &our_files, &their_files, "merge")?;
+        if bases.len() > 1 {
+            // Some criss-cross histories contain competing resolutions of
+            // earlier merges. If one side retains a virtual-base file while
+            // the other deletes it, a naive three-way merge may erase data
+            // that appears in a branch without an explicit conflict. Fail
+            // closed until typed resolution records are supported.
+            for (path, id) in &base {
+                if (our_files.get(path) == Some(id) && !their_files.contains_key(path))
+                    || (their_files.get(path) == Some(id) && !our_files.contains_key(path)) {
+                    return Err(Error::Conflict(format!(
+                        "virtual merge-base deletion ambiguity at {path}"
+                    )));
+                }
+            }
+        }
         let mut changes = Vec::new();
         for (path, id) in &merged {
             if our_files.get(path) != Some(id) {
@@ -3098,7 +3113,7 @@ mod tests {
         assert!(r.status().unwrap().is_empty());
         assert_eq!(r.branch_merge_bases("main", "feature").unwrap(), expected);
         let err = r.merge_branch("feature", "tester", "ambiguous merge").unwrap_err();
-        assert!(format!("{err}").contains("multiple independent merge bases"));
+        assert!(format!("{err}").contains("virtual merge-base deletion ambiguity"));
         assert_eq!(r.head().unwrap(), Some(left));
         assert!(r.pending_transition().unwrap().is_none());
         assert_eq!(fs::read(dir.path().join("main")).unwrap(), b"main contents");
