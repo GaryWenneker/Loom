@@ -594,10 +594,13 @@ impl Repository {
                 }
             }
         }
-        let actual = self.scan_files()?;
-        let mut known = BTreeSet::new();
-        known.extend(previous.keys().cloned());
-        known.extend(target.keys().cloned());
+        // Ignore unrelated untracked paths during a branch switch, while
+        // forcing every previous/target path to be scanned even if it matches
+        // an ignore pattern. This preserves collision checks on tracked paths.
+        let mut protected = previous.clone();
+        protected.extend(target.iter().map(|(path, id)| (path.clone(), *id)));
+        let actual = self.scan_files_tracked(&protected)?;
+        let known: BTreeSet<String> = protected.keys().cloned().collect();
         for path in actual.keys() {
             if !known.contains(path) {
                 return Err(Error::Conflict(format!("untracked file blocks recovery: {path}")));
