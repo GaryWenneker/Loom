@@ -189,8 +189,35 @@ impl Repository {
         }
         let before = self.state_at(p.before)?;
         let after = self.state_at(p.after)?;
+        // For merges, derive and validate the immutable destination tree
+        // BEFORE the first worktree mutation. Failure leaves the durable
+        // journal intact and never publishes a new ref or root mapping.
+        let merge_tree = if p.operation == "merge" {
+            let after_id = p.after.ok_or_else(||
+                Error::Invalid("merge journal is missing target changeset".into())
+            )?;
+            let target = self.get_changeset(after_id)?;
+            let base_root = self.native_tree_root(p.before.ok_or_else(||
+                Error::Invalid("merge journal is missing parent".into())
+            )?)?;
+            let root = crate::tree::apply_changes(
+                &self.store, base_root, &target.changes
+            )?;
+            // A cached parent root could be damaged independently of the
+            // immutable changeset chain. The merge path already loads both
+            // complete states, so verify closure before modifying user files.
+            if crate::tree::flatten_snapshot(&self.store, root)? != after {
+                return Err(Error::Invalid(
+                    "merge native tree differs from immutable history".into()
+                ));
+            }
+            Some((after_id, root))
+        } else {
+            None
+        };
         self.materialize(&after, &before)?;
-        // The only commit point: both HEAD/ref update and journal deletion are atomic.
+        // The only commit point: HEAD/ref update, optional merge tree mapping
+        // and journal deletion share one SQLite transaction.
         let tx = self.db.unchecked_transaction()?;
         if p.operation == "switch" {
             let changed = tx.execute(
@@ -205,6 +232,13 @@ impl Repository {
                     p.before.map(|id| id.to_string())]
             )?;
             if changed != 1 { return Err(Error::Conflict("merge ref moved during recovery".into())); }
+            if let Some((revision, root)) = merge_tree {
+                tx.execute(
+                    "INSERT INTO revision_native_tree(revision_oid,root_oid)
+                     VALUES(?1,?2)",
+                    params![revision.to_string(), root.to_string()],
+                )?;
+            }
         }
         tx.execute("DELETE FROM workspace_journal WHERE id=1", [])?;
         tx.commit()?;
