@@ -2,7 +2,7 @@ use loom_core::{Repository, StatusKind};
 use std::{env, path::Path, process};
 
 fn usage() {
-    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path]\n  loom status\n  loom add PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom fsck\n");
+    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path]\n  loom status\n  loom add PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom files BRANCH [PREFIX] [--null]\n  loom fsck\n");
 }
 
 
@@ -138,6 +138,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             for change in &working { print_diff(change); }
             if !repo.staging_enabled()? {
                 println!("Legacy commit-all mode: 'loom commit' currently includes all working changes.");
+            }
+        }
+        "files" => {
+            // Text mode quotes/escapes filenames, including embedded newlines.
+            // --null uses NUL-delimited raw UTF-8 paths for tool pipelines.
+            let null = args.last().is_some_and(|value| value == "--null");
+            let positional = if null { &args[1..args.len()-1] } else { &args[1..] };
+            let (branch, prefix) = match positional {
+                [branch] => (branch.as_str(), None),
+                [branch, prefix] => (branch.as_str(), Some(prefix.as_str())),
+                _ => return Err("usage: loom files BRANCH [PREFIX] [--null]".into()),
+            };
+            let files = repo.list_branch_files(branch, prefix)?;
+            use std::io::Write;
+            let stdout = std::io::stdout();
+            let mut output = stdout.lock();
+            for path in files {
+                if null {
+                    output.write_all(path.as_bytes())?;
+                    output.write_all(&[0])?;
+                } else {
+                    writeln!(output, "{path:?}")?;
+                }
             }
         }
         "cat" => {
