@@ -247,7 +247,11 @@ pub(crate) fn apply_changes(
             return Err(Error::Invalid("native tree nesting limit reached".into()));
         }
         let mut entries: BTreeMap<String, TreeEntry> = if let Some(id) = previous {
-            NativeTree::decode(&store.get(id)?)?.entries.into_iter()
+            let tree = NativeTree::decode(&store.get(id)?)?;
+            if depth > 0 && tree.entries.is_empty() {
+                return Err(Error::Invalid("noncanonical empty native tree directory".into()));
+            }
+            tree.entries.into_iter()
                 .map(|entry| (entry.name.clone(), entry)).collect()
         } else {
             BTreeMap::new()
@@ -478,6 +482,33 @@ mod tests {
         let (_, payload) = decode_object(&root).unwrap();
         let root_id = store.put(TREE, payload).unwrap();
         assert!(flatten_snapshot(&store, root_id).is_err());
+    }
+
+    #[test]
+    fn incremental_update_rejects_empty_nested_tree() {
+        use crate::format::{Change, ChangeKind, BLOB};
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join(".loom");
+        fs::create_dir(&meta).unwrap();
+        fs::create_dir(meta.join("objects")).unwrap();
+        let store = crate::store::ObjectStore::new(&meta);
+        let empty = NativeTree { entries: vec![] }.encode().unwrap();
+        let (_, payload) = decode_object(&empty).unwrap();
+        let child = store.put(TREE, payload).unwrap();
+        let root = NativeTree { entries: vec![TreeEntry {
+            name: "dir".into(), kind: TreeEntryKind::Directory,
+            executable: false, object: child,
+        }] }.encode().unwrap();
+        let (_, payload) = decode_object(&root).unwrap();
+        let root_id = store.put(TREE, payload).unwrap();
+        let blob = store.put(BLOB, b"data").unwrap();
+        let changes = vec![Change {
+            path: "dir/file.txt".into(),
+            kind: ChangeKind::Add,
+            blob: Some(blob),
+        }];
+        assert!(apply_changes(&store, root_id, &changes).is_err());
     }
 
     #[test]
