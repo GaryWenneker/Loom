@@ -247,7 +247,11 @@ pub(crate) fn apply_changes(
             return Err(Error::Invalid("native tree nesting limit reached".into()));
         }
         let mut entries: BTreeMap<String, TreeEntry> = if let Some(id) = previous {
-            NativeTree::decode(&store.get(id)?)?.entries.into_iter()
+            let tree = NativeTree::decode(&store.get(id)?)?;
+            if depth > 0 && tree.entries.is_empty() {
+                return Err(Error::Invalid("noncanonical empty native tree directory".into()));
+            }
+            tree.entries.into_iter()
                 .map(|entry| (entry.name.clone(), entry)).collect()
         } else {
             BTreeMap::new()
