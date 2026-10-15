@@ -14,6 +14,7 @@ It is **not built on Git** and is not an extension of AX. A separate Git compati
 - Cross-process advisory worktree write lock around local commits, merges, branch creation and switching.
 - Durable SQLite intent journal for switch/merge transitions: Loom validates the worktree, stages replacement files, replays incomplete operations upon reopening, and updates HEAD/refs only after materialization.
 - Local full-worktree status, commits, log, branch creation/switching, basic conservative merges and fsck.
+- Opt-in persistent native staging index: `loom add PATH...`, `loom unstage PATH...`, frozen content snapshots and staged-only commits. Once enabled, every later commit requires explicit staging; existing repositories retain legacy commit-all behavior until their first `loom add`.
 - A CLI named `loom`.
 - Read-only `loom diff` for worktree changes and comparisons between branch snapshots; text patches use unified diff output, large/binary changes are reported without textual hunks.
 - `loom cat BRANCH PATH` for binary-safe direct access to native snapshot files without checkout.
@@ -39,6 +40,8 @@ mkdir loom-demo && cd loom-demo
 ../target/release/loom init
 echo hello > hello.txt
 ../target/release/loom status
+# Optional: opt into explicit staging before commit
+# ../target/release/loom add hello.txt
 ../target/release/loom commit -m "Initial snapshot" --author "Developer"
 ../target/release/loom branch create feature
 ../target/release/loom switch feature

@@ -20,7 +20,8 @@ Checklist status reflects implemented source and tests, not an architectural pro
 - [x] Local branch creation and switching
 - [x] CLI integration tests for a basic change/merge workflow
 - [x] Read-only branch/worktree diff and direct snapshot file reads (`loom diff`, `loom cat`)
-- [ ] Staging/index, ignores, tags, restores, fast derived history indexes
+- [x] Initial persistent opt-in staging index, selective immutable blob staging and staged deletion support
+- [ ] Ignore rules, tags, restores, fast derived history indexes and richer staging UX
 - [ ] Symlinks, modes, non-UTF-8 files and chunked large file support
 
 ## Phase 3 — Merge and recovery
