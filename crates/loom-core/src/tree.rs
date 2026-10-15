@@ -191,6 +191,160 @@ pub(crate) fn write_snapshot(
     save(store, &root, 0)
 }
 
+/// Apply a changeset to a canonical immutable directory DAG. Only
+/// directories on paths touched by the changeset are opened and re-encoded.
+/// Unchanged sibling objects retain their IDs, including across revisions.
+///
+/// Changes are batched into one edit trie, so several edits in the same
+/// directory produce one new directory object, not one per changed file.
+pub(crate) fn apply_changes(
+    store: &crate::store::ObjectStore,
+    root: ObjectId,
+    changes: &[crate::format::Change],
+) -> Result<ObjectId> {
+    use crate::format::{ChangeKind, Change};
+    use std::collections::BTreeMap;
+
+    #[derive(Default)]
+    struct Edits {
+        value: Option<Option<ObjectId>>,
+        children: BTreeMap<String, Edits>,
+    }
+
+    impl Edits {
+        fn has_additions(&self) -> bool {
+            self.value.is_some_and(|v| v.is_some()) ||
+                self.children.values().any(Edits::has_additions)
+        }
+    }
+
+    fn persist(
+        store: &crate::store::ObjectStore,
+        entries: Vec<TreeEntry>,
+    ) -> Result<ObjectId> {
+        let envelope = NativeTree { entries }.encode()?;
+        let (_, payload) = decode_object(&envelope)?;
+        store.put(TREE, payload)
+    }
+
+    fn apply_dir(
+        store: &crate::store::ObjectStore,
+        previous: Option<ObjectId>,
+        edits: &Edits,
+        depth: usize,
+    ) -> Result<Option<ObjectId>> {
+        if depth > 256 {
+            return Err(Error::Invalid("native tree nesting limit reached".into()));
+        }
+        let mut entries: BTreeMap<String, TreeEntry> = if let Some(id) = previous {
+            NativeTree::decode(&store.get(id)?)?.entries.into_iter()
+                .map(|entry| (entry.name.clone(), entry)).collect()
+        } else {
+            BTreeMap::new()
+        };
+
+        for (name, child) in &edits.children {
+            let existing = entries.remove(name);
+            let replacement = match child.value {
+                Some(Some(blob)) => {
+                    // A file cannot contain another added file; deleting
+                    // old nested files while replacing a directory is valid.
+                    if child.children.values().any(Edits::has_additions) {
+                        return Err(Error::Invalid(format!(
+                            "file/directory collision at native tree entry: {name}"
+                        )));
+                    }
+                    Some(TreeEntry {
+                        name: name.clone(),
+                        kind: TreeEntryKind::File,
+                        executable: false,
+                        object: blob,
+                    })
+                }
+                Some(None) => {
+                    // Delete this path first, then apply changes below it.
+                    // This allows file -> directory replacement atomically.
+                    let next = apply_dir(store, None, child, depth + 1)?;
+                    next.map(|id| TreeEntry {
+                        name: name.clone(),
+                        kind: TreeEntryKind::Directory,
+                        executable: false,
+                        object: id,
+                    })
+                }
+                None => {
+                    let prior = match existing {
+                        Some(entry) if entry.kind == TreeEntryKind::Directory =>
+                            Some(entry.object),
+                        Some(_) => return Err(Error::Invalid(format!(
+                            "cannot add path beneath a native tree file: {name}"
+                        ))),
+                        None => None,
+                    };
+                    apply_dir(store, prior, child, depth + 1)?.map(|id| TreeEntry {
+                        name: name.clone(),
+                        kind: TreeEntryKind::Directory,
+                        executable: false,
+                        object: id,
+                    })
+                }
+            };
+            if let Some(entry) = replacement {
+                entries.insert(name.clone(), entry);
+            }
+        }
+        if entries.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(persist(store, entries.into_values().collect())?))
+    }
+
+    let mut edits = Edits::default();
+    for Change { path, kind, blob } in changes {
+        validate_path(path)?;
+        let components: Vec<&str> = path.split('/').collect();
+        if components.len() > 256 {
+            return Err(Error::Invalid("native tree path nesting limit reached".into()));
+        }
+        let value = match kind {
+            ChangeKind::Delete if blob.is_none() => None,
+            ChangeKind::Add | ChangeKind::Modify if blob.is_some() => {
+                let oid = blob.expect("checked presence");
+                let bytes = store.get(oid)?;
+                if decode_object(&bytes)?.0 != crate::format::BLOB {
+                    return Err(Error::Invalid(format!(
+                        "native tree update references a non-blob: {path}"
+                    )));
+                }
+                Some(oid)
+            }
+            _ => return Err(Error::Invalid(format!(
+                "invalid native tree change: {path}"
+            ))),
+        };
+        let mut node = &mut edits;
+        for component in components {
+            node = node.children.entry(component.to_owned()).or_default();
+        }
+        if node.value.replace(value).is_some() {
+            return Err(Error::Invalid(format!(
+                "duplicate native tree change path: {path}"
+            )));
+        }
+    }
+    if changes.is_empty() {
+        NativeTree::decode(&store.get(root)?)?;
+        return Ok(root);
+    }
+    // The empty root has an object ID too. Empty nonroot directories are
+    // pruned, ensuring canonical output matches write_snapshot().
+    let result = apply_dir(store, Some(root), &edits, 0)?;
+    match result {
+        Some(id) => Ok(id),
+        None => persist(store, Vec::new()),
+    }
+}
+
 /// Traverse native trees with bounded depth and validate every referenced
 /// blob/child tree. This is used by integrity checks and format conformance.
 pub(crate) fn flatten_snapshot(
