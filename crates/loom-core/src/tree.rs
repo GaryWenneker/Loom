@@ -168,6 +168,16 @@ pub(crate) fn write_snapshot(
         store.put(TREE, payload)
     }
 
+    // Validate the complete blob closure before publishing any tree node.
+    // A missing object or a tree masquerading as a file must fail closed.
+    for (path, blob) in state {
+        validate_path(path)?;
+        let object = store.get(*blob)?;
+        if decode_object(&object)?.0 != crate::format::BLOB {
+            return Err(Error::Invalid(format!("native tree file does not reference a blob: {path}")));
+        }
+    }
+
     let mut root = Folder::default();
     for (path, blob) in state {
         validate_path(path)?;
@@ -382,6 +392,9 @@ pub(crate) fn flatten_snapshot(
         }
         let result = (|| -> Result<()> {
             let node = NativeTree::decode(&store.get(id)?)?;
+            if depth > 0 && node.entries.is_empty() {
+                return Err(Error::Invalid("noncanonical empty native tree directory".into()));
+            }
             for entry in node.entries {
                 let path = if prefix.is_empty() {
                     entry.name.clone()
@@ -427,6 +440,44 @@ mod tests {
             TreeEntry { name: "src".into(), kind: TreeEntryKind::Directory,
                         executable: false, object: ObjectId([2; 32]) },
         ] }
+    }
+
+    #[test]
+    fn snapshot_rejects_missing_and_wrong_kind_blob_references() {
+        use std::collections::BTreeMap;
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join(".loom");
+        fs::create_dir(&meta).unwrap();
+        fs::create_dir(meta.join("objects")).unwrap();
+        let store = crate::store::ObjectStore::new(&meta);
+        let mut state = BTreeMap::new();
+        state.insert("missing.txt".to_string(), ObjectId([7; 32]));
+        assert!(write_snapshot(&store, &state).is_err());
+        let tree = store.put(TREE, &[]).unwrap();
+        state.clear();
+        state.insert("wrong-kind.txt".to_string(), tree);
+        assert!(write_snapshot(&store, &state).is_err());
+    }
+
+    #[test]
+    fn flatten_rejects_noncanonical_empty_child_directory() {
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join(".loom");
+        fs::create_dir(&meta).unwrap();
+        fs::create_dir(meta.join("objects")).unwrap();
+        let store = crate::store::ObjectStore::new(&meta);
+        let empty = NativeTree { entries: vec![] }.encode().unwrap();
+        let (_, payload) = decode_object(&empty).unwrap();
+        let child = store.put(TREE, payload).unwrap();
+        let root = NativeTree { entries: vec![TreeEntry {
+            name: "empty".into(), kind: TreeEntryKind::Directory,
+            executable: false, object: child,
+        }] }.encode().unwrap();
+        let (_, payload) = decode_object(&root).unwrap();
+        let root_id = store.put(TREE, payload).unwrap();
+        assert!(flatten_snapshot(&store, root_id).is_err());
     }
 
     #[test]
