@@ -378,15 +378,58 @@ impl Repository {
         Ok(map)
     }
 
+    /// Report prepared file changes without replaying the entire first-parent
+    /// chain when the derived branch path index covers the current ref.
+    /// A single SQLite snapshot pins the ref and its index revision marker.
     pub fn staged_status(&self) -> Result<Vec<StatusEntry>> {
-        let old = self.state_at(self.head()?)?;
-        let mut changes = Vec::new();
-        for (path, blob) in self.staged_blobs()? {
+        let staged = self.staged_blobs()?;
+        if staged.is_empty() { return Ok(Vec::new()); }
+        let branch = self.current_branch()?;
+        let tx = self.db.unchecked_transaction()?;
+        let (ref_oid, index_oid): (Option<String>, Option<String>) = tx.query_row(
+            "SELECT r.oid,t.oid FROM refs AS r
+             LEFT JOIN branch_path_index_tip AS t ON t.branch=r.name
+             WHERE r.name=?1",
+            [&branch], |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let current = index_oid.as_deref() == Some(ref_oid.as_deref().unwrap_or(""));
+        if current {
+            let mut query = tx.prepare(
+                "SELECT 1 FROM branch_path_index WHERE branch=?1 AND path=?2"
+            )?;
+            let mut changes = Vec::with_capacity(staged.len());
+            for (path, blob) in staged {
+                let tracked: Option<i64> = query.query_row(
+                    params![&branch,&path], |row| row.get(0),
+                ).optional()?;
+                let kind = match (tracked.is_some(), blob) {
+                    (false, Some(_)) => StatusKind::Added,
+                    (true, Some(_)) => StatusKind::Modified,
+                    (true, None) => StatusKind::Deleted,
+                    (false, None) => return Err(Error::Invalid(format!(
+                        "invalid staged deletion: {path}"
+                    ))),
+                };
+                changes.push(StatusEntry { path, kind });
+            }
+            drop(query);
+            tx.commit()?;
+            return Ok(changes);
+        }
+        // A legacy/merge-written ref may not have an index, so immutable
+        // changeset history remains the canonical fallback.
+        drop(tx);
+        let ref_id = ref_oid.map(|s| ObjectId::parse(&s)).transpose()?;
+        let old = self.state_at(ref_id)?;
+        let mut changes = Vec::with_capacity(staged.len());
+        for (path, blob) in staged {
             let kind = match (old.get(&path), blob) {
                 (None, Some(_)) => StatusKind::Added,
                 (Some(_), Some(_)) => StatusKind::Modified,
                 (Some(_), None) => StatusKind::Deleted,
-                (None, None) => return Err(Error::Invalid(format!("invalid staged deletion: {path}"))),
+                (None, None) => return Err(Error::Invalid(format!(
+                    "invalid staged deletion: {path}"
+                ))),
             };
             changes.push(StatusEntry { path, kind });
         }
@@ -399,13 +442,17 @@ impl Repository {
         validate_path(path)?;
         let _guard = self.lock_worktree()?;
         self.recover_locked()?;
-        let before = self.state_at(self.head()?)?;
+        let branch = self.current_branch()?;
+        let tip = self.branch_tip(&branch)?;
+        // Lazily rebuild a missing or stale derived index once. Subsequent
+        // adds only need one indexed lookup, irrespective of history depth.
+        self.ensure_branch_path_index(&branch, tip)?;
+        let prior = self.indexed_blob(&branch, path)?;
         let blob_id = match self.read_staging_path(path)? {
             Some(bytes) => Some(self.store.put(BLOB, &bytes)?),
-            None if before.contains_key(path) => None,
+            None if prior.is_some() => None,
             None => return Err(Error::Invalid(format!("file is neither tracked nor present: {path}"))),
         };
-        let prior = before.get(path).copied();
         let tx = self.db.unchecked_transaction()?;
         tx.execute(
             "INSERT INTO meta(key,value) VALUES ('staging_mode','enabled')
