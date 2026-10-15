@@ -31,7 +31,7 @@ Only a **verified** capability counts towards completion. A proposal, issue, ali
 | Work in several branches simultaneously | Native isolated workspaces sharing immutable content | Missing |
 | Restore file or reset/recover staging/worktree | Native targeted restoration with preview and recovery | Missing |
 | Stash/shelve interrupted work | Named immutable work-in-progress snapshots | Missing |
-| Rebase, cherry-pick, revert, merge with conflict resolution | Native DAG/transforms, resumable typed conflicts | Conservative merge only |
+| Rebase, cherry-pick, revert, merge with conflict resolution | Native DAG/transforms, resumable typed conflicts | Conservative three-way merge, journaled fast-forward and no-op ancestry handling; no rebase/cherry-pick or conflict continuation |
 | Locate regressions (bisect) | Native revision search/bisect with checkpointed runs | Missing |
 | Ignore rules and safe cleanup | Native ignore and explicit safe clean | Ignore in draft PR #12 |
 | Hooks and workflow customization | Native extensibility/scripts, secure capability policy | Missing |
