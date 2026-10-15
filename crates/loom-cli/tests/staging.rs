@@ -90,3 +90,27 @@ fn cannot_switch_branches_with_staged_paths() {
     assert!(!cmd(root, &["switch", "feature"]).status.success());
     assert_eq!(fs::read(root.join("tracked")).unwrap(), b"two");
 }
+
+#[test]
+fn partial_commit_refuses_file_directory_collision() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    ok(root, &["init"]);
+    fs::write(root.join("node"), b"file").unwrap();
+    ok(root, &["commit", "-m", "original file"]);
+    // The working tree changed from file to directory, but only the new
+    // child path is staged. The old tracked parent would remain in history.
+    fs::remove_file(root.join("node")).unwrap();
+    fs::create_dir(root.join("node")).unwrap();
+    fs::write(root.join("node").join("child"), b"content").unwrap();
+    ok(root, &["add", "node/child"]);
+    let result = cmd(root, &["commit", "-m", "invalid partial tree"]);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("collision"));
+    assert_eq!(ok(root, &["cat", "main", "node"]), b"file");
+    // Stage the tracked removal as well and retry safely.
+    ok(root, &["add", "node"]);
+    ok(root, &["commit", "-m", "directory transition"]);
+    assert_eq!(ok(root, &["cat", "main", "node/child"]), b"content");
+    ok(root, &["fsck"]);
+}
