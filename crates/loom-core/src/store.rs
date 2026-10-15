@@ -112,15 +112,19 @@ impl ObjectStore {
         }
         let file = fs::File::open(&path)?;
         let open_metadata = file.metadata()?;
-        // Reject multiply-linked objects: an external alias could mutate an
-        // otherwise immutable object without going through this store.
+        // Hard-link publication briefly creates two names for one inode.
+        // Give a concurrent publisher a bounded opportunity to unlink its
+        // temporary name, but never accept a persistently multiply-linked
+        // object. This is a liveness concession, not a race-free security API.
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
-            // Publication briefly creates two links (temporary and final).
-            // The writer must remove its temporary link before validation.
-            if open_metadata.nlink() != 1 {
-                return Err(Error::Invalid(format!("object has multiple hard links: {id}")));
+            for attempt in 0..100 {
+                if file.metadata()?.nlink() == 1 { break; }
+                if attempt == 99 {
+                    return Err(Error::Invalid(format!("object has multiple hard links: {id}")));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
             }
         }
         if !open_metadata.is_file() || open_metadata.len() > (crate::format::MAX_OBJECT_SIZE + 15) as u64 {
