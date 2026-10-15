@@ -548,6 +548,9 @@ impl Repository {
         // adds only need one indexed lookup, irrespective of history depth.
         self.ensure_branch_path_index(&branch, tip)?;
         let prior = self.indexed_blob(&branch, path)?;
+        if prior.is_none() && crate::ignore::IgnoreRules::load(&self.root)?.ignores(path) {
+            return Err(Error::Invalid(format!("ignored untracked path: {path}")));
+        }
         let blob_id = match self.read_staging_path(path)? {
             Some(bytes) => Some(self.store.put(BLOB, &bytes)?),
             None if prior.is_some() => None,
