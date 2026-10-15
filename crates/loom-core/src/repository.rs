@@ -1473,11 +1473,18 @@ impl Repository {
     /// under parent links; marking every common node's immediate parents
     /// therefore removes ALL dominated ancestors in O(V+E), without
     /// heuristically choosing the shortest summed distance.
-    fn best_merge_bases(&self, ours: ObjectId, theirs: ObjectId) -> Result<Vec<ObjectId>> {
-        let ours_ancestors = self.ancestor_ids(ours)?;
-        let theirs_ancestors = self.ancestor_ids(theirs)?;
-        let common: HashSet<ObjectId> = ours_ancestors
-            .intersection(&theirs_ancestors).copied().collect();
+    fn best_common_bases(&self, heads: &[ObjectId]) -> Result<Vec<ObjectId>> {
+        let Some((first, rest)) = heads.split_first() else {
+            return Ok(Vec::new());
+        };
+        let mut common = self.ancestor_ids(*first)?;
+        for head in rest {
+            let ancestors = self.ancestor_ids(*head)?;
+            common.retain(|id| ancestors.contains(id));
+            if common.is_empty() { return Ok(Vec::new()); }
+        }
+        // Every parent of a common revision is also common. Removing direct
+        // parents therefore removes all dominated ancestors transitively.
         let mut dominated = HashSet::new();
         for id in &common {
             for parent in self.get_changeset(*id)?.parents {
@@ -1489,6 +1496,10 @@ impl Repository {
         Ok(best)
     }
 
+    fn best_merge_bases(&self, ours: ObjectId, theirs: ObjectId) -> Result<Vec<ObjectId>> {
+        self.best_common_bases(&[ours, theirs])
+    }
+
     /// Inspect ancestry without switching branches or mutating worktree.
     /// An unborn branch has no common ancestor with a committed branch.
     pub fn branch_merge_bases(&self, left: &str, right: &str) -> Result<Vec<ObjectId>> {
@@ -1498,16 +1509,99 @@ impl Repository {
         }
     }
 
-    fn merge_base(&self, ours: ObjectId, theirs: ObjectId) -> Result<Option<ObjectId>> {
-        let bases = self.best_merge_bases(ours, theirs)?;
-        match bases.as_slice() {
-            [] => Ok(None),
-            [id] => Ok(Some(*id)),
-            _ => Err(Error::Conflict(format!(
-                "multiple independent merge bases (criss-cross history): {};                  refusing unsafe merge until virtual-base merging is supported",
-                bases.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
-            ))),
+    /// Merge the immutable file states of the best common ancestors into a
+    /// temporary virtual base. Conflicting intermediate merges fail closed.
+    /// The recursive work is bounded to avoid untrusted-DAG resource abuse.
+    /// Virtual states are never published as changesets or refs.
+    fn virtual_merge_base(
+        &self, bases: &[ObjectId], budget: &mut usize
+    ) -> Result<BTreeMap<String, ObjectId>> {
+        if *budget == 0 || bases.len() > 64 {
+            return Err(Error::Invalid("virtual merge-base complexity limit reached".into()));
         }
+        *budget -= 1;
+        match bases {
+            [] => Err(Error::Conflict("unrelated merge histories".into())),
+            [only] => self.state_at(Some(*only)),
+            many => {
+                let older = self.best_common_bases(many)?;
+                if older.is_empty() {
+                    return Err(Error::Conflict(
+                        "multiple merge bases without a shared ancestor".into()
+                    ));
+                }
+                let ancestor = self.virtual_merge_base(&older, budget)?;
+                let mut result = ancestor.clone();
+                // Sort IDs before combining. No arbitrary side wins: shared
+                // modifications must agree or be conservatively text-merged.
+                for id in many {
+                    let next = self.state_at(Some(*id))?;
+                    result = self.merge_states(
+                        &ancestor, &result, &next, "virtual merge-base"
+                    )?;
+                }
+                Ok(result)
+            }
+        }
+    }
+
+    /// Conservative three-way merge shared by real merges and virtual bases.
+    /// Any file-level, binary, text-overlap or file/directory ambiguity fails
+    /// before a new changeset or worktree journal can be published.
+    fn merge_states(
+        &self,
+        base: &BTreeMap<String, ObjectId>,
+        ours: &BTreeMap<String, ObjectId>,
+        theirs: &BTreeMap<String, ObjectId>,
+        context: &str,
+    ) -> Result<BTreeMap<String, ObjectId>> {
+        let mut keys = BTreeSet::new();
+        keys.extend(base.keys().cloned());
+        keys.extend(ours.keys().cloned());
+        keys.extend(theirs.keys().cloned());
+        let mut merged = BTreeMap::new();
+        let mut conflicts = Vec::new();
+        for path in keys {
+            let original = base.get(&path);
+            let local = ours.get(&path);
+            let remote = theirs.get(&path);
+            let chosen = if local == remote { local.copied() }
+                else if local == original { remote.copied() }
+                else if remote == original { local.copied() }
+                else {
+                    match (original, local, remote) {
+                        (Some(base_id), Some(our_id), Some(their_id)) => {
+                            let b = self.blob_bytes(*base_id)?;
+                            let o = self.blob_bytes(*our_id)?;
+                            let t = self.blob_bytes(*their_id)?;
+                            if let Some(bytes) = crate::text_merge::merge_text(&b, &o, &t) {
+                                Some(self.store.put(BLOB, &bytes)?)
+                            } else {
+                                conflicts.push(path.clone());
+                                continue;
+                            }
+                        }
+                        _ => { conflicts.push(path.clone()); continue }
+                    }
+                };
+            if let Some(id) = chosen { merged.insert(path, id); }
+        }
+        // No file may also be an ancestor directory of another file.
+        for path in merged.keys() {
+            for (idx, chr) in path.char_indices() {
+                if chr == '/' && merged.contains_key(&path[..idx]) {
+                    conflicts.push(path.clone());
+                }
+            }
+        }
+        if !conflicts.is_empty() {
+            conflicts.sort();
+            conflicts.dedup();
+            return Err(Error::Conflict(format!(
+                "{context} conflicts in: {}", conflicts.join(", ")
+            )));
+        }
+        Ok(merged)
     }
 
     /// Conservative merge: independent lines merge, ambiguous changes reject safely.
@@ -1529,19 +1623,18 @@ impl Repository {
         let ours = self.head()?.ok_or_else(|| Error::Invalid("cannot merge into unborn branch".into()))?;
         let theirs = self.branch_tip(name)?.ok_or_else(|| Error::Invalid("cannot merge unborn branch".into()))?;
         if ours == theirs { return Ok(ours); }
-        let base_id = self.merge_base(ours, theirs)?.ok_or_else(|| {
-            Error::Conflict(
+        let bases = self.best_merge_bases(ours, theirs)?;
+        if bases.is_empty() {
+            return Err(Error::Conflict(
                 "branches have unrelated histories; refusing merge without a common ancestor".into()
-            )
-        })?;
-        if base_id == theirs {
+            ));
+        }
+        if bases.len() == 1 && bases[0] == theirs {
             // Already contains the source branch. There is nothing to do.
             return Ok(ours);
         }
-        if base_id == ours {
-            // Fast-forward the original branch without manufacturing a new
-            // changeset. The worktree and branchref still need a recoverable
-            // two-phase transition: durable journal first, ref CAS last.
+        if bases.len() == 1 && bases[0] == ours {
+            // A fast-forward still requires durable journal replay before CAS.
             self.begin_transition(&PendingTransition {
                 operation: "fast-forward".into(),
                 from_branch: branch.clone(),
@@ -1552,52 +1645,25 @@ impl Repository {
             self.recover_locked()?;
             return Ok(theirs);
         }
-        let base = self.state_at(Some(base_id))?;
+        let mut budget = 128usize;
+        let base = self.virtual_merge_base(&bases, &mut budget)?;
         let our_files = self.state_at(Some(ours))?;
         let their_files = self.state_at(Some(theirs))?;
-        let mut keys = BTreeSet::new();
-        keys.extend(base.keys().cloned());
-        keys.extend(our_files.keys().cloned());
-        keys.extend(their_files.keys().cloned());
-        let mut merged = BTreeMap::new();
-        let mut conflicts = Vec::new();
-        for path in keys {
-            let original = base.get(&path);
-            let local = our_files.get(&path);
-            let remote = their_files.get(&path);
-            let chosen = if local == remote { local.copied() }
-                else if local == original { remote.copied() }
-                else if remote == original { local.copied() }
-                else {
-                    match (original, local, remote) {
-                        (Some(base_id), Some(our_id), Some(their_id)) => {
-                            let base = self.blob_bytes(*base_id)?;
-                            let our_bytes = self.blob_bytes(*our_id)?;
-                            let their_bytes = self.blob_bytes(*their_id)?;
-                            if let Some(bytes) = crate::text_merge::merge_text(&base, &our_bytes, &their_bytes) {
-                                Some(self.store.put(BLOB, &bytes)?)
-                            } else {
-                                conflicts.push(path.clone());
-                                continue;
-                            }
-                        }
-                        _ => { conflicts.push(path.clone()); continue }
-                    }
-                };
-            if let Some(id) = chosen { merged.insert(path, id); }
-        }
-        // Reject file/directory collisions before publishing the merge commit.
-        for path in merged.keys() {
-            for (idx, chr) in path.char_indices() {
-                if chr == '/' && merged.contains_key(&path[..idx]) {
-                    conflicts.push(path.clone());
+        let merged = self.merge_states(&base, &our_files, &their_files, "merge")?;
+        if bases.len() > 1 {
+            // Some criss-cross histories contain competing resolutions of
+            // earlier merges. If one side retains a virtual-base file while
+            // the other deletes it, a naive three-way merge may erase data
+            // that appears in a branch without an explicit conflict. Fail
+            // closed until typed resolution records are supported.
+            for (path, id) in &base {
+                if (our_files.get(path) == Some(id) && !their_files.contains_key(path))
+                    || (their_files.get(path) == Some(id) && !our_files.contains_key(path)) {
+                    return Err(Error::Conflict(format!(
+                        "virtual merge-base deletion ambiguity at {path}"
+                    )));
                 }
             }
-        }
-        if !conflicts.is_empty() {
-            conflicts.sort();
-            conflicts.dedup();
-            return Err(Error::Conflict(format!("merge conflicts in: {}", conflicts.join(", "))));
         }
         let mut changes = Vec::new();
         for (path, id) in &merged {
@@ -3047,13 +3113,144 @@ mod tests {
         assert!(r.status().unwrap().is_empty());
         assert_eq!(r.branch_merge_bases("main", "feature").unwrap(), expected);
         let err = r.merge_branch("feature", "tester", "ambiguous merge").unwrap_err();
-        assert!(format!("{err}").contains("multiple independent merge bases"));
+        assert!(format!("{err}").contains("virtual merge-base deletion ambiguity"));
         assert_eq!(r.head().unwrap(), Some(left));
         assert!(r.pending_transition().unwrap().is_none());
         assert_eq!(fs::read(dir.path().join("main")).unwrap(), b"main contents");
         assert!(!dir.path().join("feature").exists());
         // No attempted changeset or branch mutation, and all v1 history
         // remains reconstructable.
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn criss_cross_with_clean_virtual_base_merges_without_losing_data() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("base"), b"shared").unwrap();
+        let root = r.commit("tester", "root").unwrap();
+        r.create_branch("feature").unwrap();
+        r.switch_branch("feature").unwrap();
+        fs::write(dir.path().join("b"), b"branch-b").unwrap();
+        let b = r.commit("tester", "B").unwrap();
+        r.switch_branch("main").unwrap();
+        fs::write(dir.path().join("a"), b"branch-a").unwrap();
+        let a = r.commit("tester", "A").unwrap();
+
+        // Each synthetic merge records the other parent's independent
+        // addition. Their first-parent snapshots thus both preserve A+B.
+        // Left and right then add their own independent content.
+        let add_merge = |parents: Vec<ObjectId>, changes: Vec<Change>, label: &str| {
+            let commit = Changeset {
+                parents, changes, author: "tester".into(),
+                message: label.into(), timestamp_seconds: 1,
+            };
+            let encoded = commit.encode().unwrap();
+            let (_, bytes) = decode_object(&encoded).unwrap();
+            r.store.put(CHANGESET, bytes).unwrap()
+        };
+        let a_blob = r.state_at(Some(a)).unwrap()["a"];
+        let b_blob = r.state_at(Some(b)).unwrap()["b"];
+        let left_blob = r.store.put(BLOB, b"left").unwrap();
+        let right_blob = r.store.put(BLOB, b"right").unwrap();
+        let left = add_merge(vec![a, b], vec![
+            Change { kind: ChangeKind::Add, path: "b".into(), blob: Some(b_blob) },
+            Change { kind: ChangeKind::Add, path: "left".into(), blob: Some(left_blob) },
+        ], "left resolution");
+        let right = add_merge(vec![b, a], vec![
+            Change { kind: ChangeKind::Add, path: "a".into(), blob: Some(a_blob) },
+            Change { kind: ChangeKind::Add, path: "right".into(), blob: Some(right_blob) },
+        ], "right resolution");
+        let mut expected = vec![a, b];
+        expected.sort();
+        assert_eq!(r.best_merge_bases(left, right).unwrap(), expected);
+
+        // The current worktree is A. Materialize the synthetic left tip
+        // before updating refs; no branch switch is needed.
+        r.materialize(
+            &r.state_at(Some(left)).unwrap(),
+            &r.state_at(Some(a)).unwrap()
+        ).unwrap();
+        r.db.execute("UPDATE refs SET oid=?1 WHERE name='main'",
+                     [left.to_string()]).unwrap();
+        r.db.execute("UPDATE refs SET oid=?1 WHERE name='feature'",
+                     [right.to_string()]).unwrap();
+        assert!(r.status().unwrap().is_empty());
+        let result = r.merge_branch("feature", "tester", "recursive bases").unwrap();
+        assert_eq!(r.get_changeset(result).unwrap().parents, vec![left, right]);
+        for (path, expected) in [
+            ("a", b"branch-a".as_slice()),
+            ("b", b"branch-b".as_slice()),
+            ("left", b"left".as_slice()),
+            ("right", b"right".as_slice()),
+        ] {
+            assert_eq!(fs::read(dir.path().join(path)).unwrap(), expected);
+        }
+        assert_eq!(r.state_at(Some(root)).unwrap().len(), 1);
+        assert!(r.pending_transition().unwrap().is_none());
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn virtual_base_combines_three_independent_ancestors_with_bounded_work() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("root"), b"root").unwrap();
+        let root = r.commit("tester", "root").unwrap();
+        let mut alternatives = Vec::new();
+        for (name, bytes) in [("alpha", b"A".as_slice()),
+                               ("beta", b"B".as_slice()),
+                               ("gamma", b"C".as_slice())] {
+            let blob = r.store.put(BLOB, bytes).unwrap();
+            let commit = Changeset {
+                parents: vec![root], author: "tester".into(),
+                message: name.into(), timestamp_seconds: 1,
+                changes: vec![Change {
+                    kind: ChangeKind::Add, path: name.into(), blob: Some(blob)
+                }],
+            };
+            let raw = commit.encode().unwrap();
+            let (_, data) = decode_object(&raw).unwrap();
+            alternatives.push(r.store.put(CHANGESET, data).unwrap());
+        }
+        alternatives.sort();
+        let mut budget = 128;
+        let state = r.virtual_merge_base(&alternatives, &mut budget).unwrap();
+        assert_eq!(state.len(), 4);
+        for name in ["root", "alpha", "beta", "gamma"] {
+            assert!(state.contains_key(name), "{name}");
+        }
+        assert!(budget < 128);
+        let mut no_budget = 0;
+        assert!(r.virtual_merge_base(&alternatives, &mut no_budget).is_err());
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn conflicting_virtual_bases_fail_without_publishing_a_merge() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("overlap"), b"root").unwrap();
+        let root = r.commit("tester", "root").unwrap();
+        let mut alternatives = Vec::new();
+        for payload in [b"first".as_slice(), b"second".as_slice()] {
+            let blob = r.store.put(BLOB, payload).unwrap();
+            let commit = Changeset {
+                parents: vec![root], author: "tester".into(),
+                message: String::from_utf8(payload.to_vec()).unwrap(),
+                timestamp_seconds: 1,
+                changes: vec![Change {
+                    kind: ChangeKind::Modify, path: "overlap".into(), blob: Some(blob)
+                }],
+            };
+            let raw = commit.encode().unwrap();
+            let (_, data) = decode_object(&raw).unwrap();
+            alternatives.push(r.store.put(CHANGESET, data).unwrap());
+        }
+        alternatives.sort();
+        let mut budget = 128;
+        let err = r.virtual_merge_base(&alternatives, &mut budget).unwrap_err();
+        assert!(format!("{err}").contains("virtual merge-base conflicts"));
+        assert_eq!(r.head().unwrap(), Some(root));
+        assert_eq!(fs::read(dir.path().join("overlap")).unwrap(), b"root");
+        assert!(r.pending_transition().unwrap().is_none());
         assert!(r.fsck().is_ok());
     }
 
