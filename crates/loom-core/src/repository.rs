@@ -85,6 +85,12 @@ impl Repository {
                  branch TEXT PRIMARY KEY NOT NULL,
                  oid TEXT NOT NULL
              );
+             CREATE TABLE IF NOT EXISTS revision_file_cache (
+                 revision_oid TEXT NOT NULL,
+                 path TEXT NOT NULL,
+                 blob_oid TEXT,
+                 PRIMARY KEY (revision_oid, path)
+             );
              CREATE TABLE IF NOT EXISTS workspace_journal (
                  id INTEGER PRIMARY KEY CHECK(id=1),
                  operation TEXT NOT NULL,
@@ -829,6 +835,63 @@ impl Repository {
                 || prefix.is_some_and(|p| path.as_str() == p)
                 || directory_prefix.as_ref().is_some_and(|p| path.starts_with(p.as_str()))
         }).collect())
+    }
+
+    /// Resolve one file at a historical changeset without constructing the
+    /// complete tree. v1 deltas use the first parent as their state base.
+    /// The cache stores query results only; immutable changesets are the
+    /// authoritative source and allow rebuilding the cache at any time.
+    fn resolve_revision_path(
+        &self, revision: ObjectId, path: &str
+    ) -> Result<Option<ObjectId>> {
+        let mut cursor = Some(revision);
+        let mut visited = HashSet::new();
+        while let Some(id) = cursor {
+            if visited.len() >= 1_000_000 {
+                return Err(Error::Invalid("history depth limit reached".into()));
+            }
+            if !visited.insert(id) {
+                return Err(Error::Invalid("cycle in first-parent history".into()));
+            }
+            let commit = self.get_changeset(id)?;
+            // Canonical changesets always contain sorted, unique path entries.
+            if let Ok(pos) = commit.changes.binary_search_by(|c| c.path.as_str().cmp(path)) {
+                return Ok(commit.changes[pos].blob);
+            }
+            cursor = commit.parents.first().copied();
+        }
+        Ok(None)
+    }
+
+    /// Return a file's bytes at any native changeset ID, without checking out
+    /// the revision. Cache hits require one indexed SQLite lookup and the
+    /// requested immutable blob read; a cache miss walks only change metadata
+    /// along the first-parent chain rather than materializing all paths.
+    pub fn read_revision_file(
+        &self, revision: ObjectId, path: &str
+    ) -> Result<Option<Vec<u8>>> {
+        validate_path(path)?;
+        // A cache hit must not turn a missing/non-changeset revision into a
+        // valid lookup. The requested revision itself is always checked.
+        self.get_changeset(revision)?;
+        let key = revision.to_string();
+        let cached: Option<Option<String>> = self.db.query_row(
+            "SELECT blob_oid FROM revision_file_cache
+             WHERE revision_oid=?1 AND path=?2",
+            params![&key, path], |row| row.get(0),
+        ).optional()?;
+        let blob = if let Some(value) = cached {
+            value.map(|raw| ObjectId::parse(&raw)).transpose()?
+        } else {
+            let resolved = self.resolve_revision_path(revision, path)?;
+            self.db.execute(
+                "INSERT OR IGNORE INTO revision_file_cache(revision_oid,path,blob_oid)
+                 VALUES(?1,?2,?3)",
+                params![&key, path, resolved.map(|id| id.to_string())],
+            )?;
+            resolved
+        };
+        blob.map(|id| self.blob_bytes(id)).transpose()
     }
 
     /// Read a file from a branch tip using the derived path index when it
