@@ -247,12 +247,21 @@ pub(crate) fn apply_changes(
             let existing = entries.remove(name);
             let replacement = match child.value {
                 Some(Some(blob)) => {
-                    // A file cannot contain another added file; deleting
-                    // old nested files while replacing a directory is valid.
+                    // A file cannot contain another added file. When
+                    // replacing an existing directory with a file, all
+                    // tracked descendants must be explicitly deleted.
                     if child.children.values().any(Edits::has_additions) {
                         return Err(Error::Invalid(format!(
                             "file/directory collision at native tree entry: {name}"
                         )));
+                    }
+                    if let Some(previous) = &existing {
+                        if previous.kind == TreeEntryKind::Directory &&
+                            apply_dir(store, Some(previous.object), child, depth + 1)?.is_some() {
+                            return Err(Error::Invalid(format!(
+                                "native tree directory has undeleted descendants: {name}"
+                            )));
+                        }
                     }
                     Some(TreeEntry {
                         name: name.clone(),
@@ -262,8 +271,16 @@ pub(crate) fn apply_changes(
                     })
                 }
                 Some(None) => {
-                    // Delete this path first, then apply changes below it.
-                    // This allows file -> directory replacement atomically.
+                    // A directory cannot be deleted as if it were a file
+                    // in the v1 changeset model. A removed file can instead
+                    // be replaced with a directory in the same batch.
+                    if existing.as_ref().is_some_and(|e|
+                        e.kind == TreeEntryKind::Directory
+                    ) {
+                        return Err(Error::Invalid(format!(
+                            "native tree deletion targets a directory: {name}"
+                        )));
+                    }
                     let next = apply_dir(store, None, child, depth + 1)?;
                     next.map(|id| TreeEntry {
                         name: name.clone(),
@@ -561,6 +578,18 @@ mod tests {
             blob: Some(a),
         };
         assert!(apply_changes(&store, root, &[add("file/nested")]).is_err());
+        let nested = write_snapshot(&store, &BTreeMap::from([
+            ("dir/a".to_string(), a),
+            ("dir/b".to_string(), a),
+        ])).unwrap();
+        assert!(apply_changes(&store, nested, &[add("dir")]).is_err());
+        assert!(apply_changes(&store, nested, &[Change {
+            kind: ChangeKind::Delete, path: "dir".into(), blob: None
+        }]).is_err());
+        assert!(apply_changes(&store, nested, &[
+            add("dir"), Change { kind: ChangeKind::Delete,
+                                  path: "dir/a".into(), blob: None }
+        ]).is_err(), "other directory descendants must not disappear silently");
         assert!(apply_changes(&store, root, &[add("x"), add("x/y")]).is_err());
         assert!(apply_changes(&store, root, &[add("../escape")]).is_err());
         assert!(apply_changes(&store, root, &[
