@@ -3124,6 +3124,137 @@ mod tests {
     }
 
     #[test]
+    fn criss_cross_with_clean_virtual_base_merges_without_losing_data() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("base"), b"shared").unwrap();
+        let root = r.commit("tester", "root").unwrap();
+        r.create_branch("feature").unwrap();
+        r.switch_branch("feature").unwrap();
+        fs::write(dir.path().join("b"), b"branch-b").unwrap();
+        let b = r.commit("tester", "B").unwrap();
+        r.switch_branch("main").unwrap();
+        fs::write(dir.path().join("a"), b"branch-a").unwrap();
+        let a = r.commit("tester", "A").unwrap();
+
+        // Each synthetic merge records the other parent's independent
+        // addition. Their first-parent snapshots thus both preserve A+B.
+        // Left and right then add their own independent content.
+        let add_merge = |parents: Vec<ObjectId>, changes: Vec<Change>, label: &str| {
+            let commit = Changeset {
+                parents, changes, author: "tester".into(),
+                message: label.into(), timestamp_seconds: 1,
+            };
+            let encoded = commit.encode().unwrap();
+            let (_, bytes) = decode_object(&encoded).unwrap();
+            r.store.put(CHANGESET, bytes).unwrap()
+        };
+        let a_blob = r.state_at(Some(a)).unwrap()["a"];
+        let b_blob = r.state_at(Some(b)).unwrap()["b"];
+        let left_blob = r.store.put(BLOB, b"left").unwrap();
+        let right_blob = r.store.put(BLOB, b"right").unwrap();
+        let left = add_merge(vec![a, b], vec![
+            Change { kind: ChangeKind::Add, path: "b".into(), blob: Some(b_blob) },
+            Change { kind: ChangeKind::Add, path: "left".into(), blob: Some(left_blob) },
+        ], "left resolution");
+        let right = add_merge(vec![b, a], vec![
+            Change { kind: ChangeKind::Add, path: "a".into(), blob: Some(a_blob) },
+            Change { kind: ChangeKind::Add, path: "right".into(), blob: Some(right_blob) },
+        ], "right resolution");
+        let mut expected = vec![a, b];
+        expected.sort();
+        assert_eq!(r.best_merge_bases(left, right).unwrap(), expected);
+
+        // The current worktree is A. Materialize the synthetic left tip
+        // before updating refs; no branch switch is needed.
+        r.materialize(
+            &r.state_at(Some(left)).unwrap(),
+            &r.state_at(Some(a)).unwrap()
+        ).unwrap();
+        r.db.execute("UPDATE refs SET oid=?1 WHERE name='main'",
+                     [left.to_string()]).unwrap();
+        r.db.execute("UPDATE refs SET oid=?1 WHERE name='feature'",
+                     [right.to_string()]).unwrap();
+        assert!(r.status().unwrap().is_empty());
+        let result = r.merge_branch("feature", "tester", "recursive bases").unwrap();
+        assert_eq!(r.get_changeset(result).unwrap().parents, vec![left, right]);
+        for (path, expected) in [
+            ("a", b"branch-a".as_slice()),
+            ("b", b"branch-b".as_slice()),
+            ("left", b"left".as_slice()),
+            ("right", b"right".as_slice()),
+        ] {
+            assert_eq!(fs::read(dir.path().join(path)).unwrap(), expected);
+        }
+        assert_eq!(r.state_at(Some(root)).unwrap().len(), 1);
+        assert!(r.pending_transition().unwrap().is_none());
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn virtual_base_combines_three_independent_ancestors_with_bounded_work() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("root"), b"root").unwrap();
+        let root = r.commit("tester", "root").unwrap();
+        let mut alternatives = Vec::new();
+        for (name, bytes) in [("alpha", b"A".as_slice()),
+                               ("beta", b"B".as_slice()),
+                               ("gamma", b"C".as_slice())] {
+            let blob = r.store.put(BLOB, bytes).unwrap();
+            let commit = Changeset {
+                parents: vec![root], author: "tester".into(),
+                message: name.into(), timestamp_seconds: 1,
+                changes: vec![Change {
+                    kind: ChangeKind::Add, path: name.into(), blob: Some(blob)
+                }],
+            };
+            let raw = commit.encode().unwrap();
+            let (_, data) = decode_object(&raw).unwrap();
+            alternatives.push(r.store.put(CHANGESET, data).unwrap());
+        }
+        alternatives.sort();
+        let mut budget = 128;
+        let state = r.virtual_merge_base(&alternatives, &mut budget).unwrap();
+        assert_eq!(state.len(), 4);
+        for name in ["root", "alpha", "beta", "gamma"] {
+            assert!(state.contains_key(name), "{name}");
+        }
+        assert!(budget < 128);
+        let mut no_budget = 0;
+        assert!(r.virtual_merge_base(&alternatives, &mut no_budget).is_err());
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn conflicting_virtual_bases_fail_without_publishing_a_merge() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("overlap"), b"root").unwrap();
+        let root = r.commit("tester", "root").unwrap();
+        let mut alternatives = Vec::new();
+        for payload in [b"first".as_slice(), b"second".as_slice()] {
+            let blob = r.store.put(BLOB, payload).unwrap();
+            let commit = Changeset {
+                parents: vec![root], author: "tester".into(),
+                message: String::from_utf8(payload.to_vec()).unwrap(),
+                timestamp_seconds: 1,
+                changes: vec![Change {
+                    kind: ChangeKind::Modify, path: "overlap".into(), blob: Some(blob)
+                }],
+            };
+            let raw = commit.encode().unwrap();
+            let (_, data) = decode_object(&raw).unwrap();
+            alternatives.push(r.store.put(CHANGESET, data).unwrap());
+        }
+        alternatives.sort();
+        let mut budget = 128;
+        let err = r.virtual_merge_base(&alternatives, &mut budget).unwrap_err();
+        assert!(format!("{err}").contains("virtual merge-base conflicts"));
+        assert_eq!(r.head().unwrap(), Some(root));
+        assert_eq!(fs::read(dir.path().join("overlap")).unwrap(), b"root");
+        assert!(r.pending_transition().unwrap().is_none());
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
     fn unrelated_histories_have_no_common_merge_base() {
         let (dir, r) = repo();
         fs::write(dir.path().join("file"), b"one").unwrap();
