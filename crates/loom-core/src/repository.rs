@@ -1635,6 +1635,74 @@ mod tests {
         assert!(r.fsck().is_err());
     }
 
+
+    #[test]
+    fn indexed_add_handles_create_modify_and_delete_with_precise_status() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("tracked"), b"original").unwrap();
+        r.commit("tester", "base").unwrap();
+        fs::write(dir.path().join("tracked"), b"prepared").unwrap();
+        fs::write(dir.path().join("new"), b"new").unwrap();
+        r.add("tracked").unwrap();
+        r.add("new").unwrap();
+        assert_eq!(r.staged_status().unwrap(), vec![
+            StatusEntry { path: "new".into(), kind: StatusKind::Added },
+            StatusEntry { path: "tracked".into(), kind: StatusKind::Modified },
+        ]);
+        r.commit("tester", "both").unwrap();
+        assert!(r.staged_status().unwrap().is_empty());
+        fs::remove_file(dir.path().join("tracked")).unwrap();
+        r.add("tracked").unwrap();
+        assert_eq!(r.staged_status().unwrap(), vec![
+            StatusEntry { path: "tracked".into(), kind: StatusKind::Deleted }
+        ]);
+        r.commit("tester", "delete").unwrap();
+        assert_eq!(r.read_branch_file("main", "tracked").unwrap(), None);
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn indexed_add_rebuilds_evicted_and_stale_branch_data() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("one"), b"first").unwrap();
+        r.commit("tester", "base").unwrap();
+        fs::write(dir.path().join("one"), b"second").unwrap();
+        r.add("one").unwrap();
+        r.commit("tester", "second").unwrap();
+        r.db.execute("DELETE FROM branch_path_index_tip", []).unwrap();
+        r.db.execute("DELETE FROM branch_path_index", []).unwrap();
+        fs::write(dir.path().join("one"), b"third").unwrap();
+        r.add("one").unwrap();
+        assert_eq!(r.staged_status().unwrap(), vec![
+            StatusEntry { path: "one".into(), kind: StatusKind::Modified }
+        ]);
+        r.commit("tester", "third").unwrap();
+        r.db.execute(
+            "UPDATE branch_path_index_tip SET oid=?1 WHERE branch='main'",
+            [ObjectId([4; 32]).to_string()]
+        ).unwrap();
+        fs::remove_file(dir.path().join("one")).unwrap();
+        r.add("one").unwrap();
+        assert_eq!(r.staged_status().unwrap(), vec![
+            StatusEntry { path: "one".into(), kind: StatusKind::Deleted }
+        ]);
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn staged_status_falls_back_to_authoritative_history_for_legacy_tip() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("old"), b"original").unwrap();
+        r.commit("tester", "base").unwrap();
+        fs::write(dir.path().join("old"), b"changed").unwrap();
+        r.add("old").unwrap();
+        r.db.execute("DELETE FROM branch_path_index_tip", []).unwrap();
+        assert_eq!(r.staged_status().unwrap(), vec![
+            StatusEntry { path: "old".into(), kind: StatusKind::Modified }
+        ]);
+        assert!(r.fsck().is_ok());
+    }
+
     #[test] fn corrupt_object_detected() {
         let (_dir, r) = repo();
         let oid = r.store.put(BLOB, b"x").unwrap();
