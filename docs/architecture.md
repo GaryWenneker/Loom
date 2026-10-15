@@ -12,6 +12,7 @@ Loom is a standalone version control system with its own object storage engine a
 6. Workspaces are untrusted: traversal paths and symlinks must never escape the repository.
 7. Derived indexes may be discarded and rebuilt.
 8. Server mode and Git adapters cannot change canonical object IDs.
+9. Pre-existing symlinks and special files at the native metadata directory, SQLite database/sidecars and workspace lock are rejected before opening. This is a defensive check, not a guarantee against concurrent filesystem replacement races.
 
 ## MVP data path
 
