@@ -77,7 +77,12 @@ impl ObjectStore {
             drop(file);
             self.checked_parent(id)?;
             match fs::hard_link(&tmp, &path) {
-                Ok(()) => {},
+                Ok(()) => {
+                    // Drop the temporary alias before any other writer can
+                    // validate the newly published object. Other writers may
+                    // still observe the short publication window.
+                    fs::remove_file(&tmp)?;
+                },
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                     // Another writer published first. Never modify their inode.
                     self.get(id)?;
@@ -88,7 +93,7 @@ impl ObjectStore {
             fs::File::open(parent)?.sync_all()?;
             Ok(())
         })();
-        let cleanup_result = fs::remove_file(&tmp);
+        let cleanup_result = if tmp.exists() { fs::remove_file(&tmp) } else { Ok(()) };
         publish_result?;
         cleanup_result?;
         Ok(id)
@@ -112,6 +117,8 @@ impl ObjectStore {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
+            // Publication briefly creates two links (temporary and final).
+            // The writer must remove its temporary link before validation.
             if open_metadata.nlink() != 1 {
                 return Err(Error::Invalid(format!("object has multiple hard links: {id}")));
             }
