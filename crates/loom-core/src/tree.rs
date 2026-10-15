@@ -512,6 +512,25 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_id_is_deterministic_for_same_file_map() {
+        use crate::format::BLOB;
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join(".loom");
+        fs::create_dir(&meta).unwrap();
+        fs::create_dir(meta.join("objects")).unwrap();
+        let store = crate::store::ObjectStore::new(&meta);
+        let blob = store.put(BLOB, b"same").unwrap();
+        let mut state = std::collections::BTreeMap::new();
+        state.insert("z/file".into(), blob);
+        state.insert("a/file".into(), blob);
+        let first = write_snapshot(&store, &state).unwrap();
+        let second = write_snapshot(&store, &state).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(flatten_snapshot(&store, first).unwrap(), state);
+    }
+
+    #[test]
     fn roundtrip_and_deterministic_identity() {
         let source = tree();
         let bytes = source.encode().unwrap();
