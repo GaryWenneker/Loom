@@ -1046,7 +1046,7 @@ mod tests {
     }
 
     #[test] fn corrupt_object_detected() {
-        let (_, r) = repo();
+        let (_dir, r) = repo();
         let oid = r.store.put(BLOB, b"x").unwrap();
         fs::write(r.store.path_for_test(oid), b"corrupt").unwrap();
         assert!(r.fsck().is_err());

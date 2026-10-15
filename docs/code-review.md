@@ -4,8 +4,8 @@
 
 | Severity | Finding | Code area | Required work |
 |---|---|---|---|
-| Critical | Object publication uses rename after a check. Competing processes can overwrite the same immutable object path. | `store.rs::put` | Atomic create-if-absent, verify competing object and test races |
-| Critical | Object reads follow symlinks and trust path components. | `store.rs::get` | No-follow traversal with platform-specific tests |
+| Critical | Object publication previously used a clobbering rename after a check. | `store.rs::put` | This PR introduces atomic hard-link create-if-absent and concurrent-writer tests; remaining directory races and durability require follow-up |
+| Critical | Object reads followed symlinks and trust path components. | `store.rs::get` | This PR validates link types, directories and bounded reads. Race-free no-follow path traversal is **not yet certified** |
 | High | Worktree materialization and the DB are separate durability domains; partial recovery is not proof against power loss or path races. | `repository.rs::materialize` | Fault injection and safe recovery model |
 | High | Full worktree scans on add, commit, status, diff and switching; unrelated large or unsupported files can block useful operations. | `repository.rs` | Incremental staging and indexed tree queries |
 | High | History state requires first-parent replay; merge-base handling does not cover every multi-base DAG. | `repository.rs` | Rebuildable checkpoints, robust ancestry indices and merge-base semantics |
