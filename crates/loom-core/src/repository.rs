@@ -2031,6 +2031,103 @@ mod tests {
                    Some(vec![0, 1, 255, 0, 7]));
     }
 
+
+    #[test]
+    fn historical_tree_snapshots_are_branch_independent_and_rebuildable() {
+        let (dir, r) = repo();
+        fs::create_dir(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/a"), b"a1").unwrap();
+        fs::write(dir.path().join("src/b"), b"b1").unwrap();
+        fs::write(dir.path().join("src2"), b"not-src").unwrap();
+        let base = r.commit("tester", "base").unwrap();
+
+        r.create_branch("feature").unwrap();
+        r.switch_branch("feature").unwrap();
+        fs::remove_file(dir.path().join("src/a")).unwrap();
+        fs::write(dir.path().join("src/b"), b"b2").unwrap();
+        fs::write(dir.path().join("feature"), b"new").unwrap();
+        let tip = r.commit("tester", "feature version").unwrap();
+
+        let original = vec!["src/a".to_owned(), "src/b".to_owned()];
+        assert_eq!(r.list_revision_files(base, Some("src")).unwrap(), original);
+        // The already-cached base becomes a checkpoint for its descendants.
+        assert_eq!(r.list_revision_files(tip, Some("src")).unwrap(),
+                   vec!["src/b"]);
+        assert_eq!(r.list_revision_files(tip, Some("src2")).unwrap(),
+                   vec!["src2"]);
+        assert_eq!(r.list_revision_files(tip, None).unwrap(),
+                   vec!["feature", "src/b", "src2"]);
+        assert_eq!(r.list_revision_files(base, None).unwrap(),
+                   vec!["src/a", "src/b", "src2"]);
+
+        let expected_count: i64 = r.db.query_row(
+            "SELECT entry_count FROM revision_tree_index_tip
+             WHERE revision_oid=?1",
+            [tip.to_string()], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(expected_count, 3);
+        r.db.execute("DELETE FROM revision_tree_index_tip", []).unwrap();
+        r.db.execute("DELETE FROM revision_tree_index", []).unwrap();
+        assert_eq!(r.list_revision_files(tip, None).unwrap(),
+                   vec!["feature", "src/b", "src2"]);
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn historical_tree_cache_detects_corruption_and_partial_markers() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("one"), b"one").unwrap();
+        fs::write(dir.path().join("two"), b"two").unwrap();
+        let revision = r.commit("tester", "base").unwrap();
+        assert_eq!(r.list_revision_files(revision, None).unwrap(),
+                   vec!["one", "two"]);
+        assert!(r.fsck().is_ok());
+
+        r.db.execute(
+            "DELETE FROM revision_tree_index WHERE revision_oid=?1 AND path='two'",
+            [revision.to_string()],
+        ).unwrap();
+        assert!(r.fsck().is_err(), "missing index entry must be detected");
+        r.db.execute(
+            "DELETE FROM revision_tree_index_tip WHERE revision_oid=?1",
+            [revision.to_string()],
+        ).unwrap();
+        assert!(r.fsck().is_err(), "dangling entries must be detected");
+
+        r.db.execute("DELETE FROM revision_tree_index", []).unwrap();
+        assert_eq!(r.list_revision_files(revision, None).unwrap(),
+                   vec!["one", "two"]);
+        assert!(r.fsck().is_ok());
+        let other_blob = r.state_at(Some(revision)).unwrap()["two"];
+        r.db.execute(
+            "UPDATE revision_tree_index SET blob_oid=?1
+             WHERE revision_oid=?2 AND path='one'",
+            params![other_blob.to_string(), revision.to_string()],
+        ).unwrap();
+        assert!(r.fsck().is_err(),
+                "a valid but incorrect blob reference is still corruption");
+    }
+
+    #[test]
+    fn historical_tree_handles_empty_snapshots_and_unknown_revisions() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("temporary"), b"file").unwrap();
+        r.commit("tester", "add").unwrap();
+        fs::remove_file(dir.path().join("temporary")).unwrap();
+        let empty = r.commit("tester", "delete").unwrap();
+        assert!(r.list_revision_files(empty, None).unwrap().is_empty());
+        assert!(r.list_revision_files(empty, Some("temporary")).unwrap().is_empty());
+        let count: i64 = r.db.query_row(
+            "SELECT entry_count FROM revision_tree_index_tip
+             WHERE revision_oid=?1",
+            [empty.to_string()], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, 0);
+        assert!(r.list_revision_files(ObjectId([5; 32]), None).is_err());
+        assert!(r.list_revision_files(empty, Some("../unsafe")).is_err());
+        assert!(r.fsck().is_ok());
+    }
+
     #[test] fn corrupt_object_detected() {
         let (_dir, r) = repo();
         let oid = r.store.put(BLOB, b"x").unwrap();
