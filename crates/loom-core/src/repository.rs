@@ -2420,6 +2420,75 @@ mod tests {
         assert!(r.fsck().is_err());
     }
 
+    #[test]
+    fn incremental_native_roots_match_every_first_parent_revision() {
+        let (dir, r) = repo();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::create_dir_all(dir.path().join("untouched")).unwrap();
+        fs::write(dir.path().join("src/a"), b"first").unwrap();
+        fs::write(dir.path().join("untouched/b"), b"stable").unwrap();
+        let first = r.commit("tester", "initial").unwrap();
+        let original_root = r.native_tree_root(first).unwrap();
+        let sibling = r.native_tree_entries(original_root, None).unwrap()
+            .into_iter().find(|e| e.name == "untouched").unwrap().object;
+
+        let mut current = first;
+        for i in 0..24 {
+            fs::write(dir.path().join("src/a"), format!("value-{i}")).unwrap();
+            r.add("src/a").unwrap();
+            current = r.commit("tester", &format!("update-{i}")).unwrap();
+            let incrementally_built = r.native_tree_root(current).unwrap();
+            let fully_rebuilt = crate::tree::write_snapshot(
+                &r.store, &r.state_at(Some(current)).unwrap()
+            ).unwrap();
+            assert_eq!(incrementally_built, fully_rebuilt);
+            assert_eq!(r.native_tree_file(incrementally_built, "src/a").unwrap(),
+                       Some(format!("value-{i}").into_bytes()));
+            let preserved = r.native_tree_entries(incrementally_built, None).unwrap()
+                .into_iter().find(|e| e.name == "untouched").unwrap().object;
+            assert_eq!(sibling, preserved);
+        }
+        assert!(r.fsck().is_ok());
+        let current_root = r.native_tree_root(current).unwrap();
+        // The optional revision-to-tree mapping is entirely rebuildable.
+        r.db.execute("DELETE FROM revision_native_tree", []).unwrap();
+        assert_eq!(r.native_tree_root(current).unwrap(), current_root);
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn incremental_native_roots_are_correct_after_branch_divergence() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("shared"), b"base").unwrap();
+        let base = r.commit("tester", "base").unwrap();
+        let base_root = r.native_tree_root(base).unwrap();
+        r.create_branch("feature").unwrap();
+        r.switch_branch("feature").unwrap();
+        fs::write(dir.path().join("feature-file"), b"feature").unwrap();
+        r.add("feature-file").unwrap();
+        let feature = r.commit("tester", "feature").unwrap();
+        let feature_root = r.native_tree_root(feature).unwrap();
+        r.switch_branch("main").unwrap();
+        fs::write(dir.path().join("main-file"), b"main").unwrap();
+        r.add("main-file").unwrap();
+        let main = r.commit("tester", "main").unwrap();
+        let main_root = r.native_tree_root(main).unwrap();
+        assert_ne!(feature_root, main_root);
+        assert_ne!(base_root, feature_root);
+        assert_eq!(r.native_tree_file(feature_root, "feature-file").unwrap(),
+                   Some(b"feature".to_vec()));
+        assert_eq!(r.native_tree_file(main_root, "feature-file").unwrap(), None);
+        assert_eq!(r.native_tree_file(main_root, "main-file").unwrap(),
+                   Some(b"main".to_vec()));
+        assert_eq!(feature_root, crate::tree::write_snapshot(
+            &r.store, &r.state_at(Some(feature)).unwrap()
+        ).unwrap());
+        assert_eq!(main_root, crate::tree::write_snapshot(
+            &r.store, &r.state_at(Some(main)).unwrap()
+        ).unwrap());
+        assert!(r.fsck().is_ok());
+    }
+
     #[test] fn corrupt_object_detected() {
         let (_dir, r) = repo();
         let oid = r.store.put(BLOB, b"x").unwrap();
