@@ -240,11 +240,26 @@ impl Repository {
         }
         Ok(out)
     }
-    fn save_ref_cas(&self, name: &str, expected: Option<ObjectId>, next: ObjectId) -> Result<()> {
-        // SQLite IS safely supports null and values, and protects against lost updates.
-        let changed = self.db.execute("UPDATE refs SET oid=?1 WHERE name=?2 AND oid IS ?3",
-            params![next.to_string(), name, expected.map(|id| id.to_string())])?;
-        if changed != 1 { return Err(Error::Conflict(format!("branch {name} moved; retry after inspecting current head"))); }
+    /// Publish a legacy commit ref and its derived immutable tree root in
+    /// one SQLite transaction. Object publication happens before this call.
+    /// Failed compare-and-swap leaves neither the ref nor the root mapping.
+    fn save_ref_cas_with_tree(
+        &self, name: &str, expected: Option<ObjectId>, next: ObjectId,
+        root: ObjectId,
+    ) -> Result<()> {
+        let tx = self.db.unchecked_transaction()?;
+        let changed = tx.execute(
+            "UPDATE refs SET oid=?1 WHERE name=?2 AND oid IS ?3",
+            params![next.to_string(), name, expected.map(|id| id.to_string())],
+        )?;
+        if changed != 1 {
+            return Err(Error::Conflict(format!("branch {name} moved; retry after inspecting current head")));
+        }
+        tx.execute(
+            "INSERT INTO revision_native_tree(revision_oid,root_oid) VALUES(?1,?2)",
+            params![next.to_string(), root.to_string()],
+        )?;
+        tx.commit()?;
         Ok(())
     }
     pub fn create_branch(&self, name: &str) -> Result<()> {
@@ -1230,29 +1245,25 @@ impl Repository {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| Error::Invalid("system time before epoch".into()))?;
         let c = Changeset { parents: prev.into_iter().collect(), author: author.into(), message: message.into(),
             timestamp_seconds: now.as_secs() as i64, changes };
-        // Staged commits publish a native tree in the same transaction as
-        // their ref/index update. The initial root may require one lazy
-        // bootstrap from v1 history; later staged commits touch changed
-        // directory paths only. Legacy commit-all mode is unchanged.
-        let native_tree = if staged {
-            let previous_root = if let Some(parent) = prev {
-                self.native_tree_root(parent)?
-            } else {
-                crate::tree::write_snapshot(&self.store, &BTreeMap::new())?
-            };
-            Some(crate::tree::apply_changes(
-                &self.store, previous_root, &c.changes
-            )?)
+        // Both staged and legacy commit-all updates now publish immutable
+        // native roots alongside the branch ref. Legacy mode still scans the
+        // worktree to compute its changes; applying those changes to the
+        // existing root only revisits modified directory paths.
+        let previous_root = if let Some(parent) = prev {
+            self.native_tree_root(parent)?
         } else {
-            None
+            crate::tree::write_snapshot(&self.store, &BTreeMap::new())?
         };
+        let native_tree = crate::tree::apply_changes(
+            &self.store, previous_root, &c.changes
+        )?;
         let raw = c.encode()?;
         let (_, payload) = decode_object(&raw)?;
         let id = self.store.put(CHANGESET, payload)?;
-        if let Some(root) = native_tree {
-            self.publish_staged_commit(&branch, prev, id, &c.changes, root)?;
+        if staged {
+            self.publish_staged_commit(&branch, prev, id, &c.changes, native_tree)?;
         } else {
-            self.save_ref_cas(&branch, prev, id)?;
+            self.save_ref_cas_with_tree(&branch, prev, id, native_tree)?;
         }
         Ok(id)
     }
