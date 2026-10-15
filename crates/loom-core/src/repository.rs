@@ -215,6 +215,7 @@ impl Repository {
     }
     pub fn create_branch(&self, name: &str) -> Result<()> {
         let _worktree_guard = self.lock_worktree()?;
+        self.recover_locked()?;
         if name.is_empty() || name.len() > 128 ||
            !name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.')) ||
            name.starts_with('/') || name.ends_with('/') || name.contains("..") || name.contains("//") {
@@ -363,6 +364,7 @@ impl Repository {
 
     pub fn commit(&self, author: &str, message: &str) -> Result<ObjectId> {
         let _worktree_guard = self.lock_worktree()?;
+        self.recover_locked()?;
         if author.trim().is_empty() || message.trim().is_empty() { return Err(Error::Invalid("author and commit message are required".into())); }
         let branch = self.current_branch()?;
         let prev = self.branch_tip(&branch)?;
@@ -487,13 +489,23 @@ impl Repository {
     }
     pub fn switch_branch(&self, name: &str) -> Result<()> {
         let _worktree_guard = self.lock_worktree()?;
-        if !self.status()?.is_empty() { return Err(Error::Conflict("working tree has uncommitted or untracked files".into())); }
-        let old = self.state_at(self.head()?)?;
-        let new = self.state_at(self.branch_tip(name)?)?;
-        for id in new.values() { self.store.get(*id)?; }
-        self.materialize(&new, &old)?;
-        self.db.execute("UPDATE meta SET value=?1 WHERE key='head'", [name])?;
-        Ok(())
+        self.recover_locked()?;
+        if !self.status()?.is_empty() {
+            return Err(Error::Conflict("working tree has uncommitted or untracked files".into()));
+        }
+        let old_branch = self.current_branch()?;
+        let before = self.head()?;
+        let after = self.branch_tip(name)?;
+        if old_branch == name { return Ok(()); }
+        for id in self.state_at(after)?.values() { self.blob_bytes(*id)?; }
+        self.begin_transition(&PendingTransition {
+            operation: "switch".into(),
+            from_branch: old_branch,
+            to_branch: name.into(),
+            before,
+            after,
+        })?;
+        self.recover_locked()
     }
 
 
@@ -524,6 +536,7 @@ impl Repository {
     /// This is not yet a complete rename-aware or structured conflict engine.
     pub fn merge_branch(&self, name: &str, author: &str, message: &str) -> Result<ObjectId> {
         let _worktree_guard = self.lock_worktree()?;
+        self.recover_locked()?;
         if author.trim().is_empty() || message.trim().is_empty() {
             return Err(Error::Invalid("author and message required".into()));
         }
@@ -601,9 +614,14 @@ impl Repository {
         let encoded = commit.encode()?;
         let (_, payload) = decode_object(&encoded)?;
         let id = self.store.put(CHANGESET, payload)?;
-        self.save_ref_cas(&branch, Some(ours), id)?;
-        // Workspace materialization is not crash-atomic in v1.
-        self.materialize(&merged, &our_files)?;
+        self.begin_transition(&PendingTransition {
+            operation: "merge".into(),
+            from_branch: branch.clone(),
+            to_branch: branch,
+            before: Some(ours),
+            after: Some(id),
+        })?;
+        self.recover_locked()?;
         Ok(id)
     }
 
