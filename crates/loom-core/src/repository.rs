@@ -52,6 +52,20 @@ impl Repository {
         Ok(db)
     }
 
+    /// Exclusive advisory lock shared by all Loom CLI processes using this worktree.
+    /// The OS releases this file lock on process exit, including abnormal termination.
+    fn lock_worktree(&self) -> Result<fs::File> {
+        use fs2::FileExt;
+        let lock_path = self.root.join(".loom").join("workspace.lock");
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(lock_path)?;
+        file.lock_exclusive()?;
+        Ok(file)
+    }
+
     pub fn root(&self) -> &Path { &self.root }
     pub fn current_branch(&self) -> Result<String> {
         self.db.query_row("SELECT value FROM meta WHERE key='head'", [], |r| r.get(0)).map_err(Into::into)
@@ -87,6 +101,7 @@ impl Repository {
         Ok(())
     }
     pub fn create_branch(&self, name: &str) -> Result<()> {
+        let _worktree_guard = self.lock_worktree()?;
         if name.is_empty() || name.len() > 128 ||
            !name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.')) ||
            name.starts_with('/') || name.ends_with('/') || name.contains("..") || name.contains("//") {
@@ -234,6 +249,7 @@ impl Repository {
     }
 
     pub fn commit(&self, author: &str, message: &str) -> Result<ObjectId> {
+        let _worktree_guard = self.lock_worktree()?;
         if author.trim().is_empty() || message.trim().is_empty() { return Err(Error::Invalid("author and commit message are required".into())); }
         let branch = self.current_branch()?;
         let prev = self.branch_tip(&branch)?;
@@ -292,6 +308,7 @@ impl Repository {
         Ok(())
     }
     pub fn switch_branch(&self, name: &str) -> Result<()> {
+        let _worktree_guard = self.lock_worktree()?;
         if !self.status()?.is_empty() { return Err(Error::Conflict("working tree has uncommitted or untracked files".into())); }
         let old = self.state_at(self.head()?)?;
         let new = self.state_at(self.branch_tip(name)?)?;
@@ -328,6 +345,7 @@ impl Repository {
     /// Ambiguous edits are rejected without creating a merge commit or changing the worktree.
     /// This is not yet a complete rename-aware or structured conflict engine.
     pub fn merge_branch(&self, name: &str, author: &str, message: &str) -> Result<ObjectId> {
+        let _worktree_guard = self.lock_worktree()?;
         if author.trim().is_empty() || message.trim().is_empty() {
             return Err(Error::Invalid("author and message required".into()));
         }
