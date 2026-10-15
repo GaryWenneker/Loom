@@ -512,6 +512,23 @@ mod tests {
     }
 
     #[test]
+    fn native_tree_rejects_parent_traversal_edits() {
+        use crate::format::{Change, ChangeKind, BLOB};
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join(".loom");
+        fs::create_dir(&meta).unwrap();
+        fs::create_dir(meta.join("objects")).unwrap();
+        let store = crate::store::ObjectStore::new(&meta);
+        let root = write_snapshot(&store, &std::collections::BTreeMap::new()).unwrap();
+        let blob = store.put(BLOB, b"safe").unwrap();
+        for path in ["../escape", "dir/../escape", "/absolute"] {
+            let change = Change { path: path.into(), kind: ChangeKind::Add, blob: Some(blob) };
+            assert!(apply_changes(&store, root, &[change]).is_err());
+        }
+    }
+
+    #[test]
     fn roundtrip_and_deterministic_identity() {
         let source = tree();
         let bytes = source.encode().unwrap();
