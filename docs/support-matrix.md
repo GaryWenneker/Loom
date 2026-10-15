@@ -11,7 +11,7 @@
 | Direct indexed branch file and prefix listing | Experimental | Current branch tips use a derived index with history fallback; no arbitrary revision/sparse remote API |
 | Branch create, list, switch | Basic | Untracked/dirty worktrees block switching |
 | Three-way text merge | Limited | No interactive conflict continuation |
-| Object hash verification | Basic | Not a backup or comprehensive repair |
+| Object, branch, staging and pending-recovery integrity checks | Basic | Detects missing/corrupt references; not a backup or comprehensive repair |
 | Process-crash recovery | Partial | Selected branch switch and merge operations |
 | Regular files under 64 MiB | Basic | No manifests or streaming file storage |
 | Symlinks, modes, special filenames | Not supported | No metadata preservation guarantee |

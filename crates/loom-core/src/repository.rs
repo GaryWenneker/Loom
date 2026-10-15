@@ -1126,6 +1126,36 @@ impl Repository {
             }
             checked += 1;
         }
+        // Staged blobs are independent durability roots: a prepared commit
+        // must never silently reference missing, corrupt or wrong-type objects.
+        // A deletion tombstone is valid only if the selected path is tracked
+        // at the current branch head.
+        let staged = self.staged_blobs()?;
+        if !staged.is_empty() {
+            if !self.staging_enabled()? {
+                return Err(Error::Invalid(
+                    "staging index has entries but staging mode is disabled".into()
+                ));
+            }
+            let tracked = self.state_at(self.head()?)?;
+            for (path, blob) in staged {
+                match blob {
+                    Some(id) => { self.blob_bytes(id)?; }
+                    None if tracked.contains_key(&path) => {},
+                    None => return Err(Error::Invalid(format!(
+                        "staged deletion does not reference a tracked path: {path}"
+                    ))),
+                }
+            }
+        }
+        // A pending workspace transition is another integrity root. Even
+        // when it has not published the destination ref, its immutable
+        // changeset must remain available for safe replay.
+        if let Some(pending) = self.pending_transition()? {
+            for id in [pending.before, pending.after].into_iter().flatten() {
+                self.get_changeset(id)?;
+            }
+        }
         for (branch, tip) in self.branches()? {
             if let Some(id) = tip { self.get_changeset(id)?; }
             let expected = self.state_at(tip)?;
@@ -1492,6 +1522,70 @@ mod tests {
                    Vec::<String>::new());
         assert!(r.list_branch_files("missing", None).is_err());
         assert!(r.list_branch_files("main", Some("../unsafe")).is_err());
+    }
+
+
+    #[test]
+    fn fsck_verifies_staged_content_and_tombstones() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("tracked"), b"original").unwrap();
+        r.commit("tester", "base").unwrap();
+        fs::write(dir.path().join("tracked"), b"prepared").unwrap();
+        r.add("tracked").unwrap();
+        assert!(r.fsck().is_ok());
+        fs::remove_file(dir.path().join("tracked")).unwrap();
+        // The staged bytes are immutable and independent of the worktree.
+        assert!(r.fsck().is_ok());
+        r.unstage("tracked").unwrap();
+        r.add("tracked").unwrap();
+        assert!(r.fsck().is_ok()); // Valid deletion of a tracked path.
+    }
+
+    #[test]
+    fn fsck_rejects_missing_and_wrong_type_staged_blobs() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("tracked"), b"original").unwrap();
+        let changeset = r.commit("tester", "base").unwrap();
+        fs::write(dir.path().join("tracked"), b"prepared").unwrap();
+        r.add("tracked").unwrap();
+        let staged = r.staged_blobs().unwrap();
+        let oid = staged.get("tracked").copied().flatten().unwrap();
+        fs::remove_file(r.store.path_for_test(oid)).unwrap();
+        assert!(r.fsck().is_err(), "missing staged blob must be detected");
+
+        r.db.execute(
+            "UPDATE stage_index SET blob_id=?1 WHERE path='tracked'",
+            [changeset.to_string()]
+        ).unwrap();
+        assert!(r.fsck().is_err(), "changeset must not be treated as staged blob");
+    }
+
+    #[test]
+    fn fsck_rejects_invalid_staging_tombstones() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("tracked"), b"contents").unwrap();
+        r.commit("tester", "base").unwrap();
+        fs::write(dir.path().join("new-file"), b"staged").unwrap();
+        r.add("new-file").unwrap();
+        r.db.execute(
+            "INSERT INTO stage_index(path,blob_id) VALUES('ghost-file',NULL)",
+            []
+        ).unwrap();
+        assert!(r.fsck().is_err());
+    }
+
+    #[test]
+    fn fsck_validates_objects_retained_by_pending_recovery() {
+        let (_dir, r) = repo();
+        // The journal is a live root even before it publishes a new ref.
+        r.begin_transition(&PendingTransition {
+            operation: "merge".into(),
+            from_branch: "main".into(),
+            to_branch: "main".into(),
+            before: None,
+            after: Some(ObjectId([9; 32])),
+        }).unwrap();
+        assert!(r.fsck().is_err());
     }
 
     #[test] fn corrupt_object_detected() {
