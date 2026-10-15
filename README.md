@@ -11,14 +11,15 @@ It is **not built on Git** and is not an extension of AX. A separate Git compati
 - Portable native binary changeset and blob envelopes addressed by BLAKE3-256.
 - Local immutable object storage with on-read integrity verification.
 - SQLite branch refs with compare-and-swap protection.
-- Cross-process advisory worktree write lock around local commits, merges, branch creation and switching. This reduces local races but does **not** make worktree materialization crash-atomic.
+- Cross-process advisory worktree write lock around local commits, merges, branch creation and switching.
+- Durable SQLite intent journal for switch/merge transitions: Loom validates the worktree, stages replacement files, replays incomplete operations upon reopening, and updates HEAD/refs only after materialization.
 - Local full-worktree status, commits, log, branch creation/switching, basic conservative merges and fsck.
 - A CLI named `loom`.
 - Read-only `loom diff` for worktree changes and comparisons between branch snapshots; text patches use unified diff output, large/binary changes are reported without textual hunks.
 - `loom cat BRANCH PATH` for binary-safe direct access to native snapshot files without checkout.
 - Cross-platform compilation, tests and Rust dependency auditing in GitHub Actions.
 
-Merge supports conservative three-way line merging when text changes do not overlap and refuses ambiguous edits or binary conflicts. **Rename-aware merging, full conflict resolution, rebases and crash-atomic worktree materialization are not yet supported.** This is **not** ready to replace Git for production.
+Merge supports conservative three-way line merging when text changes do not overlap and refuses ambiguous edits or binary conflicts. **Rename-aware merging, full conflict resolution and rebases are not yet supported. The recovery journal covers many process-crash cases, not abrupt power loss or all filesystem races.** This is **not** ready to replace Git for production.
 
 ## Build
 
