@@ -2,7 +2,7 @@ use loom_core::{ObjectId, Repository, StatusKind};
 use std::{env, path::Path, process};
 
 fn usage() {
-    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path]\n  loom status\n  loom add PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom cat @CHANGESET_ID PATH\n  loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]\n  loom fsck\n");
+    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path]\n  loom status\n  loom add PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom cat @CHANGESET_ID PATH\n  loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]\n  loom tree @CHANGESET_ID\n  loom fsck\n");
 }
 
 
@@ -166,6 +166,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     writeln!(output, "{path:?}")?;
                 }
             }
+        }
+        "tree" => {
+            if args.len() != 2 {
+                return Err("usage: loom tree @CHANGESET_ID".into());
+            }
+            let hex = args[1].strip_prefix('@')
+                .ok_or("tree requires a historical @CHANGESET_ID")?;
+            let root = repo.native_tree_root(ObjectId::parse(hex)?)?;
+            println!("{root}");
         }
         "cat" => {
             if args.len() != 3 { return Err("usage: loom cat BRANCH|@CHANGESET_ID PATH".into()); }
