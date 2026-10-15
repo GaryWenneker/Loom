@@ -1,6 +1,7 @@
 //! Loom: an independent content-addressed version control engine.
 //! Native storage and history have no Git runtime dependency.
 mod format;
+pub mod sqlite_ref_storage;
 pub mod cloud_storage;
 mod ignore;
 mod repository;
