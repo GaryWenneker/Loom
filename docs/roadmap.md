@@ -3,7 +3,7 @@
 **Project:** Loom, a standalone native version control system in Rust. Loom is **not** AX and its core must not depend on Git. Git is only a compatibility adapter.  
 **Status:** experimental local alpha. Native format v1 is not stable; do not entrust irreplaceable source code to Loom.  
 **Evidence rule:** `[x]` means code and tests are present on **main**, not merely that an issue, branch or PR exists. Verify CI for the actual merge SHA. Feature branches remain `[ ]` until merged.  
-**Companion specifications:** [implementation contracts](implementation-contracts.md), [release gates](release-gates.md), [format v1](format-v1.md), and [architecture](architecture.md).
+**Companion specifications:** [implementation contracts](implementation-contracts.md), [release gates](release-gates.md), [Git capability parity](git-capability-parity.md), [format v1](format-v1.md), and [architecture](architecture.md).
 
 ## Completion means four distinct milestones
 
@@ -85,6 +85,7 @@ P4 and P5 may be developed independently after the native state/metadata contrac
 **Implemented on main**
 - [x] Basic `init/status/commit/log/branch/switch/diff/cat/fsck` and local end-to-end tests.
 - [x] Opt-in persistent SQLite staging index, selected file snapshots and staged deletion.
+- [ ] Unified `loom review` with separate staged and post-stage worktree diff views (in implementation PR; do not mark complete before merge).
 - [x] Basic full-worktree scans and first-parent log.
 
 **To complete**
@@ -187,6 +188,7 @@ P4 and P5 may be developed independently after the native state/metadata contrac
 - **X3 Performance evidence:** profile and benchmark before claiming improvements or introducing optimizations.
 - **X4 Documentation:** update README, architecture, usage, roadmap and status on the PR that changes behavior.
 - **X5 Isolation:** Loom is self-contained and works without AX, Git, GitHub, cloud, AI models or a server for supported offline operations.
+- **X7 Capability parity, not syntax parity:** Every common Git user outcome must have a verified Loom-native workflow or explicit adapter path. Prefer safer/reversible mechanisms and agent-native isolation; track gaps in [capability inventory](git-capability-parity.md).
 - **X6 Release engineering:** run targeted PR checks and full Linux/macOS/Windows + security/integrity gates for merges and releases. Never merge with unknown, failed or stale required checks.
 
 ## Current in-flight work
