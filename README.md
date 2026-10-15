@@ -17,13 +17,13 @@ Loom has its own native storage engine and object format. A separate Git interop
 - Durable SQLite intent journal for switch/merge transitions: Loom validates the worktree, stages replacement files, replays incomplete operations upon reopening, and updates HEAD/refs only after materialization.
 - Local full-worktree status, commits, log, branch creation/switching, basic conservative merges and `fsck`, including checks for staged blob references and pending-recovery changesets.
 - Opt-in persistent native staging index: `loom add PATH...`, `loom unstage PATH...`, frozen content snapshots and staged-only commits. Once enabled, every later commit requires explicit staging; existing repositories retain legacy commit-all behavior until their first `loom add`.
-- Targeted `loom add` and staged status use the native derived branch path index when current; the index can be rebuilt from authoritative history if missing or stale. General worktree scans and arbitrary historical revision reads remain separate performance work.
+- Targeted `loom add` and staged status use the native derived branch path index when current; the index can be rebuilt from authoritative history if missing or stale. General worktree scans and indexed ancestry/blame remain separate performance work.
 - A CLI named `loom`.
 - Read-only `loom diff` for worktree changes and comparisons between branch snapshots; `loom diff --staged` and `loom diff --unstaged` show the two sides of the staging boundary independently.
 - `loom review` displays both prepared commit content and remaining uncommitted workspace edits in one view. Text patches use unified diff output; large/binary changes are reported without textual hunks.
 - `loom cat BRANCH PATH` for binary-safe direct access to native snapshot files without checkout.
 - `loom cat @CHANGESET_ID PATH` reads a single file at a historical revision without checkout, with an optional, rebuildable result cache.
-- `loom files BRANCH [PREFIX] [--null]` to enumerate the tracked files in a branch without checkout. The current branch-tip index avoids replaying history where available; `--null` is safe for automated filename processing.
+- `loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]` to enumerate tracked paths in a branch or immutable historical revision without checkout. Current branch tips use a derived index; historical tree queries build a reusable SQLite snapshot from first-parent changesets or a cached ancestor. `--null` is safe for automated filename processing.
 - Cross-platform compilation, tests and Rust dependency auditing in GitHub Actions.
 
 Merge supports conservative three-way line merging when text changes do not overlap and refuses ambiguous edits or binary conflicts. **Rename-aware merging, full conflict resolution and rebases are not yet supported. The recovery journal covers many process-crash cases, not abrupt power loss or all filesystem races.** This is **not** ready to replace Git for production.
