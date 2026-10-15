@@ -2513,6 +2513,95 @@ mod tests {
         assert!(r.fsck().is_ok());
     }
 
+    #[test]
+    fn staged_commit_publishes_native_tree_with_ref_and_index() {
+        let (dir, r) = repo();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/file"), b"v1").unwrap();
+        fs::write(dir.path().join("stable"), b"unchanged").unwrap();
+        let base = r.commit("tester", "legacy baseline").unwrap();
+        assert!(r.db.query_row(
+            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+            [base.to_string()], |row| row.get::<_, String>(0)
+        ).optional().unwrap().is_none());
+
+        fs::write(dir.path().join("src/file"), b"v2").unwrap();
+        r.add("src/file").unwrap();
+        let first = r.commit("tester", "first staged").unwrap();
+        let stored: String = r.db.query_row(
+            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+            [first.to_string()], |row| row.get(0)
+        ).unwrap();
+        let root = ObjectId::parse(&stored).unwrap();
+        assert_eq!(r.native_tree_root(first).unwrap(), root);
+        assert_eq!(r.native_tree_file(root, "src/file").unwrap(),
+                   Some(b"v2".to_vec()));
+        assert_eq!(crate::tree::flatten_snapshot(&r.store, root).unwrap(),
+                   r.state_at(Some(first)).unwrap());
+        assert_eq!(r.head().unwrap(), Some(first));
+        assert!(r.staged_blobs().unwrap().is_empty());
+
+        for i in 0..16 {
+            fs::write(dir.path().join("src/file"), format!("update-{i}")).unwrap();
+            r.add("src/file").unwrap();
+            let tip = r.commit("tester", "more").unwrap();
+            let stored: String = r.db.query_row(
+                "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+                [tip.to_string()], |row| row.get(0)
+            ).unwrap();
+            assert_eq!(ObjectId::parse(&stored).unwrap(),
+                       crate::tree::write_snapshot(
+                           &r.store, &r.state_at(Some(tip)).unwrap()
+                       ).unwrap());
+        }
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn staged_native_tree_mapping_is_not_published_if_ref_cas_fails() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("tracked"), b"one").unwrap();
+        let first = r.commit("tester", "base").unwrap();
+        fs::write(dir.path().join("tracked"), b"two").unwrap();
+        r.add("tracked").unwrap();
+        let second = r.commit("tester", "staged").unwrap();
+        let root = r.native_tree_root(second).unwrap();
+        let fake = ObjectId([13; 32]);
+        let change = Change {
+            path: "tracked".into(),
+            kind: ChangeKind::Modify,
+            blob: Some(r.state_at(Some(second)).unwrap()["tracked"]),
+        };
+        assert!(r.publish_staged_commit(
+            "main", Some(first), fake, &[change], root
+        ).is_err());
+        assert_eq!(r.head().unwrap(), Some(second));
+        assert!(r.db.query_row(
+            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+            [fake.to_string()], |row| row.get::<_, String>(0)
+        ).optional().unwrap().is_none());
+        assert_eq!(r.native_tree_root(second).unwrap(), root);
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn staged_commit_native_tree_handles_file_directory_replacement() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("node"), b"plain file").unwrap();
+        r.commit("tester", "initial").unwrap();
+        fs::remove_file(dir.path().join("node")).unwrap();
+        fs::create_dir(dir.path().join("node")).unwrap();
+        fs::write(dir.path().join("node/child"), b"nested").unwrap();
+        r.add("node").unwrap();
+        r.add("node/child").unwrap();
+        let new_revision = r.commit("tester", "file becomes folder").unwrap();
+        let root = r.native_tree_root(new_revision).unwrap();
+        assert_eq!(r.native_tree_file(root, "node/child").unwrap(),
+                   Some(b"nested".to_vec()));
+        assert_eq!(r.native_tree_entries(root, Some("node")).unwrap().len(), 1);
+        assert!(r.fsck().is_ok());
+    }
+
     #[test] fn corrupt_object_detected() {
         let (_dir, r) = repo();
         let oid = r.store.put(BLOB, b"x").unwrap();
