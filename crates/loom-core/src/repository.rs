@@ -758,8 +758,11 @@ impl Repository {
         // immutable first-parent history without treating derived data as
         // authoritative. New staged commits rebuild the index when needed.
         let history = self.state_at(self.branch_tip(branch)?)?;
+        let directory_prefix = prefix.map(|p| format!("{p}/"));
         Ok(history.into_keys().filter(|path| {
-            prefix.is_none_or(|p| path == p || path.starts_with(&format!("{p}/")))
+            prefix.is_none()
+                || prefix.is_some_and(|p| path.as_str() == p)
+                || directory_prefix.as_ref().is_some_and(|p| path.starts_with(p))
         }).collect())
     }
 
