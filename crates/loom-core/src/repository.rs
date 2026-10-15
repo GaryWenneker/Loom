@@ -1297,6 +1297,28 @@ impl Repository {
                 }
             }
         }
+        // Cached historical answers are derived data, not new repository
+        // authority. fsck detects stale or tampered path results by replaying
+        // only the requested path along the immutable first-parent chain.
+        let mut statement = self.db.prepare(
+            "SELECT revision_oid,path,blob_oid FROM revision_file_cache"
+        )?;
+        let entries = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?))
+        })?;
+        for entry in entries {
+            let (raw_revision, path, raw_blob) = entry?;
+            validate_path(&path)?;
+            let revision = ObjectId::parse(&raw_revision)?;
+            let cached = raw_blob.map(|v| ObjectId::parse(&v)).transpose()?;
+            if self.resolve_revision_path(revision, &path)? != cached {
+                return Err(Error::Invalid(format!(
+                    "historical path cache differs from immutable changesets: {path}"
+                )));
+            }
+        }
         Ok(checked)
     }
 }
