@@ -11,6 +11,7 @@ It is **not built on Git** and is not an extension of AX. A separate Git compati
 - Portable native binary changeset and blob envelopes addressed by BLAKE3-256.
 - Local immutable object storage with on-read integrity verification.
 - SQLite branch refs with compare-and-swap protection.
+- Cross-process advisory worktree write lock around local commits, merges, branch creation and switching. This reduces local races but does **not** make worktree materialization crash-atomic.
 - Local full-worktree status, commits, log, branch creation/switching, basic conservative merges and fsck.
 - A CLI named `loom`.
 - Read-only `loom diff` for worktree changes and comparisons between branch snapshots; text patches use unified diff output, large/binary changes are reported without textual hunks.
