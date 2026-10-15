@@ -18,7 +18,8 @@
 | `loom branch list` | List named local branches |
 | `loom branch create NAME` | Create a local branch |
 | `loom switch NAME` | Switch branches if workspace is clean |
-| `loom merge NAME [-m MESSAGE]` | Conservative merge; unresolved conflicts reject |
+| `loom merge NAME [-m MESSAGE]` | Conservative merge using the best DAG common ancestor. Refuses criss-cross histories with multiple independent merge bases until virtual-base merging is supported. |
+| `loom merge-bases LEFT_BRANCH RIGHT_BRANCH` | Print every best common ancestor (one immutable changeset ID per line, sorted); no checkout or branch mutation. Unborn/disconnected histories print nothing. |
 | `loom cat BRANCH PATH` | Stream exact file bytes from a native snapshot |
 | `loom cat @CHANGESET_ID PATH` | Read historical file bytes without checkout, using a rebuildable lookup cache. |
 | `loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]` | List tracked native files at a branch tip or exact historical changeset without checkout. An optional prefix selects exact paths or directory descendants. Text mode quotes filenames; `--null` emits NUL-separated paths for scripts. Historical trees are cached, rebuildable derived SQLite views. |
