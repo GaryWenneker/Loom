@@ -1034,8 +1034,36 @@ impl Repository {
             }
             checked += 1;
         }
-        for (_, tip) in self.branches()? {
-            if let Some(id) = tip { self.get_changeset(id)?; self.state_at(Some(id))?; }
+        for (branch, tip) in self.branches()? {
+            if let Some(id) = tip { self.get_changeset(id)?; }
+            let expected = self.state_at(tip)?;
+            // Derived index is allowed to be absent or stale after merge,
+            // branch creation or legacy commit, but if its revision marker
+            // claims to be current its contents must match immutable history.
+            let indexed_tip: Option<String> = self.db.query_row(
+                "SELECT oid FROM branch_path_index_tip WHERE branch=?1",
+                [&branch], |row| row.get(0),
+            ).optional()?;
+            let head = tip.map(|id| id.to_string()).unwrap_or_default();
+            if indexed_tip.as_deref() == Some(head.as_str()) {
+                let mut stmt = self.db.prepare(
+                    "SELECT path,oid FROM branch_path_index WHERE branch=?1 ORDER BY path"
+                )?;
+                let entries = stmt.query_map([&branch], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })?;
+                let mut indexed = BTreeMap::new();
+                for row in entries {
+                    let (path, id) = row?;
+                    validate_path(&path)?;
+                    indexed.insert(path, ObjectId::parse(&id)?);
+                }
+                if indexed != expected {
+                    return Err(Error::Invalid(format!(
+                        "derived branch path index disagrees with history: {branch}"
+                    )));
+                }
+            }
         }
         Ok(checked)
     }
