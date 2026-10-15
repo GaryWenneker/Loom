@@ -353,6 +353,8 @@ pub(crate) fn apply_changes(
         for component in components {
             node = node.children.entry(component.to_owned()).or_default();
         }
+        // Option<Option<ObjectId>>: Some(None) is a deletion, not absence.
+        // `replace` returns the previous outer Option and catches repeated deletes.
         if node.value.replace(value).is_some() {
             return Err(Error::Invalid(format!(
                 "duplicate native tree change path: {path}"
