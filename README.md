@@ -10,7 +10,7 @@ Loom has its own native storage engine and object format. A separate Git interop
 
 ## Implemented today
 
-- Native v1 blob/changeset envelopes and optional hierarchical v2 tree objects addressed by BLAKE3-256. Existing v1 commit IDs remain unchanged.
+- Native v1 blob/changeset envelopes and optional hierarchical v2 tree objects addressed by BLAKE3-256. Existing v1 commit IDs remain unchanged. Historical tree roots use batched, copy-on-write first-parent deltas and reuse cached ancestor roots; unmodified subtrees retain their object IDs.
 - Local immutable object storage with on-read integrity verification.
 - SQLite branch refs with compare-and-swap protection.
 - Cross-process advisory worktree write lock around local commits, merges, branch creation and switching.
