@@ -481,6 +481,26 @@ mod tests {
     }
 
     #[test]
+    fn malformed_native_tree_change_shapes_are_rejected() {
+        use crate::format::{Change, ChangeKind, BLOB};
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join(".loom");
+        fs::create_dir(&meta).unwrap();
+        fs::create_dir(meta.join("objects")).unwrap();
+        let store = crate::store::ObjectStore::new(&meta);
+        let root = write_snapshot(&store, &std::collections::BTreeMap::new()).unwrap();
+        let blob = store.put(BLOB, b"payload").unwrap();
+        for change in [
+            Change { path: "file".into(), kind: ChangeKind::Add, blob: None },
+            Change { path: "file".into(), kind: ChangeKind::Modify, blob: None },
+            Change { path: "file".into(), kind: ChangeKind::Delete, blob: Some(blob) },
+        ] {
+            assert!(apply_changes(&store, root, &[change]).is_err());
+        }
+    }
+
+    #[test]
     fn roundtrip_and_deterministic_identity() {
         let source = tree();
         let bytes = source.encode().unwrap();
