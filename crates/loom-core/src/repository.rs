@@ -1442,6 +1442,37 @@ mod tests {
         assert!(r.read_branch_file("does-not-exist", "value").is_err());
         assert!(r.fsck().is_ok());
     }
+
+    #[test]
+    fn indexed_native_listing_falls_back_for_evicted_and_stale_caches() {
+        let (dir, r) = repo();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/alpha"), b"alpha").unwrap();
+        fs::write(dir.path().join("src/beta"), b"beta").unwrap();
+        fs::write(dir.path().join("src2"), b"sibling").unwrap();
+        r.commit("tester", "base").unwrap();
+        assert_eq!(r.list_branch_files("main", Some("src")).unwrap(),
+                   vec!["src/alpha", "src/beta"]);
+        fs::write(dir.path().join("src/alpha"), b"updated").unwrap();
+        r.add("src/alpha").unwrap();
+        r.commit("tester", "warm cache").unwrap();
+        let expected = vec!["src/alpha".to_owned(), "src/beta".to_owned()];
+        assert_eq!(r.list_branch_files("main", Some("src")).unwrap(), expected);
+        r.db.execute("DELETE FROM branch_path_index_tip", []).unwrap();
+        assert_eq!(r.list_branch_files("main", Some("src")).unwrap(), expected);
+        r.db.execute(
+            "INSERT INTO branch_path_index_tip(branch,oid) VALUES('main',?1)",
+            [ObjectId([9; 32]).to_string()],
+        ).unwrap();
+        assert_eq!(r.list_branch_files("main", Some("src")).unwrap(), expected);
+        assert_eq!(r.list_branch_files("main", Some("src2")).unwrap(),
+                   vec!["src2"]);
+        assert_eq!(r.list_branch_files("main", Some("missing")).unwrap(),
+                   Vec::<String>::new());
+        assert!(r.list_branch_files("missing", None).is_err());
+        assert!(r.list_branch_files("main", Some("../unsafe")).is_err());
+    }
+
     #[test] fn corrupt_object_detected() {
         let (_dir, r) = repo();
         let oid = r.store.put(BLOB, b"x").unwrap();
