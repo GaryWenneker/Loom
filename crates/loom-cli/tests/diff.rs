@@ -89,3 +89,26 @@ fn cat_reads_snapshot_without_switching_branches_or_losing_binary_data() {
         .unwrap();
     assert!(!invalid.status.success());
 }
+
+#[test]
+fn merges_nonoverlapping_text_changes_in_same_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    run(root, &["init"]);
+    fs::write(root.join("shared.txt"), "one\ntwo\nthree\nfour\n").unwrap();
+    run(root, &["commit", "-m", "base"]);
+    run(root, &["branch", "create", "feature"]);
+    run(root, &["switch", "feature"]);
+    fs::write(root.join("shared.txt"), "ONE\ntwo\nthree\nfour\n").unwrap();
+    run(root, &["commit", "-m", "change first"]);
+    run(root, &["switch", "main"]);
+    fs::write(root.join("shared.txt"), "one\ntwo\nthree\nFOUR\n").unwrap();
+    run(root, &["commit", "-m", "change last"]);
+    run(root, &["merge", "feature"]);
+    assert_eq!(
+        fs::read_to_string(root.join("shared.txt")).unwrap(),
+        "ONE\ntwo\nthree\nFOUR\n"
+    );
+    assert!(run(root, &["fsck"]).contains("Verified"));
+    assert!(run(root, &["status"]).contains("Working tree clean"));
+}
