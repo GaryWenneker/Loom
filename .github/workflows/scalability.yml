@@ -1,0 +1,36 @@
+name: Loom scalability evidence
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 4 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build Loom CLI
+        run: cargo build --release -p loom-cli
+      - name: Validate harness syntax
+        run: python3 -m py_compile benchmarks/loom_bench.py
+      - name: Run deterministic scaling samples
+        run: |
+          python3 benchmarks/loom_bench.py \
+            --loom target/release/loom \
+            --files 100 1000 10000 \
+            --repeat 20 \
+            --output loom-scale-results.json
+      - name: Upload raw timing evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: loom-scale-${{ github.sha }}
+          path: loom-scale-results.json
+          if-no-files-found: warn
+          retention-days: 90
