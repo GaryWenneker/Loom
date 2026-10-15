@@ -101,6 +101,10 @@ impl Repository {
                  revision_oid TEXT PRIMARY KEY NOT NULL,
                  entry_count INTEGER NOT NULL CHECK(entry_count >= 0)
              );
+             CREATE TABLE IF NOT EXISTS revision_native_tree (
+                 revision_oid TEXT PRIMARY KEY NOT NULL,
+                 root_oid TEXT NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS workspace_journal (
                  id INTEGER PRIMARY KEY CHECK(id=1),
                  operation TEXT NOT NULL,
@@ -928,6 +932,43 @@ impl Repository {
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Publish a canonical immutable directory DAG for an existing v1
+    /// changeset without rewriting its identity or changing worktree files.
+    /// Native tree nodes use the separately versioned v2 object envelope.
+    /// The revision -> root mapping is a rebuildable derived index.
+    pub fn native_tree_root(&self, revision: ObjectId) -> Result<ObjectId> {
+        self.get_changeset(revision)?;
+        let key = revision.to_string();
+        let cached: Option<String> = self.db.query_row(
+            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+            [&key], |row| row.get(0),
+        ).optional()?;
+        if let Some(raw) = cached {
+            let root = ObjectId::parse(&raw)?;
+            crate::tree::NativeTree::decode(&self.store.get(root)?)?;
+            return Ok(root);
+        }
+        // Use canonical history rather than a possibly stale derived SQLite
+        // path index when creating an immutable source-of-truth object.
+        let state = self.state_at(Some(revision))?;
+        let root = crate::tree::write_snapshot(&self.store, &state)?;
+        self.db.execute(
+            "INSERT OR IGNORE INTO revision_native_tree(revision_oid,root_oid)
+             VALUES(?1,?2)",
+            params![&key, root.to_string()],
+        )?;
+        let published: String = self.db.query_row(
+            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+            [&key], |row| row.get(0),
+        )?;
+        if published != root.to_string() {
+            return Err(Error::Conflict(
+                "another native tree root was published for this revision".into()
+            ));
+        }
+        Ok(root)
     }
 
     /// List paths in any immutable historical revision without switching
