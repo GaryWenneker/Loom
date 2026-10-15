@@ -538,49 +538,6 @@ impl Repository {
         Ok(())
     }
 
-    fn staged_changes(&self, old: &BTreeMap<String, ObjectId>) -> Result<Vec<Change>> {
-        let mut changes = Vec::new();
-        for (path, blob) in self.staged_blobs()? {
-            let previous = old.get(&path).copied();
-            if previous == blob { continue; }
-            let kind = if blob.is_none() { ChangeKind::Delete }
-                else if previous.is_none() { ChangeKind::Add }
-                else { ChangeKind::Modify };
-            if let Some(id) = blob {
-                let raw = self.store.get(id)?;
-                if decode_object(&raw)?.0 != BLOB {
-                    return Err(Error::Invalid(format!("staged object is not a blob: {path}")));
-                }
-            }
-            changes.push(Change { path, kind, blob });
-        }
-        Ok(changes)
-    }
-
-    /// Reject impossible file/directory combinations in the resulting tree.
-    /// A selective commit must not leave a tracked file alongside its child.
-    fn validate_staged_tree(
-        &self, original: &BTreeMap<String, ObjectId>, changes: &[Change]
-    ) -> Result<()> {
-        let mut paths: BTreeSet<String> = original.keys().cloned().collect();
-        for change in changes {
-            match change.kind {
-                ChangeKind::Delete => { paths.remove(&change.path); }
-                ChangeKind::Add | ChangeKind::Modify => { paths.insert(change.path.clone()); }
-            }
-        }
-        for path in &paths {
-            for (idx, ch) in path.char_indices() {
-                if ch == '/' && paths.contains(&path[..idx]) {
-                    return Err(Error::Conflict(format!(
-                        "staged snapshot contains a file/directory collision: {path}"
-                    )));
-                }
-            }
-        }
-        Ok(())
-    }
-
     fn publish_staged_commit(
         &self, branch: &str, previous: Option<ObjectId>, next: ObjectId,
         changes: &[Change]
@@ -795,12 +752,12 @@ impl Repository {
         }
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| Error::Invalid("system time before epoch".into()))?;
         let c = Changeset { parents: prev.into_iter().collect(), author: author.into(), message: message.into(),
-            timestamp_seconds: now.as_secs() as i64, changes: changes.clone() };
+            timestamp_seconds: now.as_secs() as i64, changes };
         let raw = c.encode()?;
         let (_, payload) = decode_object(&raw)?;
         let id = self.store.put(CHANGESET, payload)?;
         if staged {
-            self.publish_staged_commit(&branch, prev, id, &changes)?;
+            self.publish_staged_commit(&branch, prev, id, &c.changes)?;
         } else {
             self.save_ref_cas(&branch, prev, id)?;
         }
