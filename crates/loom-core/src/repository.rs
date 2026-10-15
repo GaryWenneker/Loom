@@ -2,7 +2,7 @@ use crate::format::{decode_object, encode_object, object_id, validate_path, Chan
 use crate::store::ObjectStore;
 use crate::{Error, Result};
 use rusqlite::{params, Connection, OptionalExtension};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1432,26 +1432,63 @@ impl Repository {
     }
 
 
-    fn ancestor_distances(&self, start: ObjectId) -> Result<HashMap<ObjectId, usize>> {
-        let mut distances = HashMap::new();
-        let mut queue = VecDeque::from([(start, 0usize)]);
-        while let Some((id, distance)) = queue.pop_front() {
-            if distances.contains_key(&id) { continue; }
-            if distances.len() >= 1_000_000 { return Err(Error::Invalid("ancestry traversal limit reached".into())); }
-            distances.insert(id, distance);
+    fn ancestor_ids(&self, start: ObjectId) -> Result<HashSet<ObjectId>> {
+        let mut seen = HashSet::new();
+        let mut queue = VecDeque::from([start]);
+        while let Some(id) = queue.pop_front() {
+            if seen.contains(&id) { continue; }
+            if seen.len() >= 1_000_000 {
+                return Err(Error::Invalid("ancestry traversal limit reached".into()));
+            }
+            // Fetch even when a node was seen in another traversal. Missing
+            // immutable ancestors are errors, not silent "no common base".
             let commit = self.get_changeset(id)?;
-            for parent in commit.parents {
-                queue.push_back((parent, distance + 1));
+            seen.insert(id);
+            queue.extend(commit.parents);
+        }
+        Ok(seen)
+    }
+
+    /// Return all *best* merge bases: common ancestors which are not
+    /// ancestors of another common ancestor. The common set is closed
+    /// under parent links; marking every common node's immediate parents
+    /// therefore removes ALL dominated ancestors in O(V+E), without
+    /// heuristically choosing the shortest summed distance.
+    fn best_merge_bases(&self, ours: ObjectId, theirs: ObjectId) -> Result<Vec<ObjectId>> {
+        let ours_ancestors = self.ancestor_ids(ours)?;
+        let theirs_ancestors = self.ancestor_ids(theirs)?;
+        let common: HashSet<ObjectId> = ours_ancestors
+            .intersection(&theirs_ancestors).copied().collect();
+        let mut dominated = HashSet::new();
+        for id in &common {
+            for parent in self.get_changeset(*id)?.parents {
+                if common.contains(&parent) { dominated.insert(parent); }
             }
         }
-        Ok(distances)
+        let mut best: Vec<ObjectId> = common.difference(&dominated).copied().collect();
+        best.sort();
+        Ok(best)
+    }
+
+    /// Inspect ancestry without switching branches or mutating worktree.
+    /// An unborn branch has no common ancestor with a committed branch.
+    pub fn branch_merge_bases(&self, left: &str, right: &str) -> Result<Vec<ObjectId>> {
+        match (self.branch_tip(left)?, self.branch_tip(right)?) {
+            (Some(a), Some(b)) => self.best_merge_bases(a, b),
+            _ => Ok(Vec::new()),
+        }
     }
 
     fn merge_base(&self, ours: ObjectId, theirs: ObjectId) -> Result<Option<ObjectId>> {
-        let left = self.ancestor_distances(ours)?;
-        let right = self.ancestor_distances(theirs)?;
-        Ok(left.iter().filter_map(|(id, l)| right.get(id).map(|r| (*id, l+r)))
-            .min_by(|a,b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0))).map(|(id,_)| id))
+        let bases = self.best_merge_bases(ours, theirs)?;
+        match bases.as_slice() {
+            [] => Ok(None),
+            [id] => Ok(Some(*id)),
+            _ => Err(Error::Conflict(format!(
+                "multiple independent merge bases (criss-cross history): {};                  refusing unsafe merge until virtual-base merging is supported",
+                bases.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+            ))),
+        }
     }
 
     /// Conservative merge: independent lines merge, ambiguous changes reject safely.
