@@ -29,7 +29,8 @@ Checklist status reflects implemented source and tests, not an architectural pro
 - [x] Bounded, conservative textual three-way merge for independent lines (no rename detection)
 - [ ] Full typed conflict model, conflict continuation and advanced merge cases
 - [ ] Safe rebase, revert, undo and crash-recoverable workspaces
-- [ ] Concurrency model tests and merge-graph property tests
+- [x] Advisory cross-process serialization of local worktree mutations, with CLI locking integration test
+- [ ] Complete concurrency model tests and merge-graph property tests
 
 ## Phase 4 — Server and many agents
 - [ ] Streaming RPC, version negotiation, credentials and authorization
