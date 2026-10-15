@@ -175,6 +175,44 @@ impl ObjectStore {
     }
 }
 
+// The first real provider implementation of the pluggable object contract.
+// Keep canonical envelope validation at the backend boundary, not at callers.
+impl crate::storage_backend::ObjectBackend for ObjectStore {
+    fn capabilities(&self) -> crate::storage_backend::StoreCapabilities {
+        crate::storage_backend::StoreCapabilities {
+            durable_writes: true,
+            conditional_create: true,
+            streaming_reads: false,
+            streaming_writes: false,
+            list_objects: true,
+        }
+    }
+
+    fn get(&self, id: ObjectId) -> Result<Vec<u8>> {
+        ObjectStore::get(self, id)
+    }
+
+    fn put_if_absent(&self, id: ObjectId, canonical_envelope: &[u8]) -> Result<()> {
+        if object_id(canonical_envelope) != id {
+            return Err(Error::Invalid("object ID does not match canonical envelope".into()));
+        }
+        let (kind, payload) = decode_object(canonical_envelope)?;
+        let actual = ObjectStore::put(self, kind, payload)?;
+        if actual != id {
+            return Err(Error::Invalid("backend published unexpected object ID".into()));
+        }
+        Ok(())
+    }
+
+    fn exists(&self, id: ObjectId) -> Result<bool> {
+        match ObjectStore::get(self, id) {
+            Ok(_) => Ok(true),
+            Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,6 +226,21 @@ mod tests {
         fs::create_dir(meta.join("objects")).unwrap();
         let store = ObjectStore::new(&meta);
         (dir, store)
+    }
+
+    #[test]
+    fn filesystem_implements_portable_object_backend_contract() {
+        use crate::storage_backend::ObjectBackend;
+        let (_dir, store) = store();
+        let bytes = encode_object(BLOB, b"portable-object").unwrap();
+        let id = object_id(&bytes);
+        assert!(!ObjectBackend::exists(&store, id).unwrap());
+        ObjectBackend::put_if_absent(&store, id, &bytes).unwrap();
+        ObjectBackend::put_if_absent(&store, id, &bytes).unwrap();
+        assert!(ObjectBackend::exists(&store, id).unwrap());
+        assert_eq!(ObjectBackend::get(&store, id).unwrap(), bytes);
+        assert!(store.capabilities().conditional_create);
+        assert!(ObjectBackend::put_if_absent(&store, ObjectId([0; 32]), &bytes).is_err());
     }
 
     #[test]
