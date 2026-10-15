@@ -395,6 +395,30 @@ impl Repository {
         Ok(changes)
     }
 
+    /// Reject impossible file/directory combinations in the resulting tree.
+    /// A selective commit must not leave a tracked file alongside its child.
+    fn validate_staged_tree(
+        &self, original: &BTreeMap<String, ObjectId>, changes: &[Change]
+    ) -> Result<()> {
+        let mut paths: BTreeSet<String> = original.keys().cloned().collect();
+        for change in changes {
+            match change.kind {
+                ChangeKind::Delete => { paths.remove(&change.path); }
+                ChangeKind::Add | ChangeKind::Modify => { paths.insert(change.path.clone()); }
+            }
+        }
+        for path in &paths {
+            for (idx, ch) in path.char_indices() {
+                if ch == '/' && paths.contains(&path[..idx]) {
+                    return Err(Error::Conflict(format!(
+                        "staged snapshot contains a file/directory collision: {path}"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn publish_staged_commit(
         &self, branch: &str, previous: Option<ObjectId>, next: ObjectId
     ) -> Result<()> {
@@ -495,6 +519,7 @@ impl Repository {
         if changes.is_empty() {
             return Err(Error::Invalid(if staged { "nothing staged to commit" } else { "nothing to commit" }.into()));
         }
+        if staged { self.validate_staged_tree(&old, &changes)?; }
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| Error::Invalid("system time before epoch".into()))?;
         let c = Changeset { parents: prev.into_iter().collect(), author: author.into(), message: message.into(),
             timestamp_seconds: now.as_secs() as i64, changes };
