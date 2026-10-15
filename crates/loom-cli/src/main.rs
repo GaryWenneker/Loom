@@ -5,6 +5,27 @@ fn usage() {
     eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path]\n  loom status\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom fsck\n");
 }
 
+
+fn print_diff(change: &loom_core::FileDiff) {
+    let name = &change.path;
+    println!("diff --loom a/{name} b/{name}");
+    let before = change.before.as_deref().unwrap_or(&[]);
+    let after = change.after.as_deref().unwrap_or(&[]);
+    if before.len().saturating_add(after.len()) > 1_048_576 {
+        println!("File contents exceed the 1 MiB text diff display limit");
+        return;
+    }
+    match (std::str::from_utf8(before), std::str::from_utf8(after)) {
+        (Ok(old), Ok(new)) if !old.contains('\0') && !new.contains('\0') => {
+            let old_name = if change.before.is_some() { format!("a/{name}") } else { "/dev/null".into() };
+            let new_name = if change.after.is_some() { format!("b/{name}") } else { "/dev/null".into() };
+            let patch = similar::TextDiff::from_lines(old, new);
+            print!("{}", patch.unified_diff().context_radius(3).header(&old_name, &new_name));
+        }
+        _ => println!("Binary files differ"),
+    }
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
     let Some(cmd) = args.first().map(String::as_str) else { usage(); return Err("missing command".into()); };
@@ -73,6 +94,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .or_else(|_| env::var("USERNAME")).unwrap_or_else(|_| "unknown".into());
             let oid = repo.merge_branch(name, &author, &message)?;
             println!("Merged {name} as {oid}");
+        }
+        "diff" => {
+            let changes = match args.len() {
+                1 => repo.diff_worktree()?,
+                3 => repo.diff_branches(&args[1], &args[2])?,
+                _ => return Err("usage: loom diff [FROM_BRANCH TO_BRANCH]".into()),
+            };
+            for change in &changes { print_diff(change); }
         }
         "fsck" => println!("Verified {} native objects and branch references", repo.fsck()?),
         _ => { usage(); return Err(format!("unknown command: {cmd}").into()); }
