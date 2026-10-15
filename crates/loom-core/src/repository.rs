@@ -5,6 +5,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,6 +16,8 @@ pub struct StatusEntry { pub path: String, pub kind: StatusKind }
 /// File contents before and after a change. None means the file is absent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileDiff { pub path: String, pub before: Option<Vec<u8>>, pub after: Option<Vec<u8>> }
+
+static STAGE_NONCE: AtomicU64 = AtomicU64::new(0);
 
 // A durable transition descriptor. Object IDs point to immutable snapshots; SQLite
 // publishes the ref/HEAD change only after worktree materialization completes.
@@ -392,28 +395,93 @@ impl Repository {
     }
 
     fn materialize(&self, target: &BTreeMap<String,ObjectId>, previous: &BTreeMap<String,ObjectId>) -> Result<()> {
-        // No untracked files are permitted by switch's clean-working-tree gate.
-        for path in previous.keys() {
-            if !target.contains_key(path) {
-                let full = self.root.join(path);
-                fs::remove_file(full)?;
+        // Reject file/directory collisions and unexpected files before touching the worktree.
+        for path in target.keys() {
+            for (idx, ch) in path.char_indices() {
+                if ch == '/' && target.contains_key(&path[..idx]) {
+                    return Err(Error::Conflict(format!("file/directory collision: {path}")));
+                }
             }
         }
-        // Remove now-empty directories deepest first to permit file/directory transitions.
-        let mut dirs: Vec<PathBuf> = previous.keys().filter_map(|p| self.root.join(p).parent().map(Path::to_path_buf)).collect();
+        let actual = self.scan_files()?;
+        let mut known = BTreeSet::new();
+        known.extend(previous.keys().cloned());
+        known.extend(target.keys().cloned());
+        for path in actual.keys() {
+            if !known.contains(path) {
+                return Err(Error::Conflict(format!("untracked file blocks recovery: {path}")));
+            }
+        }
+        for path in &known {
+            let before = previous.get(path).copied();
+            let after = target.get(path).copied();
+            if let Some(bytes) = actual.get(path) {
+                let encoded = encode_object(BLOB, bytes)?;
+                let current = object_id(&encoded);
+                if Some(current) != before && Some(current) != after {
+                    return Err(Error::Conflict(format!("modified file blocks recovery: {path}")));
+                }
+            } else if before.is_some() && after.is_some() {
+                return Err(Error::Conflict(format!("missing tracked file blocks recovery: {path}")));
+            }
+        }
+        // Verify every required blob before removing anything.
+        for id in target.values() { self.blob_bytes(*id)?; }
+
+        for path in previous.keys() {
+            if target.contains_key(path) { continue; }
+            let full = self.root.join(path);
+            match fs::symlink_metadata(&full) {
+                Ok(meta) if meta.is_file() => fs::remove_file(&full)?,
+                Ok(meta) if meta.is_dir() && target.keys().any(|p| p.starts_with(&format!("{path}/"))) => {},
+                Ok(_) => return Err(Error::Conflict(format!("unexpected path type during recovery: {path}"))),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+                Err(e) => return Err(e.into()),
+            }
+        }
+        let mut dirs: Vec<PathBuf> = previous.keys()
+            .filter_map(|p| self.root.join(p).parent().map(Path::to_path_buf)).collect();
         dirs.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
         dirs.dedup();
         for dir in dirs {
-            if dir != self.root { let _ = fs::remove_dir(dir); }
+            if dir == self.root { continue; }
+            match fs::remove_dir(&dir) {
+                Ok(()) => {},
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty) => {},
+                Err(e) => return Err(e.into()),
+            }
         }
+
+        // Stage each file under .loom, fsync it and atomically rename into place.
+        // A crash can leave old/new mixtures but never a partially written tracked file.
+        let staging = self.root.join(".loom").join("staging");
+        fs::create_dir_all(&staging)?;
         for (path, oid) in target {
-            if previous.get(path) == Some(oid) { continue; }
-            let raw = self.store.get(*oid)?;
-            let (kind, bytes) = decode_object(&raw)?;
-            if kind != BLOB { return Err(Error::Invalid(format!("non-blob at {path}"))); }
+            let already_correct = actual.get(path).is_some_and(|bytes| {
+                encode_object(BLOB, bytes).is_ok_and(|encoded| object_id(&encoded) == *oid)
+            });
+            if already_correct { continue; }
+            let bytes = self.blob_bytes(*oid)?;
             let full = self.root.join(path);
             if let Some(parent) = full.parent() { fs::create_dir_all(parent)?; }
-            fs::write(full, bytes)?;
+            let mut tempfile = None;
+            for _ in 0..16 {
+                let nonce = STAGE_NONCE.fetch_add(1, Ordering::Relaxed);
+                let candidate = staging.join(format!("{}-{nonce}", std::process::id()));
+                match fs::OpenOptions::new().create_new(true).write(true).open(&candidate) {
+                    Ok(file) => { tempfile = Some((candidate, file)); break; }
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {},
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            let (temp, mut file) = tempfile.ok_or_else(|| Error::Conflict("unable to allocate a staging file".into()))?;
+            use std::io::Write;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            drop(file);
+            fs::rename(&temp, &full)?;
+            #[cfg(unix)]
+            if let Some(parent) = full.parent() { fs::File::open(parent)?.sync_all()?; }
         }
         Ok(())
     }
