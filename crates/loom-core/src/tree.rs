@@ -483,6 +483,23 @@ mod tests {
     }
 
     #[test]
+    fn repeated_native_tree_deletion_is_rejected() {
+        use crate::format::{Change, ChangeKind, BLOB};
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join(".loom");
+        fs::create_dir(&meta).unwrap();
+        fs::create_dir(meta.join("objects")).unwrap();
+        let store = crate::store::ObjectStore::new(&meta);
+        let blob = store.put(BLOB, b"data").unwrap();
+        let mut state = std::collections::BTreeMap::new();
+        state.insert("file.txt".into(), blob);
+        let root = write_snapshot(&store, &state).unwrap();
+        let deletion = Change { path: "file.txt".into(), kind: ChangeKind::Delete, blob: None };
+        assert!(apply_changes(&store, root, &[deletion.clone(), deletion]).is_err());
+    }
+
+    #[test]
     fn roundtrip_and_deterministic_identity() {
         let source = tree();
         let bytes = source.encode().unwrap();
