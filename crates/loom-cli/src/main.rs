@@ -2,7 +2,7 @@ use loom_core::{Repository, StatusKind};
 use std::{env, path::Path, process};
 
 fn usage() {
-    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path]\n  loom status\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom fsck\n");
+    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path]\n  loom status\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom fsck\n");
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
