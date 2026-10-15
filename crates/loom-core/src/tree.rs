@@ -446,6 +446,75 @@ mod tests {
         ] }
     }
 
+    // Ten portable serialization edge cases, kept in one CI-reviewed change.
+    #[test]
+    fn conformance_01_empty_root_roundtrip() {
+        let node = NativeTree { entries: vec![] };
+        assert_eq!(NativeTree::decode(&node.encode().unwrap()).unwrap(), node);
+    }
+
+    #[test]
+    fn conformance_02_single_file_roundtrip() {
+        let node = NativeTree { entries: vec![tree().entries[0].clone()] };
+        assert_eq!(NativeTree::decode(&node.encode().unwrap()).unwrap(), node);
+    }
+
+    #[test]
+    fn conformance_03_unicode_component_roundtrip() {
+        let mut node = tree();
+        node.entries[0].name = "café.txt".into();
+        assert_eq!(NativeTree::decode(&node.encode().unwrap()).unwrap(), node);
+    }
+
+    #[test]
+    fn conformance_04_case_distinct_entries() {
+        let mut node = tree();
+        node.entries[0].name = "Readme".into();
+        node.entries[1].name = "readme".into();
+        assert_eq!(NativeTree::decode(&node.encode().unwrap()).unwrap(), node);
+    }
+
+    #[test]
+    fn conformance_05_repeated_name_rejected() {
+        let mut node = tree();
+        node.entries[1].name = node.entries[0].name.clone();
+        assert!(node.encode().is_err());
+    }
+
+    #[test]
+    fn conformance_06_reverse_order_rejected() {
+        let mut node = tree();
+        node.entries.reverse();
+        assert!(node.encode().is_err());
+    }
+
+    #[test]
+    fn conformance_07_backslash_component_rejected() {
+        let mut node = tree();
+        node.entries[0].name = "dir\\file".into();
+        assert!(node.encode().is_err());
+    }
+
+    #[test]
+    fn conformance_08_executable_directory_rejected() {
+        let mut node = tree();
+        node.entries[1].executable = true;
+        assert!(node.encode().is_err());
+    }
+
+    #[test]
+    fn conformance_09_trailing_payload_rejected() {
+        let mut encoded = tree().encode().unwrap();
+        encoded.push(0);
+        assert!(NativeTree::decode(&encoded).is_err());
+    }
+
+    #[test]
+    fn conformance_10_truncated_payload_rejected() {
+        let encoded = tree().encode().unwrap();
+        assert!(NativeTree::decode(&encoded[..encoded.len() - 1]).is_err());
+    }
+
     #[test]
     fn snapshot_rejects_missing_and_wrong_kind_blob_references() {
         use std::collections::BTreeMap;
