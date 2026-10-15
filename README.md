@@ -1,31 +1,54 @@
 # Loom
 
-**Loom** is an experimental, independent native version control system implemented in Rust. It is not an extension of Git, or of any other product.
+Loom is an experimental, standalone **native version control system**, implemented in Rust.
 
-> **Early development:** Never use Loom as the only copy of valuable source code. Native format v1 is experimental and may change.
+It is **not built on Git** and is not an extension of AX. A separate Git compatibility bridge is planned.
 
-## Architecture
+> **Experimental alpha:** the repository and object format can change. Never use Loom as the only copy of important source code. Current version only supports regular UTF-8-named files under 64 MiB, without preserved executable bits or symlinks.
 
-- Content-addressed immutable objects using BLAKE3-256 and a native canonical binary envelope.
-- Embedded object store and SQLite transactionally managed references.
-- Native changeset DAG, with changes relative to the first parent.
-- Dedicated CLI, with distributed services and Git bridging tracked separately.
-- Works independently of Git; compatibility belongs to an isolated adapter.
+## Implemented today
 
-See [architecture](docs/architecture.md), [roadmap](docs/roadmap.md), and [format spec](docs/format-v1.md).
+- Portable native binary changeset and blob envelopes addressed by BLAKE3-256.
+- Local immutable object storage with on-read integrity verification.
+- SQLite branch refs with compare-and-swap protection.
+- Local full-worktree status, commits, log, branch creation/switching, basic conservative merges and fsck.
+- A CLI named `loom`.
+- Cross-platform compilation, tests and Rust dependency auditing in GitHub Actions.
 
-## Build (after implementation is complete)
+Merge detects file-level conflicts and rejects them without touching branch history. **Line-level merging is not yet supported.** Worktree switching/materialization is not crash-atomic. This is **not** ready to replace Git for production.
 
-```bash
-cargo build --workspace
-cargo test --workspace
+## Build
+
+Install Rust 1.85+ and run:
+
+```shell
+cargo build --release -p loom-cli
+cargo test --workspace --all-targets
 ```
 
-Planned command examples: `loom init`, `loom status`, `loom commit -m "message"`, `loom log`, `loom fsck`.
+The binary is `target/release/loom`.
 
-## Status and trust
+## Try it (throwaway files only)
 
-This repository is being built incrementally. Check GitHub Actions and the roadmap for which capabilities are **implemented and tested**, not merely designed. Merge, sync, distributed replication and production hardening are not yet claimed.
+```shell
+mkdir loom-demo && cd loom-demo
+../target/release/loom init
+echo hello > hello.txt
+../target/release/loom status
+../target/release/loom commit -m "Initial snapshot" --author "Developer"
+../target/release/loom branch create feature
+../target/release/loom switch feature
+../target/release/loom log
+../target/release/loom fsck
+```
+
+Run `loom help` for the supported CLI. The example assumes the binary is accessible at the indicated relative path; otherwise use its absolute path or add it to `PATH`.
+
+## Plan
+
+The [architecture](docs/architecture.md), [native format](docs/format-v1.md), [ADRs](docs/adr-001-native-engine.md) and [roadmap](docs/roadmap.md) document decisions and remaining engineering.
+
+Tracked delivery issues: [native safety](https://github.com/GaryWenneker/Loom/issues/1), [full local VCS](https://github.com/GaryWenneker/Loom/issues/2), [merges/recovery](https://github.com/GaryWenneker/Loom/issues/3), [server/agents](https://github.com/GaryWenneker/Loom/issues/4), [Git bridge](https://github.com/GaryWenneker/Loom/issues/5), [scale](https://github.com/GaryWenneker/Loom/issues/6), and [production hardening](https://github.com/GaryWenneker/Loom/issues/7).
 
 ## License
 

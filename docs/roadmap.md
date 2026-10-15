@@ -1,49 +1,54 @@
 # Loom delivery roadmap
 
-No implementation status should be inferred from a checklist unless CI and integration tests prove it.
+Checklist status reflects implemented source and tests, not an architectural promise. Native format v1 remains experimental.
 
 ## Phase 0 — Contracts and scaffolding
-- [x] Standalone Cargo workspace and CI configuration
-- [x] Native v1 envelope definition
-- [ ] Golden vectors verified across platforms
-- [ ] Full threat model and design review
+- [x] Standalone Cargo workspace and cross-platform CI
+- [x] Native v1 envelope definition and format documentation
+- [ ] Published portable hash golden vectors and full design review
+- [ ] Full threat model
 
 ## Phase 1 — Native storage
-- [ ] Durable immutable objectstore with integrity checking
-- [ ] SQLite refstore and CAS
-- [ ] Crash-injection tests and recovery guarantees
-- [ ] Production-grade GC, backup and migration rules
+- [x] Basic immutable loose-object store with per-read hash verification
+- [x] Embedded SQLite refstore with conditional updates
+- [x] Basic reference and object integrity verification (`fsck`)
+- [ ] Crash-injection tests and proven durability across OS/filesystems
+- [ ] Garbage collection, backup and schema migration guarantees
 
 ## Phase 2 — Local VCS
-- [ ] Scan, status, commit, history, verify
-- [ ] Branch creation and switching
-- [ ] Fast incremental derived indexes
-- [ ] Metadata-complete file model
+- [x] Full-worktree scan, status, commit and first-parent log
+- [x] Local branch creation and switching
+- [x] CLI integration tests for a basic change/merge workflow
+- [ ] Staging/index, ignores, tags, restores, fast derived history indexes
+- [ ] Symlinks, modes, non-UTF-8 files and chunked large file support
 
 ## Phase 3 — Merge and recovery
-- [ ] Deterministic three-way merge with exhaustive conflicts
-- [ ] Rebase, revert, undo and merge graph operations
-- [ ] Concurrency/fault model testing
+- [x] Conservative two-parent merge: merges independent file edits
+- [x] Conflicting file changes reject the merge without moving HEAD
+- [ ] Textual three-way merge and full typed conflict model
+- [ ] Safe rebase, revert, undo and crash-recoverable workspaces
+- [ ] Concurrency model tests and merge-graph property tests
 
 ## Phase 4 — Server and many agents
-- [ ] Streaming RPC, version negotiation and credentials
+- [ ] Streaming RPC, version negotiation, credentials and authorization
 - [ ] Secure remote object and ref services
-- [ ] Parallel-agent workload and load tests
+- [ ] 100+ parallel agent write tests, simulated faults and latency measurements
 
 ## Phase 5 — Git interoperability
-- [ ] Isolated Git adapter
-- [ ] Faithful import/export and OID mapping
-- [ ] Incremental sync, safe push and compatibility suite
+- [ ] Isolated Git import/export bridge and OID mapping
+- [ ] Preserved supported metadata and comprehensive conversion suite
+- [ ] Incremental sync, safe push, signing compatibility strategy
 
 ## Phase 6 — Scale
 - [ ] Sparse and virtual workspaces
-- [ ] Chunk manifests and shared caches
-- [ ] Scalable database and objectstore adapters
+- [ ] Chunk manifests, packfiles and shared caches
+- [ ] Transactional scalable database and objectstore adapters
 - [ ] Reproducible performance baselines vs Git
 
 ## Phase 7 — Production hardening
-- [ ] Platform-by-platform fault testing, fuzzing, fsck
-- [ ] Backups, disaster recovery, authorization and security review
-- [ ] Windows, macOS and Linux packages and documentation
+- [ ] Platform-by-platform fault injection and fuzzing
+- [ ] Backups, disaster recovery, access policies and security review
+- [ ] Windows, macOS and Linux release packages
+- [ ] Verified formatting/style policy and long-term compatibility guarantees
 
-**Gate:** never declare phases 4–7 complete from passing unit tests alone.
+**Release rule:** Cross-platform passing unit tests do not establish production readiness.
