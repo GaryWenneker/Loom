@@ -63,3 +63,29 @@ fn branch_diff_does_not_switch_or_modify_worktree() {
         .unwrap();
     assert!(!invalid.status.success());
 }
+
+#[test]
+fn cat_reads_snapshot_without_switching_branches_or_losing_binary_data() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    run(root, &["init"]);
+    fs::write(root.join("data.bin"), [0, 1, 255, 2]).unwrap();
+    run(root, &["commit", "-m", "binary"]);
+    run(root, &["branch", "create", "release"]);
+    fs::write(root.join("data.bin"), [0, 3, 4, 5]).unwrap();
+    run(root, &["commit", "-m", "update"]);
+    let output = Command::new(env!("CARGO_BIN_EXE_loom"))
+        .current_dir(root)
+        .args(["cat", "release", "data.bin"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(output.stdout, [0, 1, 255, 2]);
+    assert_eq!(fs::read(root.join("data.bin")).unwrap(), [0, 3, 4, 5]);
+    let invalid = Command::new(env!("CARGO_BIN_EXE_loom"))
+        .current_dir(root)
+        .args(["cat", "release", "../data.bin"])
+        .output()
+        .unwrap();
+    assert!(!invalid.status.success());
+}
