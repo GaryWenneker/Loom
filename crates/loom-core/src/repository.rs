@@ -1411,6 +1411,22 @@ impl Repository {
                     }
                 }
             }
+            if kind == crate::format::TREE {
+                let node = crate::tree::NativeTree::decode(&data)?;
+                for entry in node.entries {
+                    let target = self.store.get(entry.object)?;
+                    let (actual_kind, _) = decode_object(&target)?;
+                    let expected = match entry.kind {
+                        crate::tree::TreeEntryKind::File => BLOB,
+                        crate::tree::TreeEntryKind::Directory => crate::format::TREE,
+                    };
+                    if actual_kind != expected {
+                        return Err(Error::Invalid(format!(
+                            "native tree entry references wrong object type: {}", entry.name
+                        )));
+                    }
+                }
+            }
             checked += 1;
         }
         // Staged blobs are independent durability roots: a prepared commit
@@ -1537,6 +1553,26 @@ impl Repository {
             if actual.len() as i64 != expected_count || actual != expected {
                 return Err(Error::Invalid(format!(
                     "historical tree cache differs from immutable changesets: {raw_revision}"
+                )));
+            }
+        }
+        // A native v2 tree is a durable immutable DAG. Its optional mapping
+        // to a v1 revision is derived and must reflect that revision exactly.
+        let mut roots = self.db.prepare(
+            "SELECT revision_oid,root_oid FROM revision_native_tree"
+        )?;
+        let items = roots.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for item in items {
+            let (revision_raw, root_raw) = item?;
+            let revision = ObjectId::parse(&revision_raw)?;
+            let root = ObjectId::parse(&root_raw)?;
+            let actual = crate::tree::flatten_snapshot(&self.store, root)?;
+            let expected = self.state_at(Some(revision))?;
+            if actual != expected {
+                return Err(Error::Invalid(format!(
+                    "native immutable tree differs from revision {revision_raw}"
                 )));
             }
         }
