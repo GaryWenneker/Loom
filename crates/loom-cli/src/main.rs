@@ -2,7 +2,7 @@ use loom_core::{ObjectId, Repository, StatusKind};
 use std::{env, path::Path, process};
 
 fn usage() {
-    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path]\n  loom status\n  loom add PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom cat @CHANGESET_ID PATH\n  loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]\n  loom tree @CHANGESET_ID\n  loom tree ls @TREE_ID [DIR]\n  loom tree cat @TREE_ID PATH\n  loom fsck\n");
+    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path]\n  loom status\n  loom add PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom merge-bases LEFT_BRANCH RIGHT_BRANCH\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom cat @CHANGESET_ID PATH\n  loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]\n  loom tree @CHANGESET_ID\n  loom tree ls @TREE_ID [DIR]\n  loom tree cat @TREE_ID PATH\n  loom fsck\n");
 }
 
 
@@ -115,6 +115,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .or_else(|_| env::var("USERNAME")).unwrap_or_else(|_| "unknown".into());
             let oid = repo.merge_branch(name, &author, &message)?;
             println!("Merged {name} as {oid}");
+        }
+        "merge-bases" => {
+            if args.len() != 3 {
+                return Err("usage: loom merge-bases LEFT_BRANCH RIGHT_BRANCH".into());
+            }
+            for base in repo.branch_merge_bases(&args[1], &args[2])? {
+                println!("{base}");
+            }
         }
         "diff" => {
             let changes = match args.as_slice() {
