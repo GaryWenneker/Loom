@@ -62,6 +62,12 @@ Run `loom help` for the supported CLI. The example assumes the binary is accessi
 - [Scion architecture assessment](docs/scion-architecture-review.md): where the current engine meets or falls short of agent-scale source control.
 - [Roadmap and gates](docs/roadmap.md): planned features, dependencies, acceptance criteria.
 
+## Project resources
+
+- [Concepts](docs/concepts.md) and [support matrix](docs/support-matrix.md)
+- [Troubleshooting](docs/troubleshooting.md) and [development guide](docs/development.md)
+- [Contributing](CONTRIBUTING.md), [security policy](SECURITY.md) and [changelog](CHANGELOG.md)
+
 ## Plan
 
 The [architecture](docs/architecture.md), [implementation contracts](docs/implementation-contracts.md), [release gates](docs/release-gates.md), [native format](docs/format-v1.md), [ADRs](docs/adr-001-native-engine.md) and [complete delivery roadmap](docs/roadmap.md) document decisions, priorities, dependencies and objective acceptance criteria. The roadmap distinguishes merged features from planned work.
