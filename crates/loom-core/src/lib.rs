@@ -4,6 +4,7 @@ mod format;
 mod ignore;
 mod repository;
 mod store;
+pub mod storage_backend;
 mod text_merge;
 mod tree;
 
