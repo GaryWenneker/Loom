@@ -204,4 +204,10 @@ P4 and P5 may be developed independently after the native state/metadata contrac
 5. Start Git adapter and native server work in parallel **only after** format and ref-transaction contracts are firm.
 6. Add agent-scale workspaces and distributed storage, then production release hardening with objective evidence.
 
+## Additional explicit gap trackers
+
+- [#13 Native v2 object model + migration](https://github.com/GaryWenneker/Loom/issues/13) links P0/P1/P2, including portable modes/trees.
+- [#14 No-data-loss fault matrix](https://github.com/GaryWenneker/Loom/issues/14) links P1/P3/P8, including user file protection.
+- [#15 Git/protocol conformance matrix](https://github.com/GaryWenneker/Loom/issues/15) links P4/P5/P8, including signing, version negotiation and unsupported features.
+
 **Do not call Loom a Git replacement in production before the local-beta, interoperability and release gates pass.**
