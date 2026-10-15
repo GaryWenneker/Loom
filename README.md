@@ -10,7 +10,7 @@ Loom has its own native storage engine and object format. A separate Git interop
 
 ## Implemented today
 
-- Native v1 blob/changeset envelopes and optional hierarchical v2 tree objects addressed by BLAKE3-256. Existing v1 commit IDs remain unchanged. Historical tree roots use batched, copy-on-write first-parent deltas and reuse cached ancestor roots; unmodified subtrees retain their object IDs. In explicit staging mode, a successful commit now publishes its native tree-root mapping atomically with its branch ref and staging index.
+- Native v1 blob/changeset envelopes and optional hierarchical v2 tree objects addressed by BLAKE3-256. Existing v1 commit IDs remain unchanged. Historical tree roots use batched, copy-on-write first-parent deltas and reuse cached ancestor roots; unmodified subtrees retain their object IDs. Both explicit-staging commits and legacy commit-all commits now publish their native tree-root mappings atomically with their branch refs. Staged commits also update their staging and path indexes in the same transaction.
 - Local immutable object storage with on-read integrity verification.
 - SQLite branch refs with compare-and-swap protection.
 - Cross-process advisory worktree write lock around local commits, merges, branch creation and switching.
