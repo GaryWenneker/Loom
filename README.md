@@ -13,6 +13,8 @@ It is **not built on Git** and is not an extension of AX. A separate Git compati
 - SQLite branch refs with compare-and-swap protection.
 - Local full-worktree status, commits, log, branch creation/switching, basic conservative merges and fsck.
 - A CLI named `loom`.
+- Read-only `loom diff` for worktree changes and comparisons between branch snapshots; text patches use unified diff output, large/binary changes are reported without textual hunks.
+- `loom cat BRANCH PATH` for binary-safe direct access to native snapshot files without checkout.
 - Cross-platform compilation, tests and Rust dependency auditing in GitHub Actions.
 
 Merge detects file-level conflicts and rejects them without touching branch history. **Line-level merging is not yet supported.** Worktree switching/materialization is not crash-atomic. This is **not** ready to replace Git for production.
