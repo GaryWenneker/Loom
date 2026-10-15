@@ -16,6 +16,17 @@ pub struct StatusEntry { pub path: String, pub kind: StatusKind }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileDiff { pub path: String, pub before: Option<Vec<u8>>, pub after: Option<Vec<u8>> }
 
+// A durable transition descriptor. Object IDs point to immutable snapshots; SQLite
+// publishes the ref/HEAD change only after worktree materialization completes.
+#[derive(Debug, Clone)]
+struct PendingTransition {
+    operation: String,
+    from_branch: String,
+    to_branch: String,
+    before: Option<ObjectId>,
+    after: Option<ObjectId>,
+}
+
 pub struct Repository { root: PathBuf, db: Connection, store: ObjectStore }
 
 impl Repository {
@@ -40,7 +51,12 @@ impl Repository {
         for dir in start.ancestors() {
             let meta = dir.join(".loom");
             if meta.join("index.sqlite").exists() {
-                return Ok(Self { root: dir.to_path_buf(), db: Self::connect(&meta)?, store: ObjectStore::new(&meta) });
+                let repo = Self { root: dir.to_path_buf(), db: Self::connect(&meta)?, store: ObjectStore::new(&meta) };
+                {
+                    let _guard = repo.lock_worktree()?;
+                    repo.recover_locked()?;
+                }
+                return Ok(repo);
             }
         }
         Err(Error::Invalid("not in a Loom repository".into()))
@@ -48,7 +64,19 @@ impl Repository {
 
     fn connect(meta: &Path) -> Result<Connection> {
         let db = Connection::open(meta.join("index.sqlite"))?;
-        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;")?;
+        db.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=FULL;
+             PRAGMA busy_timeout=5000;
+             CREATE TABLE IF NOT EXISTS workspace_journal (
+                 id INTEGER PRIMARY KEY CHECK(id=1),
+                 operation TEXT NOT NULL,
+                 from_branch TEXT NOT NULL,
+                 to_branch TEXT NOT NULL,
+                 before_oid TEXT,
+                 after_oid TEXT
+             );"
+        )?;
         Ok(db)
     }
 
@@ -64,6 +92,88 @@ impl Repository {
             .open(lock_path)?;
         file.lock_exclusive()?;
         Ok(file)
+    }
+
+
+    fn pending_transition(&self) -> Result<Option<PendingTransition>> {
+        type JournalRow = (String, String, String, Option<String>, Option<String>);
+        let row: Option<JournalRow> = self.db.query_row(
+            "SELECT operation,from_branch,to_branch,before_oid,after_oid
+             FROM workspace_journal WHERE id=1",
+            [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))
+        ).optional()?;
+        row.map(|(operation,from_branch,to_branch,before,after)| {
+            Ok(PendingTransition {
+                operation, from_branch, to_branch,
+                before: before.map(|s| ObjectId::parse(&s)).transpose()?,
+                after: after.map(|s| ObjectId::parse(&s)).transpose()?,
+            })
+        }).transpose()
+    }
+
+    fn begin_transition(&self, p: &PendingTransition) -> Result<()> {
+        // The INSERT is a durable intent record before the first filesystem change.
+        self.db.execute(
+            "INSERT INTO workspace_journal
+             (id,operation,from_branch,to_branch,before_oid,after_oid)
+             VALUES (1,?1,?2,?3,?4,?5)",
+            params![p.operation,p.from_branch,p.to_branch,
+                p.before.map(|id| id.to_string()),p.after.map(|id| id.to_string())]
+        )?;
+        Ok(())
+    }
+
+    /// Replay an interrupted transition while holding the cross-process lock.
+    /// Refuse to overwrite unexpected user edits or unexpected branch movement.
+    fn recover_locked(&self) -> Result<()> {
+        let Some(p) = self.pending_transition()? else { return Ok(()); };
+        if self.current_branch()? != p.from_branch {
+            return Err(Error::Conflict("workspace recovery requires the original HEAD branch".into()));
+        }
+        if self.branch_tip(&p.from_branch)? != p.before {
+            return Err(Error::Conflict("workspace recovery halted: original ref changed".into()));
+        }
+        match p.operation.as_str() {
+            "switch" => {
+                if self.branch_tip(&p.to_branch)? != p.after {
+                    return Err(Error::Conflict("workspace recovery halted: destination ref changed".into()));
+                }
+            }
+            "merge" => {
+                if p.to_branch != p.from_branch || p.after.is_none() {
+                    return Err(Error::Invalid("malformed merge recovery journal".into()));
+                }
+                let target = self.get_changeset(p.after.expect("checked above"))?;
+                if target.parents.first().copied() != p.before {
+                    return Err(Error::Invalid("merge journal parent mismatch".into()));
+                }
+            }
+            _ => return Err(Error::Invalid("unknown workspace journal operation".into())),
+        }
+        let before = self.state_at(p.before)?;
+        let after = self.state_at(p.after)?;
+        self.materialize(&after, &before)?;
+        // The only commit point: both HEAD/ref update and journal deletion are atomic.
+        let tx = self.db.unchecked_transaction()?;
+        if p.operation == "switch" {
+            let changed = tx.execute(
+                "UPDATE meta SET value=?1 WHERE key='head' AND value=?2",
+                params![p.to_branch,p.from_branch]
+            )?;
+            if changed != 1 { return Err(Error::Conflict("HEAD changed during recovery".into())); }
+        } else {
+            let changed = tx.execute(
+                "UPDATE refs SET oid=?1 WHERE name=?2 AND oid IS ?3",
+                params![p.after.map(|id| id.to_string()),p.from_branch,
+                    p.before.map(|id| id.to_string())]
+            )?;
+            if changed != 1 { return Err(Error::Conflict("merge ref moved during recovery".into())); }
+        }
+        tx.execute("DELETE FROM workspace_journal WHERE id=1", [])?;
+        tx.commit()?;
+        // Staged files never live in the user worktree. A crash before cleanup is harmless.
+        let _ = fs::remove_dir_all(self.root.join(".loom").join("staging"));
+        Ok(())
     }
 
     pub fn root(&self) -> &Path { &self.root }
