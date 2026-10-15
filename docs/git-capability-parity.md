@@ -1,7 +1,7 @@
 # Functional parity with Git, without copying Git's CLI
 
 **Status:** contract/feature inventory; not a declaration that Loom already implements these capabilities.  
-**Product rule:** *Git is the minimum functional baseline; Loom may use different commands, data structures and safer/smarter interaction patterns.* Loom remains independent of Git, AX and AI services. Git integration belongs in an optional adapter.
+**Product rule:** *Git is the minimum functional baseline; Loom may use different commands, data structures and safer/smarter interaction patterns.* Loom remains independent of Git installations and AI services. Git integration belongs in an optional adapter.
 
 The question is **"Can the user complete the same workflow without losing data or history?"**, not "Does Loom have a subcommand with the same spelling?"
 
