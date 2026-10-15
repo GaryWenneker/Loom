@@ -2833,6 +2833,57 @@ mod tests {
         assert!(r.fsck().is_ok());
     }
 
+    #[test]
+    fn merge_recovery_rejects_corrupt_parent_tree_before_touching_user_files() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("a"), b"base").unwrap();
+        fs::write(dir.path().join("unchanged"), b"keep").unwrap();
+        let before = r.commit("tester", "base").unwrap();
+        let parent_root = r.native_tree_root(before).unwrap();
+        // A syntactically valid empty tree is still the wrong snapshot.
+        let wrong_root = crate::tree::write_snapshot(
+            &r.store, &BTreeMap::new()
+        ).unwrap();
+        assert_ne!(parent_root, wrong_root);
+        r.db.execute(
+            "UPDATE revision_native_tree SET root_oid=?1 WHERE revision_oid=?2",
+            params![wrong_root.to_string(), before.to_string()],
+        ).unwrap();
+
+        let blob = r.store.put(BLOB, b"merged").unwrap();
+        let commit = Changeset {
+            parents: vec![before, before], author: "tester".into(),
+            message: "broken parent".into(), timestamp_seconds: 1,
+            changes: vec![Change {
+                kind: ChangeKind::Modify, path: "a".into(), blob: Some(blob),
+            }],
+        };
+        let encoded = commit.encode().unwrap();
+        let (_, payload) = decode_object(&encoded).unwrap();
+        let after = r.store.put(CHANGESET, payload).unwrap();
+        r.begin_transition(&PendingTransition {
+            operation: "merge".into(), from_branch: "main".into(),
+            to_branch: "main".into(), before: Some(before), after: Some(after),
+        }).unwrap();
+        assert!(r.recover_locked().is_err());
+        assert_eq!(r.head().unwrap(), Some(before));
+        assert_eq!(fs::read(dir.path().join("a")).unwrap(), b"base");
+        assert_eq!(fs::read(dir.path().join("unchanged")).unwrap(), b"keep");
+        assert!(r.pending_transition().unwrap().is_some());
+        assert!(r.db.query_row(
+            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+            [after.to_string()], |row| row.get::<_, String>(0)
+        ).optional().unwrap().is_none());
+
+        r.db.execute(
+            "UPDATE revision_native_tree SET root_oid=?1 WHERE revision_oid=?2",
+            params![parent_root.to_string(), before.to_string()],
+        ).unwrap();
+        r.recover_locked().unwrap();
+        assert_eq!(r.head().unwrap(), Some(after));
+        assert!(r.fsck().is_ok());
+    }
+
     #[test] fn corrupt_object_detected() {
         let (_dir, r) = repo();
         let oid = r.store.put(BLOB, b"x").unwrap();
