@@ -378,15 +378,58 @@ impl Repository {
         Ok(map)
     }
 
+    /// Report prepared file changes without replaying the entire first-parent
+    /// chain when the derived branch path index covers the current ref.
+    /// A single SQLite snapshot pins the ref and its index revision marker.
     pub fn staged_status(&self) -> Result<Vec<StatusEntry>> {
-        let old = self.state_at(self.head()?)?;
-        let mut changes = Vec::new();
-        for (path, blob) in self.staged_blobs()? {
+        let staged = self.staged_blobs()?;
+        if staged.is_empty() { return Ok(Vec::new()); }
+        let branch = self.current_branch()?;
+        let tx = self.db.unchecked_transaction()?;
+        let (ref_oid, index_oid): (Option<String>, Option<String>) = tx.query_row(
+            "SELECT r.oid,t.oid FROM refs AS r
+             LEFT JOIN branch_path_index_tip AS t ON t.branch=r.name
+             WHERE r.name=?1",
+            [&branch], |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let current = index_oid.as_deref() == Some(ref_oid.as_deref().unwrap_or(""));
+        if current {
+            let mut query = tx.prepare(
+                "SELECT 1 FROM branch_path_index WHERE branch=?1 AND path=?2"
+            )?;
+            let mut changes = Vec::with_capacity(staged.len());
+            for (path, blob) in staged {
+                let tracked: Option<i64> = query.query_row(
+                    params![&branch,&path], |row| row.get(0),
+                ).optional()?;
+                let kind = match (tracked.is_some(), blob) {
+                    (false, Some(_)) => StatusKind::Added,
+                    (true, Some(_)) => StatusKind::Modified,
+                    (true, None) => StatusKind::Deleted,
+                    (false, None) => return Err(Error::Invalid(format!(
+                        "invalid staged deletion: {path}"
+                    ))),
+                };
+                changes.push(StatusEntry { path, kind });
+            }
+            drop(query);
+            tx.commit()?;
+            return Ok(changes);
+        }
+        // A legacy/merge-written ref may not have an index, so immutable
+        // changeset history remains the canonical fallback.
+        drop(tx);
+        let ref_id = ref_oid.map(|s| ObjectId::parse(&s)).transpose()?;
+        let old = self.state_at(ref_id)?;
+        let mut changes = Vec::with_capacity(staged.len());
+        for (path, blob) in staged {
             let kind = match (old.get(&path), blob) {
                 (None, Some(_)) => StatusKind::Added,
                 (Some(_), Some(_)) => StatusKind::Modified,
                 (Some(_), None) => StatusKind::Deleted,
-                (None, None) => return Err(Error::Invalid(format!("invalid staged deletion: {path}"))),
+                (None, None) => return Err(Error::Invalid(format!(
+                    "invalid staged deletion: {path}"
+                ))),
             };
             changes.push(StatusEntry { path, kind });
         }
@@ -399,13 +442,17 @@ impl Repository {
         validate_path(path)?;
         let _guard = self.lock_worktree()?;
         self.recover_locked()?;
-        let before = self.state_at(self.head()?)?;
+        let branch = self.current_branch()?;
+        let tip = self.branch_tip(&branch)?;
+        // Lazily rebuild a missing or stale derived index once. Subsequent
+        // adds only need one indexed lookup, irrespective of history depth.
+        self.ensure_branch_path_index(&branch, tip)?;
+        let prior = self.indexed_blob(&branch, path)?;
         let blob_id = match self.read_staging_path(path)? {
             Some(bytes) => Some(self.store.put(BLOB, &bytes)?),
-            None if before.contains_key(path) => None,
+            None if prior.is_some() => None,
             None => return Err(Error::Invalid(format!("file is neither tracked nor present: {path}"))),
         };
-        let prior = before.get(path).copied();
         let tx = self.db.unchecked_transaction()?;
         tx.execute(
             "INSERT INTO meta(key,value) VALUES ('staging_mode','enabled')
@@ -1586,6 +1633,74 @@ mod tests {
             after: Some(ObjectId([9; 32])),
         }).unwrap();
         assert!(r.fsck().is_err());
+    }
+
+
+    #[test]
+    fn indexed_add_handles_create_modify_and_delete_with_precise_status() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("tracked"), b"original").unwrap();
+        r.commit("tester", "base").unwrap();
+        fs::write(dir.path().join("tracked"), b"prepared").unwrap();
+        fs::write(dir.path().join("new"), b"new").unwrap();
+        r.add("tracked").unwrap();
+        r.add("new").unwrap();
+        assert_eq!(r.staged_status().unwrap(), vec![
+            StatusEntry { path: "new".into(), kind: StatusKind::Added },
+            StatusEntry { path: "tracked".into(), kind: StatusKind::Modified },
+        ]);
+        r.commit("tester", "both").unwrap();
+        assert!(r.staged_status().unwrap().is_empty());
+        fs::remove_file(dir.path().join("tracked")).unwrap();
+        r.add("tracked").unwrap();
+        assert_eq!(r.staged_status().unwrap(), vec![
+            StatusEntry { path: "tracked".into(), kind: StatusKind::Deleted }
+        ]);
+        r.commit("tester", "delete").unwrap();
+        assert_eq!(r.read_branch_file("main", "tracked").unwrap(), None);
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn indexed_add_rebuilds_evicted_and_stale_branch_data() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("one"), b"first").unwrap();
+        r.commit("tester", "base").unwrap();
+        fs::write(dir.path().join("one"), b"second").unwrap();
+        r.add("one").unwrap();
+        r.commit("tester", "second").unwrap();
+        r.db.execute("DELETE FROM branch_path_index_tip", []).unwrap();
+        r.db.execute("DELETE FROM branch_path_index", []).unwrap();
+        fs::write(dir.path().join("one"), b"third").unwrap();
+        r.add("one").unwrap();
+        assert_eq!(r.staged_status().unwrap(), vec![
+            StatusEntry { path: "one".into(), kind: StatusKind::Modified }
+        ]);
+        r.commit("tester", "third").unwrap();
+        r.db.execute(
+            "UPDATE branch_path_index_tip SET oid=?1 WHERE branch='main'",
+            [ObjectId([4; 32]).to_string()]
+        ).unwrap();
+        fs::remove_file(dir.path().join("one")).unwrap();
+        r.add("one").unwrap();
+        assert_eq!(r.staged_status().unwrap(), vec![
+            StatusEntry { path: "one".into(), kind: StatusKind::Deleted }
+        ]);
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn staged_status_falls_back_to_authoritative_history_for_legacy_tip() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("old"), b"original").unwrap();
+        r.commit("tester", "base").unwrap();
+        fs::write(dir.path().join("old"), b"changed").unwrap();
+        r.add("old").unwrap();
+        r.db.execute("DELETE FROM branch_path_index_tip", []).unwrap();
+        assert_eq!(r.staged_status().unwrap(), vec![
+            StatusEntry { path: "old".into(), kind: StatusKind::Modified }
+        ]);
+        assert!(r.fsck().is_ok());
     }
 
     #[test] fn corrupt_object_detected() {
