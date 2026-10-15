@@ -38,7 +38,7 @@ fn immutable_tree_roots_are_repeatable_and_do_not_change_v1_revisions() {
     assert_eq!(fs::read(root.join("README.md")).unwrap(), b"README");
 
     ok(root, &["fsck"]);
-    assert!(call(root, &["tree", "main"]).status.success() == false);
+    assert!(!call(root, &["tree", "main"]).status.success());
     assert!(!call(root, &["tree", "@invalid"]).status.success());
 
     fs::write(root.join("README.md"), b"changed").unwrap();
