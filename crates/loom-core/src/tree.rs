@@ -590,6 +590,41 @@ mod tests {
     }
 
     #[test]
+    fn prefix_listing_skips_unrelated_corrupt_subtrees() {
+        use crate::format::BLOB;
+        use std::collections::BTreeMap;
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join(".loom");
+        fs::create_dir(&meta).unwrap();
+        fs::create_dir(meta.join("objects")).unwrap();
+        let store = crate::store::ObjectStore::new(&meta);
+        let blob = store.put(BLOB, b"source").unwrap();
+        let root = write_snapshot(&store, &BTreeMap::from([
+            ("src/a.rs".to_string(), blob),
+            ("src/deep/b.rs".to_string(), blob),
+            ("vendor/unused.rs".to_string(), blob),
+        ])).unwrap();
+        let expected = BTreeMap::from([
+            ("src/a.rs".to_string(), blob),
+            ("src/deep/b.rs".to_string(), blob),
+        ]);
+        assert_eq!(list_prefix(&store, root, "src").unwrap(), expected);
+        assert_eq!(list_prefix(&store, root, "src/a.rs").unwrap(),
+                   BTreeMap::from([("src/a.rs".to_string(), blob)]));
+        assert!(list_prefix(&store, root, "absent").unwrap().is_empty());
+        assert!(list_prefix(&store, root, "../escape").is_err());
+
+        let mut entries = NativeTree::decode(&store.get(root).unwrap()).unwrap().entries;
+        entries.iter_mut().find(|e| e.name == "vendor").unwrap().object = ObjectId([0xFD; 32]);
+        let envelope = NativeTree { entries }.encode().unwrap();
+        let (_, payload) = decode_object(&envelope).unwrap();
+        let sparse_root = store.put(TREE, payload).unwrap();
+        assert_eq!(list_prefix(&store, sparse_root, "src").unwrap(), expected);
+        assert!(list_prefix(&store, sparse_root, "").is_err());
+    }
+
+    #[test]
     fn snapshot_rejects_missing_and_wrong_kind_blob_references() {
         use std::collections::BTreeMap;
         use std::fs;
