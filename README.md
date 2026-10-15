@@ -24,6 +24,7 @@ Loom has its own native storage engine and object format. A separate Git interop
 - `loom cat BRANCH PATH` for binary-safe direct access to native snapshot files without checkout.
 - `loom cat @CHANGESET_ID PATH` reads a single file at a historical revision without checkout, with an optional, rebuildable result cache.
 - `loom tree @CHANGESET_ID` publishes and prints the canonical immutable directory-tree root for an existing revision (experimental; metadata from v1 history cannot be reconstructed).
+- `loom tree ls @TREE_ID [DIRECTORY]` and `loom tree cat @TREE_ID PATH` navigate immutable directory objects directly, without branches, SQLite history indexes or checkout.
 - `loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]` to enumerate tracked paths in a branch or immutable historical revision without checkout. Current branch tips use a derived index; historical tree queries build a reusable SQLite snapshot from first-parent changesets or a cached ancestor. `--null` is safe for automated filename processing.
 - Cross-platform compilation, tests and Rust dependency auditing in GitHub Actions.
 
