@@ -1,6 +1,6 @@
 # Loom delivery roadmap (source of truth)
 
-**Project:** Loom, a standalone native version control system in Rust. Loom is **not** AX and its core must not depend on Git. Git is only a compatibility adapter.  
+**Project:** Loom, a standalone native version control system in Rust. Its core owns a native object format and does not depend on Git. Interoperability is an optional external adapter.  
 **Status:** experimental local alpha. Native format v1 is not stable; do not entrust irreplaceable source code to Loom.  
 **Evidence rule:** `[x]` means code and tests are present on **main**, not merely that an issue, branch or PR exists. Verify CI for the actual merge SHA. Feature branches remain `[ ]` until merged.  
 **Companion specifications:** [implementation contracts](implementation-contracts.md), [release gates](release-gates.md), [Git capability parity](git-capability-parity.md), [format v1](format-v1.md), and [architecture](architecture.md).
@@ -187,7 +187,7 @@ P4 and P5 may be developed independently after the native state/metadata contrac
 - **X2 Correctness first:** prioritize property-based testing, deterministic clocks/IDs where needed, crash failpoints and model checking of mutable refs.
 - **X3 Performance evidence:** profile and benchmark before claiming improvements or introducing optimizations.
 - **X4 Documentation:** update README, architecture, usage, roadmap and status on the PR that changes behavior.
-- **X5 Isolation:** Loom is self-contained and works without AX, Git, GitHub, cloud, AI models or a server for supported offline operations.
+- **X5 Isolation:** Loom is self-contained and works offline without Git, a hosting provider, cloud account, AI model or a server for supported offline operations.
 - **X7 Capability parity, not syntax parity:** Every common Git user outcome must have a verified Loom-native workflow or explicit adapter path. Prefer safer/reversible mechanisms and agent-native isolation; track gaps in [capability inventory](git-capability-parity.md).
 - **X6 Release engineering:** run targeted PR checks and full Linux/macOS/Windows + security/integrity gates for merges and releases. Never merge with unknown, failed or stale required checks.
 
