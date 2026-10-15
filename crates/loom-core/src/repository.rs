@@ -2,7 +2,7 @@ use crate::format::{decode_object, encode_object, object_id, validate_path, Chan
 use crate::store::ObjectStore;
 use crate::{Error, Result};
 use rusqlite::{params, Connection, OptionalExtension};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -240,6 +240,101 @@ impl Repository {
         Ok(())
     }
 
+
+    fn ancestor_distances(&self, start: ObjectId) -> Result<HashMap<ObjectId, usize>> {
+        let mut distances = HashMap::new();
+        let mut queue = VecDeque::from([(start, 0usize)]);
+        while let Some((id, distance)) = queue.pop_front() {
+            if distances.contains_key(&id) { continue; }
+            if distances.len() >= 1_000_000 { return Err(Error::Invalid("ancestry traversal limit reached".into())); }
+            distances.insert(id, distance);
+            let commit = self.get_changeset(id)?;
+            for parent in commit.parents {
+                queue.push_back((parent, distance + 1));
+            }
+        }
+        Ok(distances)
+    }
+
+    fn merge_base(&self, ours: ObjectId, theirs: ObjectId) -> Result<Option<ObjectId>> {
+        let left = self.ancestor_distances(ours)?;
+        let right = self.ancestor_distances(theirs)?;
+        Ok(left.iter().filter_map(|(id, l)| right.get(id).map(|r| (*id, l+r)))
+            .min_by(|a,b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0))).map(|(id,_)| id))
+    }
+
+    /// Conservative merge: non-overlapping file edits merge automatically.
+    /// Ambiguous edits are rejected without creating a merge commit or changing the worktree.
+    /// This is not yet a line-level three-way merge.
+    pub fn merge_branch(&self, name: &str, author: &str, message: &str) -> Result<ObjectId> {
+        if author.trim().is_empty() || message.trim().is_empty() {
+            return Err(Error::Invalid("author and message required".into()));
+        }
+        if !self.status()?.is_empty() {
+            return Err(Error::Conflict("working tree must be clean before merge".into()));
+        }
+        let branch = self.current_branch()?;
+        let ours = self.head()?.ok_or_else(|| Error::Invalid("cannot merge into unborn branch".into()))?;
+        let theirs = self.branch_tip(name)?.ok_or_else(|| Error::Invalid("cannot merge unborn branch".into()))?;
+        if ours == theirs { return Ok(ours); }
+        let base = self.state_at(self.merge_base(ours, theirs)?)?;
+        let our_files = self.state_at(Some(ours))?;
+        let their_files = self.state_at(Some(theirs))?;
+        let mut keys = BTreeSet::new();
+        keys.extend(base.keys().cloned());
+        keys.extend(our_files.keys().cloned());
+        keys.extend(their_files.keys().cloned());
+        let mut merged = BTreeMap::new();
+        let mut conflicts = Vec::new();
+        for path in keys {
+            let original = base.get(&path);
+            let local = our_files.get(&path);
+            let remote = their_files.get(&path);
+            let chosen = if local == remote { local }
+                else if local == original { remote }
+                else if remote == original { local }
+                else { conflicts.push(path.clone()); continue };
+            if let Some(id) = chosen { merged.insert(path, *id); }
+        }
+        // Reject file/directory collisions before publishing the merge commit.
+        for path in merged.keys() {
+            for (idx, chr) in path.char_indices() {
+                if chr == '/' && merged.contains_key(&path[..idx]) {
+                    conflicts.push(path.clone());
+                }
+            }
+        }
+        if !conflicts.is_empty() {
+            conflicts.sort();
+            conflicts.dedup();
+            return Err(Error::Conflict(format!("merge conflicts in: {}", conflicts.join(", "))));
+        }
+        let mut changes = Vec::new();
+        for (path, id) in &merged {
+            if our_files.get(path) != Some(id) {
+                changes.push(Change { path: path.clone(), kind: if our_files.contains_key(path) {
+                    ChangeKind::Modify
+                } else { ChangeKind::Add }, blob: Some(*id) });
+            }
+        }
+        for path in our_files.keys() {
+            if !merged.contains_key(path) {
+                changes.push(Change { path: path.clone(), kind: ChangeKind::Delete, blob: None });
+            }
+        }
+        changes.sort_by(|a,b| a.path.cmp(&b.path));
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| Error::Invalid("system time before epoch".into()))?;
+        let commit = Changeset { parents: vec![ours, theirs], author: author.into(), message: message.into(),
+            timestamp_seconds: now.as_secs() as i64, changes };
+        let encoded = commit.encode()?;
+        let (_, payload) = decode_object(&encoded)?;
+        let id = self.store.put(CHANGESET, payload)?;
+        self.save_ref_cas(&branch, Some(ours), id)?;
+        // Workspace materialization is not crash-atomic in v1.
+        self.materialize(&merged, &our_files)?;
+        Ok(id)
+    }
+
     pub fn fsck(&self) -> Result<usize> {
         let ids = self.store.ids()?;
         let mut checked = 0usize;
@@ -307,4 +402,35 @@ mod tests {
         fs::write(r.store.path_for_test(oid), b"corrupt").unwrap();
         assert!(r.fsck().is_err());
     }
+    #[test] fn non_overlapping_merge_and_conflict_rejection() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("a"), b"base-a").unwrap();
+        fs::write(dir.path().join("b"), b"base-b").unwrap();
+        r.commit("dev", "base").unwrap();
+        r.create_branch("feature").unwrap();
+        r.switch_branch("feature").unwrap();
+        fs::write(dir.path().join("b"), b"feature-b").unwrap();
+        r.commit("dev", "feature").unwrap();
+        r.switch_branch("main").unwrap();
+        fs::write(dir.path().join("a"), b"main-a").unwrap();
+        r.commit("dev", "main").unwrap();
+        let merge = r.merge_branch("feature", "dev", "merge").unwrap();
+        assert_eq!(r.get_changeset(merge).unwrap().parents.len(), 2);
+        assert_eq!(fs::read(dir.path().join("a")).unwrap(), b"main-a");
+        assert_eq!(fs::read(dir.path().join("b")).unwrap(), b"feature-b");
+        assert!(r.status().unwrap().is_empty());
+        assert!(r.fsck().is_ok());
+        r.create_branch("conflict").unwrap();
+        r.switch_branch("conflict").unwrap();
+        fs::write(dir.path().join("a"), b"conflict-side").unwrap();
+        r.commit("dev", "conflicting").unwrap();
+        r.switch_branch("main").unwrap();
+        fs::write(dir.path().join("a"), b"another-side").unwrap();
+        r.commit("dev", "another").unwrap();
+        let previous = r.head().unwrap();
+        assert!(r.merge_branch("conflict", "dev", "nope").is_err());
+        assert_eq!(r.head().unwrap(), previous);
+        assert_eq!(fs::read(dir.path().join("a")).unwrap(), b"another-side");
+    }
+
 }
