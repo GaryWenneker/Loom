@@ -24,7 +24,7 @@ Only a **verified** capability counts towards completion. A proposal, issue, ali
 | Stage complete files, directories or selected hunks | Native snapshot staging, recursive/hunk selection | Partial, individual paths only |
 | Commit exactly selected changes | Native immutable changeset + operation log | Partial, opt-in staging |
 | Amend/split/squash/edit history | Explicit operations with retained previous revisions | Missing |
-| Inspect history and ancestry including merges | Native graph queries, log and visualization | First-parent log only |
+| Inspect history and ancestry including merges | Native graph queries, log and visualization | First-parent log and full-parent best merge-base query; no graph visualizer or indexed ancestry yet |
 | Inspect file content and compare revisions | Native `cat`, `diff`, `show`, path history and blame | Basic `cat` and `diff` |
 | Create, rename, delete, protect and switch branches | Native transactional refs and safe workspace changes | Basic create/list/switch |
 | Lightweight and annotated/signed tags | Native tags, verified metadata/signatures | Missing |
