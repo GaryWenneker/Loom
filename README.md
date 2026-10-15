@@ -14,7 +14,7 @@ Loom has its own native storage engine and object format. A separate Git interop
 - Local immutable object storage with on-read integrity verification.
 - SQLite branch refs with compare-and-swap protection.
 - Cross-process advisory worktree write lock around local commits, merges, branch creation and switching.
-- Durable SQLite intent journal for switch/merge transitions: Loom validates the worktree, stages replacement files, replays incomplete operations upon reopening, and updates HEAD/refs only after materialization.
+- Durable SQLite intent journal for switch/merge transitions: Loom validates the worktree, stages replacement files, replays incomplete operations upon reopening, and updates HEAD/refs only after materialization. Merge recovery also publishes its validated immutable tree-root mapping in the same SQLite transaction as the branchref and journal deletion.
 - Local full-worktree status, commits, log, branch creation/switching, basic conservative merges and `fsck`, including checks for staged blob references and pending-recovery changesets.
 - Opt-in persistent native staging index: `loom add PATH...`, `loom unstage PATH...`, frozen content snapshots and staged-only commits. Once enabled, every later commit requires explicit staging; existing repositories retain legacy commit-all behavior until their first `loom add`.
 - Targeted `loom add` and staged status use the native derived branch path index when current; the index can be rebuilt from authoritative history if missing or stale. General worktree scans and indexed ancestry/blame remain separate performance work.

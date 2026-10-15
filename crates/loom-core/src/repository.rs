@@ -189,8 +189,35 @@ impl Repository {
         }
         let before = self.state_at(p.before)?;
         let after = self.state_at(p.after)?;
+        // For merges, derive and validate the immutable destination tree
+        // BEFORE the first worktree mutation. Failure leaves the durable
+        // journal intact and never publishes a new ref or root mapping.
+        let merge_tree = if p.operation == "merge" {
+            let after_id = p.after.ok_or_else(||
+                Error::Invalid("merge journal is missing target changeset".into())
+            )?;
+            let target = self.get_changeset(after_id)?;
+            let base_root = self.native_tree_root(p.before.ok_or_else(||
+                Error::Invalid("merge journal is missing parent".into())
+            )?)?;
+            let root = crate::tree::apply_changes(
+                &self.store, base_root, &target.changes
+            )?;
+            // A cached parent root could be damaged independently of the
+            // immutable changeset chain. The merge path already loads both
+            // complete states, so verify closure before modifying user files.
+            if crate::tree::flatten_snapshot(&self.store, root)? != after {
+                return Err(Error::Invalid(
+                    "merge native tree differs from immutable history".into()
+                ));
+            }
+            Some((after_id, root))
+        } else {
+            None
+        };
         self.materialize(&after, &before)?;
-        // The only commit point: both HEAD/ref update and journal deletion are atomic.
+        // The only commit point: HEAD/ref update, optional merge tree mapping
+        // and journal deletion share one SQLite transaction.
         let tx = self.db.unchecked_transaction()?;
         if p.operation == "switch" {
             let changed = tx.execute(
@@ -205,6 +232,13 @@ impl Repository {
                     p.before.map(|id| id.to_string())]
             )?;
             if changed != 1 { return Err(Error::Conflict("merge ref moved during recovery".into())); }
+            if let Some((revision, root)) = merge_tree {
+                tx.execute(
+                    "INSERT INTO revision_native_tree(revision_oid,root_oid)
+                     VALUES(?1,?2)",
+                    params![revision.to_string(), root.to_string()],
+                )?;
+            }
         }
         tx.execute("DELETE FROM workspace_journal WHERE id=1", [])?;
         tx.commit()?;
@@ -2677,6 +2711,176 @@ mod tests {
         r.commit("tester", "second").unwrap();
         assert!(!r.staging_enabled().unwrap());
         assert!(r.staged_blobs().unwrap().is_empty());
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn normal_merge_publishes_native_root_with_branch_ref() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("shared"), b"common").unwrap();
+        let base = r.commit("tester", "base").unwrap();
+        r.create_branch("feature").unwrap();
+        r.switch_branch("feature").unwrap();
+        fs::write(dir.path().join("feature-file"), b"feature bytes").unwrap();
+        let _feature = r.commit("tester", "feature").unwrap();
+        r.switch_branch("main").unwrap();
+        fs::write(dir.path().join("main-file"), b"main bytes").unwrap();
+        r.commit("tester", "main").unwrap();
+        let merged = r.merge_branch("feature", "tester", "merge both").unwrap();
+        let root_raw: String = r.db.query_row(
+            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+            [merged.to_string()], |row| row.get(0),
+        ).unwrap();
+        let root = ObjectId::parse(&root_raw).unwrap();
+        assert_ne!(merged, base);
+        assert_eq!(r.head().unwrap(), Some(merged));
+        assert_eq!(r.native_tree_root(merged).unwrap(), root);
+        assert_eq!(r.native_tree_file(root, "feature-file").unwrap(),
+                   Some(b"feature bytes".to_vec()));
+        assert_eq!(r.native_tree_file(root, "main-file").unwrap(),
+                   Some(b"main bytes".to_vec()));
+        assert_eq!(crate::tree::flatten_snapshot(&r.store, root).unwrap(),
+                   r.state_at(Some(merged)).unwrap());
+        assert!(r.pending_transition().unwrap().is_none());
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn interrupted_merge_rebuilds_tree_before_publishing_ref() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("a"), b"base").unwrap();
+        fs::write(dir.path().join("stable"), b"same").unwrap();
+        let before = r.commit("tester", "base").unwrap();
+        let blob = r.store.put(BLOB, b"merged").unwrap();
+        let merged = Changeset {
+            parents: vec![before, before],
+            author: "tester".into(), message: "replay merge".into(),
+            timestamp_seconds: 1,
+            changes: vec![Change {
+                kind: ChangeKind::Modify,
+                path: "a".into(), blob: Some(blob),
+            }],
+        };
+        let raw = merged.encode().unwrap();
+        let (_, payload) = decode_object(&raw).unwrap();
+        let after = r.store.put(CHANGESET, payload).unwrap();
+        r.begin_transition(&PendingTransition {
+            operation: "merge".into(), from_branch: "main".into(),
+            to_branch: "main".into(), before: Some(before), after: Some(after),
+        }).unwrap();
+        assert_eq!(r.head().unwrap(), Some(before));
+        assert!(r.db.query_row(
+            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+            [after.to_string()], |row| row.get::<_, String>(0),
+        ).optional().unwrap().is_none());
+        drop(r);
+        let recovered = Repository::discover(dir.path()).unwrap();
+        assert_eq!(recovered.head().unwrap(), Some(after));
+        assert_eq!(fs::read(dir.path().join("a")).unwrap(), b"merged");
+        let root: String = recovered.db.query_row(
+            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+            [after.to_string()], |row| row.get(0),
+        ).unwrap();
+        let id = ObjectId::parse(&root).unwrap();
+        assert_eq!(recovered.native_tree_file(id, "a").unwrap(),
+                   Some(b"merged".to_vec()));
+        assert_eq!(crate::tree::flatten_snapshot(&recovered.store, id).unwrap(),
+                   recovered.state_at(Some(after)).unwrap());
+        assert!(recovered.pending_transition().unwrap().is_none());
+        assert!(recovered.fsck().is_ok());
+    }
+
+    #[test]
+    fn blocked_merge_recovery_preserves_ref_journal_and_root_mapping() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("a"), b"base").unwrap();
+        let before = r.commit("tester", "base").unwrap();
+        let blob = r.store.put(BLOB, b"next").unwrap();
+        let merge = Changeset {
+            parents: vec![before, before], author: "tester".into(),
+            message: "merge".into(), timestamp_seconds: 1,
+            changes: vec![Change {
+                kind: ChangeKind::Modify, path: "a".into(), blob: Some(blob)
+            }],
+        };
+        let raw = merge.encode().unwrap();
+        let (_, payload) = decode_object(&raw).unwrap();
+        let after = r.store.put(CHANGESET, payload).unwrap();
+        r.begin_transition(&PendingTransition {
+            operation: "merge".into(), from_branch: "main".into(),
+            to_branch: "main".into(), before: Some(before), after: Some(after),
+        }).unwrap();
+
+        fs::write(dir.path().join("a"), b"unexpected user edit").unwrap();
+        assert!(r.recover_locked().is_err());
+        assert_eq!(r.head().unwrap(), Some(before));
+        assert!(r.pending_transition().unwrap().is_some());
+        assert!(r.db.query_row(
+            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+            [after.to_string()], |row| row.get::<_, String>(0),
+        ).optional().unwrap().is_none());
+        assert_eq!(fs::read(dir.path().join("a")).unwrap(), b"unexpected user edit");
+        fs::write(dir.path().join("a"), b"base").unwrap();
+        r.recover_locked().unwrap();
+        assert_eq!(r.head().unwrap(), Some(after));
+        let root: String = r.db.query_row(
+            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+            [after.to_string()], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(r.native_tree_file(ObjectId::parse(&root).unwrap(), "a").unwrap(),
+                   Some(b"next".to_vec()));
+        assert!(r.pending_transition().unwrap().is_none());
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn merge_recovery_rejects_corrupt_parent_tree_before_touching_user_files() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("a"), b"base").unwrap();
+        fs::write(dir.path().join("unchanged"), b"keep").unwrap();
+        let before = r.commit("tester", "base").unwrap();
+        let parent_root = r.native_tree_root(before).unwrap();
+        // A syntactically valid empty tree is still the wrong snapshot.
+        let wrong_root = crate::tree::write_snapshot(
+            &r.store, &BTreeMap::new()
+        ).unwrap();
+        assert_ne!(parent_root, wrong_root);
+        r.db.execute(
+            "UPDATE revision_native_tree SET root_oid=?1 WHERE revision_oid=?2",
+            params![wrong_root.to_string(), before.to_string()],
+        ).unwrap();
+
+        let blob = r.store.put(BLOB, b"merged").unwrap();
+        let commit = Changeset {
+            parents: vec![before, before], author: "tester".into(),
+            message: "broken parent".into(), timestamp_seconds: 1,
+            changes: vec![Change {
+                kind: ChangeKind::Modify, path: "a".into(), blob: Some(blob),
+            }],
+        };
+        let encoded = commit.encode().unwrap();
+        let (_, payload) = decode_object(&encoded).unwrap();
+        let after = r.store.put(CHANGESET, payload).unwrap();
+        r.begin_transition(&PendingTransition {
+            operation: "merge".into(), from_branch: "main".into(),
+            to_branch: "main".into(), before: Some(before), after: Some(after),
+        }).unwrap();
+        assert!(r.recover_locked().is_err());
+        assert_eq!(r.head().unwrap(), Some(before));
+        assert_eq!(fs::read(dir.path().join("a")).unwrap(), b"base");
+        assert_eq!(fs::read(dir.path().join("unchanged")).unwrap(), b"keep");
+        assert!(r.pending_transition().unwrap().is_some());
+        assert!(r.db.query_row(
+            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+            [after.to_string()], |row| row.get::<_, String>(0)
+        ).optional().unwrap().is_none());
+
+        r.db.execute(
+            "UPDATE revision_native_tree SET root_oid=?1 WHERE revision_oid=?2",
+            params![parent_root.to_string(), before.to_string()],
+        ).unwrap();
+        r.recover_locked().unwrap();
+        assert_eq!(r.head().unwrap(), Some(after));
         assert!(r.fsck().is_ok());
     }
 
