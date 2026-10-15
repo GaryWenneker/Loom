@@ -740,7 +740,7 @@ impl Repository {
 
     pub fn status(&self) -> Result<Vec<StatusEntry>> {
         let old = self.state_at(self.head()?)?;
-        let files = self.scan_files()?;
+        let files = self.scan_files_tracked(&old)?;
         let changes = self.make_delta(&old, &files, false)?;
         Ok(changes.into_iter().map(|ch| StatusEntry { path: ch.path, kind: match ch.kind {
             ChangeKind::Add => StatusKind::Added, ChangeKind::Modify => StatusKind::Modified,
@@ -753,7 +753,7 @@ impl Repository {
     /// The initial implementation scans full files and is limited by the v1 blob cap.
     pub fn diff_worktree(&self) -> Result<Vec<FileDiff>> {
         let previous = self.state_at(self.head()?)?;
-        let files = self.scan_files()?;
+        let files = self.scan_files_tracked(&previous)?;
         let mut paths = BTreeSet::new();
         paths.extend(previous.keys().cloned());
         paths.extend(files.keys().cloned());
@@ -812,7 +812,7 @@ impl Repository {
     /// captured by 'add' are thus only shown when edited *after* staging.
     pub fn diff_unstaged(&self) -> Result<Vec<FileDiff>> {
         let staged = self.staged_state()?;
-        let files = self.scan_files()?;
+        let files = self.scan_files_tracked(&staged)?;
         let mut paths = BTreeSet::new();
         paths.extend(staged.keys().cloned());
         paths.extend(files.keys().cloned());
@@ -1301,7 +1301,7 @@ impl Repository {
             changes
         } else {
             let old = self.state_at(prev)?;
-            let files = self.scan_files()?;
+            let files = self.scan_files_tracked(&old)?;
             self.make_delta(&old, &files, true)?
         };
         if changes.is_empty() {
