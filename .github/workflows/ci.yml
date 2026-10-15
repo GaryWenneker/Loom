@@ -1,8 +1,12 @@
 name: Rust CI
 on:
   push:
-    branches: [main, feat/native-foundation]
+    branches: [main]
   pull_request:
+
+concurrency:
+  group: loom-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
