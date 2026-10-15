@@ -324,9 +324,9 @@ impl Repository {
             .min_by(|a,b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0))).map(|(id,_)| id))
     }
 
-    /// Conservative merge: non-overlapping file edits merge automatically.
+    /// Conservative merge: independent lines merge, ambiguous changes reject safely.
     /// Ambiguous edits are rejected without creating a merge commit or changing the worktree.
-    /// This is not yet a line-level three-way merge.
+    /// This is not yet a complete rename-aware or structured conflict engine.
     pub fn merge_branch(&self, name: &str, author: &str, message: &str) -> Result<ObjectId> {
         if author.trim().is_empty() || message.trim().is_empty() {
             return Err(Error::Invalid("author and message required".into()));
@@ -351,11 +351,26 @@ impl Repository {
             let original = base.get(&path);
             let local = our_files.get(&path);
             let remote = their_files.get(&path);
-            let chosen = if local == remote { local }
-                else if local == original { remote }
-                else if remote == original { local }
-                else { conflicts.push(path.clone()); continue };
-            if let Some(id) = chosen { merged.insert(path, *id); }
+            let chosen = if local == remote { local.copied() }
+                else if local == original { remote.copied() }
+                else if remote == original { local.copied() }
+                else {
+                    match (original, local, remote) {
+                        (Some(base_id), Some(our_id), Some(their_id)) => {
+                            let base = self.blob_bytes(*base_id)?;
+                            let our_bytes = self.blob_bytes(*our_id)?;
+                            let their_bytes = self.blob_bytes(*their_id)?;
+                            if let Some(bytes) = crate::text_merge::merge_text(&base, &our_bytes, &their_bytes) {
+                                Some(self.store.put(BLOB, &bytes)?)
+                            } else {
+                                conflicts.push(path.clone());
+                                continue;
+                            }
+                        }
+                        _ => { conflicts.push(path.clone()); continue }
+                    }
+                };
+            if let Some(id) = chosen { merged.insert(path, id); }
         }
         // Reject file/directory collisions before publishing the merge commit.
         for path in merged.keys() {
