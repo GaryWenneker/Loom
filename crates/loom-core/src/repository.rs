@@ -354,6 +354,17 @@ impl Repository {
     }
 
     fn scan_files(&self) -> Result<BTreeMap<String, Vec<u8>>> {
+        self.scan_files_with_tracked(None)
+    }
+
+    fn scan_files_tracked(&self, tracked: &BTreeMap<String, ObjectId>) -> Result<BTreeMap<String, Vec<u8>>> {
+        self.scan_files_with_tracked(Some(tracked))
+    }
+
+    fn scan_files_with_tracked(&self, tracked: Option<&BTreeMap<String, ObjectId>>) -> Result<BTreeMap<String, Vec<u8>>> {
+        let ignores = if tracked.is_some() {
+            Some(crate::ignore::IgnoreRules::load(&self.root)?)
+        } else { None };
         let mut result = BTreeMap::new();
         let mut stack = vec![self.root.clone()];
         while let Some(dir) = stack.pop() {
@@ -362,13 +373,14 @@ impl Repository {
                 let kind = item.file_type()?;
                 let name = item.file_name();
                 if name == ".loom" || name == ".git" { continue; }
-                if kind.is_symlink() { return Err(Error::Invalid(format!("symlinks unsupported in v1: {:?}", item.path()))); }
-                if kind.is_dir() { stack.push(item.path()); continue; }
-                if !kind.is_file() { return Err(Error::Invalid(format!("unsupported file type: {:?}", item.path()))); }
                 let relative = item.path().strip_prefix(&self.root).map_err(|_| Error::Invalid("path escaped worktree".into()))?.to_path_buf();
                 let s = relative.to_str().ok_or_else(|| Error::Invalid("non-UTF-8 path not supported in v1".into()))?;
                 let key = if cfg!(windows) { s.replace('\\', "/") } else { s.to_string() };
                 validate_path(&key)?;
+                if kind.is_dir() { stack.push(item.path()); continue; }
+                if ignores.as_ref().is_some_and(|rules| !tracked.is_some_and(|files| files.contains_key(&key)) && rules.ignores(&key)) { continue; }
+                if kind.is_symlink() { return Err(Error::Invalid(format!("symlinks unsupported in v1: {:?}", item.path()))); }
+                if !kind.is_file() { return Err(Error::Invalid(format!("unsupported file type: {:?}", item.path()))); }
                 let metadata = item.metadata()?;
                 if metadata.len() > MAX_OBJECT_SIZE as u64 { return Err(Error::Invalid(format!("file exceeds 64 MiB: {key}"))); }
                 result.insert(key, fs::read(item.path())?);
@@ -536,6 +548,9 @@ impl Repository {
         // adds only need one indexed lookup, irrespective of history depth.
         self.ensure_branch_path_index(&branch, tip)?;
         let prior = self.indexed_blob(&branch, path)?;
+        if prior.is_none() && crate::ignore::IgnoreRules::load(&self.root)?.ignores(path) {
+            return Err(Error::Invalid(format!("ignored untracked path: {path}")));
+        }
         let blob_id = match self.read_staging_path(path)? {
             Some(bytes) => Some(self.store.put(BLOB, &bytes)?),
             None if prior.is_some() => None,
@@ -728,7 +743,7 @@ impl Repository {
 
     pub fn status(&self) -> Result<Vec<StatusEntry>> {
         let old = self.state_at(self.head()?)?;
-        let files = self.scan_files()?;
+        let files = self.scan_files_tracked(&old)?;
         let changes = self.make_delta(&old, &files, false)?;
         Ok(changes.into_iter().map(|ch| StatusEntry { path: ch.path, kind: match ch.kind {
             ChangeKind::Add => StatusKind::Added, ChangeKind::Modify => StatusKind::Modified,
@@ -741,7 +756,7 @@ impl Repository {
     /// The initial implementation scans full files and is limited by the v1 blob cap.
     pub fn diff_worktree(&self) -> Result<Vec<FileDiff>> {
         let previous = self.state_at(self.head()?)?;
-        let files = self.scan_files()?;
+        let files = self.scan_files_tracked(&previous)?;
         let mut paths = BTreeSet::new();
         paths.extend(previous.keys().cloned());
         paths.extend(files.keys().cloned());
@@ -800,7 +815,7 @@ impl Repository {
     /// captured by 'add' are thus only shown when edited *after* staging.
     pub fn diff_unstaged(&self) -> Result<Vec<FileDiff>> {
         let staged = self.staged_state()?;
-        let files = self.scan_files()?;
+        let files = self.scan_files_tracked(&staged)?;
         let mut paths = BTreeSet::new();
         paths.extend(staged.keys().cloned());
         paths.extend(files.keys().cloned());
@@ -1289,7 +1304,7 @@ impl Repository {
             changes
         } else {
             let old = self.state_at(prev)?;
-            let files = self.scan_files()?;
+            let files = self.scan_files_tracked(&old)?;
             self.make_delta(&old, &files, true)?
         };
         if changes.is_empty() {
