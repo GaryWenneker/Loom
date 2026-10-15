@@ -201,6 +201,44 @@ pub(crate) fn write_snapshot(
     save(store, &root, 0)
 }
 
+/// Resolve a tracked file directly from a native tree root without flattening
+/// the entire repository. Only directory objects on the requested path are
+/// loaded; unrelated subtrees and blobs remain untouched.
+///
+/// Returns None for a missing file, including when a path component names a
+/// regular file rather than a directory.
+pub(crate) fn lookup_file(
+    store: &crate::store::ObjectStore,
+    root: ObjectId,
+    path: &str,
+) -> Result<Option<ObjectId>> {
+    validate_path(path)?;
+    let components: Vec<&str> = path.split('/').collect();
+    if components.len() > 256 {
+        return Err(Error::Invalid("native tree path nesting limit reached".into()));
+    }
+    let mut current = root;
+    for (index, name) in components.iter().enumerate() {
+        let node = NativeTree::decode(&store.get(current)?)?;
+        if index > 0 && node.entries.is_empty() {
+            return Err(Error::Invalid("noncanonical empty native tree directory".into()));
+        }
+        let Ok(position) = node.entries.binary_search_by(|entry| entry.name.as_str().cmp(name))
+        else {
+            return Ok(None);
+        };
+        let entry = &node.entries[position];
+        let last = index + 1 == components.len();
+        match (last, entry.kind) {
+            (true, TreeEntryKind::File) => return Ok(Some(entry.object)),
+            (true, TreeEntryKind::Directory) => return Ok(None),
+            (false, TreeEntryKind::File) => return Ok(None),
+            (false, TreeEntryKind::Directory) => current = entry.object,
+        }
+    }
+    Ok(None)
+}
+
 /// Apply a changeset to a canonical immutable directory DAG. Only
 /// directories on paths touched by the changeset are opened and re-encoded.
 /// Unchanged sibling objects retain their IDs, including across revisions.
@@ -513,6 +551,37 @@ mod tests {
     fn conformance_10_truncated_payload_rejected() {
         let encoded = tree().encode().unwrap();
         assert!(NativeTree::decode(&encoded[..encoded.len() - 1]).is_err());
+    }
+
+    #[test]
+    fn sparse_lookup_resolves_files_without_scanning_siblings() {
+        use crate::format::BLOB;
+        use std::collections::BTreeMap;
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join(".loom");
+        fs::create_dir(&meta).unwrap();
+        fs::create_dir(meta.join("objects")).unwrap();
+        let store = crate::store::ObjectStore::new(&meta);
+        let blob = store.put(BLOB, b"target").unwrap();
+        let other = store.put(BLOB, b"other").unwrap();
+        let root = write_snapshot(&store, &BTreeMap::from([
+            ("src/nested/target.rs".to_string(), blob),
+            ("unrelated/other.rs".to_string(), other),
+        ])).unwrap();
+        assert_eq!(lookup_file(&store, root, "src/nested/target.rs").unwrap(), Some(blob));
+        assert_eq!(lookup_file(&store, root, "src/nested/missing.rs").unwrap(), None);
+        assert_eq!(lookup_file(&store, root, "src/nested").unwrap(), None);
+        assert_eq!(lookup_file(&store, root, "src/nested/target.rs/child").unwrap(), None);
+        assert!(lookup_file(&store, root, "../escape").is_err());
+        // A missing unrelated subtree must not break lookup of another path.
+        let mut entries = NativeTree::decode(&store.get(root).unwrap()).unwrap().entries;
+        let sibling = entries.iter_mut().find(|e| e.name == "unrelated").unwrap();
+        sibling.object = ObjectId([0xEE; 32]);
+        let bytes = NativeTree { entries }.encode().unwrap();
+        let (_, payload) = decode_object(&bytes).unwrap();
+        let sparse_root = store.put(TREE, payload).unwrap();
+        assert_eq!(lookup_file(&store, sparse_root, "src/nested/target.rs").unwrap(), Some(blob));
     }
 
     #[test]
