@@ -485,6 +485,37 @@ mod tests {
     }
 
     #[test]
+    fn sparse_lookup_resolves_files_without_scanning_siblings() {
+        use crate::format::BLOB;
+        use std::collections::BTreeMap;
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join(".loom");
+        fs::create_dir(&meta).unwrap();
+        fs::create_dir(meta.join("objects")).unwrap();
+        let store = crate::store::ObjectStore::new(&meta);
+        let blob = store.put(BLOB, b"target").unwrap();
+        let other = store.put(BLOB, b"other").unwrap();
+        let root = write_snapshot(&store, &BTreeMap::from([
+            ("src/nested/target.rs".to_string(), blob),
+            ("unrelated/other.rs".to_string(), other),
+        ])).unwrap();
+        assert_eq!(lookup_file(&store, root, "src/nested/target.rs").unwrap(), Some(blob));
+        assert_eq!(lookup_file(&store, root, "src/nested/missing.rs").unwrap(), None);
+        assert_eq!(lookup_file(&store, root, "src/nested").unwrap(), None);
+        assert_eq!(lookup_file(&store, root, "src/nested/target.rs/child").unwrap(), None);
+        assert!(lookup_file(&store, root, "../escape").is_err());
+        // A missing unrelated subtree must not break lookup of another path.
+        let mut entries = NativeTree::decode(&store.get(root).unwrap()).unwrap().entries;
+        let sibling = entries.iter_mut().find(|e| e.name == "unrelated").unwrap();
+        sibling.object = ObjectId([0xEE; 32]);
+        let bytes = NativeTree { entries }.encode().unwrap();
+        let (_, payload) = decode_object(&bytes).unwrap();
+        let sparse_root = store.put(TREE, payload).unwrap();
+        assert_eq!(lookup_file(&store, sparse_root, "src/nested/target.rs").unwrap(), Some(blob));
+    }
+
+    #[test]
     fn snapshot_rejects_missing_and_wrong_kind_blob_references() {
         use std::collections::BTreeMap;
         use std::fs;
