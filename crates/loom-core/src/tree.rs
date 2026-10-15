@@ -512,6 +512,22 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_rejects_file_directory_collision() {
+        use crate::format::BLOB;
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join(".loom");
+        fs::create_dir(&meta).unwrap();
+        fs::create_dir(meta.join("objects")).unwrap();
+        let store = crate::store::ObjectStore::new(&meta);
+        let blob = store.put(BLOB, b"data").unwrap();
+        let mut state = std::collections::BTreeMap::new();
+        state.insert("node".into(), blob);
+        state.insert("node/child".into(), blob);
+        assert!(write_snapshot(&store, &state).is_err());
+    }
+
+    #[test]
     fn roundtrip_and_deterministic_identity() {
         let source = tree();
         let bytes = source.encode().unwrap();
