@@ -85,6 +85,7 @@ P4 and P5 may be developed independently after the native state/metadata contrac
 **Implemented on main**
 - [x] Basic `init/status/commit/log/branch/switch/diff/cat/fsck` and local end-to-end tests.
 - [x] Opt-in persistent SQLite staging index, selected file snapshots and staged deletion.
+- [ ] Targeted indexed add and staged-status operations (in implementation PR; do not mark complete until merged).
 - [ ] Unified `loom review` with separate staged and post-stage worktree diff views (in implementation PR; do not mark complete before merge).
 - [x] Basic full-worktree scans and first-parent log.
 
