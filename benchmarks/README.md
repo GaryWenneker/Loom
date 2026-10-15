@@ -32,6 +32,12 @@ Compare each operation as fixture size increases. If `add` or a staged `commit` 
 
 Tail percentiles require ample repetitions. Distinguish cold/warm cache performance; report exact OS, filesystem, storage, CPU and RAM. Keep raw JSON output for review. This benchmark **does not** measure large tracked trees, remote RPCs, 100+ parallel writers, distributed cache hit rate, CPU peak, memory use or actual Scion outcomes.
 
+## Automated evidence
+
+The [Scalability evidence workflow](../.github/workflows/scalability.yml) runs weekly or manually from GitHub Actions. It builds the release binary, runs the 100/1,000/10,000-file suites with 20 commits each and uploads raw JSON samples as a versioned artifact (90-day retention).
+
+Runner hardware may vary between runs. Always compare hardware metadata and binary hashes before attributing timing differences to Loom code. These observations are not release performance guarantees.
+
 ## Required follow-on benchmarks
 
 The [Scion architecture assessment](../docs/scion-architecture-review.md) still requires:
