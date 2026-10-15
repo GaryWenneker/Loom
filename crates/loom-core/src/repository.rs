@@ -1198,6 +1198,74 @@ mod tests {
         assert!(reopened.status().unwrap().is_empty());
     }
 
+
+    #[test]
+    fn derived_index_is_incremental_and_rebuildable() {
+        let (dir, r) = repo();
+        for i in 0..40 {
+            fs::write(dir.path().join(format!("file-{i:03}.txt")), format!("base {i}")).unwrap();
+        }
+        let baseline = r.commit("tester", "baseline").unwrap();
+        // Legacy repository lazily initializes its derived branch index.
+        assert!(r.db.query_row(
+            "SELECT oid FROM branch_path_index_tip WHERE branch='main'",
+            [], |row| row.get::<_, String>(0)
+        ).optional().unwrap().is_none());
+        for i in 0..12 {
+            fs::write(dir.path().join("file-000.txt"), format!("step {i}")).unwrap();
+            r.add("file-000.txt").unwrap();
+            r.commit("tester", &format!("step {i}")).unwrap();
+        }
+        let tip = r.head().unwrap().unwrap();
+        assert_ne!(tip, baseline);
+        let current: String = r.db.query_row(
+            "SELECT oid FROM branch_path_index_tip WHERE branch='main'",
+            [], |row| row.get(0)
+        ).unwrap();
+        assert_eq!(current, tip.to_string());
+        let size: i64 = r.db.query_row(
+            "SELECT count(*) FROM branch_path_index WHERE branch='main'",
+            [], |row| row.get(0)
+        ).unwrap();
+        assert_eq!(size, 40);
+        assert_eq!(r.indexed_blob("main", "file-000.txt").unwrap(),
+            r.state_at(Some(tip)).unwrap().get("file-000.txt").copied());
+
+        // Drop only derived data. History remains authoritative and an
+        // upcoming staged commit reconstructs the index from immutable data.
+        r.db.execute("DELETE FROM branch_path_index_tip", []).unwrap();
+        r.db.execute("DELETE FROM branch_path_index", []).unwrap();
+        fs::write(dir.path().join("file-001.txt"), b"recovered").unwrap();
+        r.add("file-001.txt").unwrap();
+        r.commit("tester", "after index eviction").unwrap();
+        assert!(r.fsck().is_ok());
+        assert_eq!(r.read_branch_file("main", "file-001.txt").unwrap(),
+            Some(b"recovered".to_vec()));
+    }
+
+    #[test]
+    fn derived_indexes_are_branch_isolated() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("shared"), b"original").unwrap();
+        r.commit("tester", "start").unwrap();
+        r.create_branch("feature").unwrap();
+        r.switch_branch("feature").unwrap();
+        fs::write(dir.path().join("shared"), b"feature").unwrap();
+        r.add("shared").unwrap();
+        r.commit("tester", "feature version").unwrap();
+        assert_eq!(r.read_branch_file("feature", "shared").unwrap(),
+            Some(b"feature".to_vec()));
+        r.switch_branch("main").unwrap();
+        fs::write(dir.path().join("shared"), b"main").unwrap();
+        r.add("shared").unwrap();
+        r.commit("tester", "main version").unwrap();
+        assert_eq!(r.read_branch_file("main", "shared").unwrap(),
+            Some(b"main".to_vec()));
+        assert_eq!(r.read_branch_file("feature", "shared").unwrap(),
+            Some(b"feature".to_vec()));
+        assert!(r.fsck().is_ok());
+    }
+
     #[test] fn corrupt_object_detected() {
         let (_dir, r) = repo();
         let oid = r.store.put(BLOB, b"x").unwrap();
