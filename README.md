@@ -17,7 +17,7 @@ It is **not built on Git** and is not an extension of AX. A separate Git compati
 - `loom cat BRANCH PATH` for binary-safe direct access to native snapshot files without checkout.
 - Cross-platform compilation, tests and Rust dependency auditing in GitHub Actions.
 
-Merge detects file-level conflicts and rejects them without touching branch history. **Line-level merging is not yet supported.** Worktree switching/materialization is not crash-atomic. This is **not** ready to replace Git for production.
+Merge supports conservative three-way line merging when text changes do not overlap and refuses ambiguous edits or binary conflicts. **Rename-aware merging, full conflict resolution, rebases and crash-atomic worktree materialization are not yet supported.** This is **not** ready to replace Git for production.
 
 ## Build
 
