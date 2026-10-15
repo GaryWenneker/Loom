@@ -939,21 +939,50 @@ impl Repository {
     /// Native tree nodes use the separately versioned v2 object envelope.
     /// The revision -> root mapping is a rebuildable derived index.
     pub fn native_tree_root(&self, revision: ObjectId) -> Result<ObjectId> {
-        self.get_changeset(revision)?;
         let key = revision.to_string();
-        let cached: Option<String> = self.db.query_row(
-            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
-            [&key], |row| row.get(0),
-        ).optional()?;
-        if let Some(raw) = cached {
-            let root = ObjectId::parse(&raw)?;
-            crate::tree::NativeTree::decode(&self.store.get(root)?)?;
-            return Ok(root);
+        let mut pending = Vec::new();
+        let mut cursor = Some(revision);
+        let mut visited = HashSet::new();
+        let mut ancestor_root = None;
+
+        // Walk immutable changeset metadata to the closest previously
+        // materialized root. Unlike state_at + write_snapshot, this never
+        // constructs a complete path map when an ancestor root exists.
+        while let Some(id) = cursor {
+            if visited.len() >= 1_000_000 || !visited.insert(id) {
+                return Err(Error::Invalid(
+                    "native tree ancestry cycle or depth limit".into()
+                ));
+            }
+            let commit = self.get_changeset(id)?;
+            let cached: Option<String> = self.db.query_row(
+                "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+                [id.to_string()], |row| row.get(0),
+            ).optional()?;
+            if let Some(raw) = cached {
+                let root = ObjectId::parse(&raw)?;
+                crate::tree::NativeTree::decode(&self.store.get(root)?)?;
+                ancestor_root = Some(root);
+                break;
+            }
+            cursor = commit.parents.first().copied();
+            pending.push(commit);
         }
-        // Use canonical history rather than a possibly stale derived SQLite
-        // path index when creating an immutable source-of-truth object.
-        let state = self.state_at(Some(revision))?;
-        let root = crate::tree::write_snapshot(&self.store, &state)?;
+
+        let mut root = match ancestor_root {
+            Some(id) => id,
+            None => crate::tree::write_snapshot(
+                &self.store, &BTreeMap::new()
+            )?,
+        };
+        for commit in pending.iter().rev() {
+            root = crate::tree::apply_changes(
+                &self.store, root, &commit.changes
+            )?;
+        }
+        // The mapping is derived data. It is persisted only once every
+        // referenced immutable tree object is fully written. A race must
+        // resolve to the same deterministic root or fail closed.
         self.db.execute(
             "INSERT OR IGNORE INTO revision_native_tree(revision_oid,root_oid)
              VALUES(?1,?2)",
@@ -2389,6 +2418,75 @@ mod tests {
         fs::remove_file(r.store.path_for_test(blob)).unwrap();
         assert!(r.native_tree_file(root, "file").is_err());
         assert!(r.fsck().is_err());
+    }
+
+    #[test]
+    fn incremental_native_roots_match_every_first_parent_revision() {
+        let (dir, r) = repo();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::create_dir_all(dir.path().join("untouched")).unwrap();
+        fs::write(dir.path().join("src/a"), b"first").unwrap();
+        fs::write(dir.path().join("untouched/b"), b"stable").unwrap();
+        let first = r.commit("tester", "initial").unwrap();
+        let original_root = r.native_tree_root(first).unwrap();
+        let sibling = r.native_tree_entries(original_root, None).unwrap()
+            .into_iter().find(|e| e.name == "untouched").unwrap().object;
+
+        let mut current = first;
+        for i in 0..24 {
+            fs::write(dir.path().join("src/a"), format!("value-{i}")).unwrap();
+            r.add("src/a").unwrap();
+            current = r.commit("tester", &format!("update-{i}")).unwrap();
+            let incrementally_built = r.native_tree_root(current).unwrap();
+            let fully_rebuilt = crate::tree::write_snapshot(
+                &r.store, &r.state_at(Some(current)).unwrap()
+            ).unwrap();
+            assert_eq!(incrementally_built, fully_rebuilt);
+            assert_eq!(r.native_tree_file(incrementally_built, "src/a").unwrap(),
+                       Some(format!("value-{i}").into_bytes()));
+            let preserved = r.native_tree_entries(incrementally_built, None).unwrap()
+                .into_iter().find(|e| e.name == "untouched").unwrap().object;
+            assert_eq!(sibling, preserved);
+        }
+        assert!(r.fsck().is_ok());
+        let current_root = r.native_tree_root(current).unwrap();
+        // The optional revision-to-tree mapping is entirely rebuildable.
+        r.db.execute("DELETE FROM revision_native_tree", []).unwrap();
+        assert_eq!(r.native_tree_root(current).unwrap(), current_root);
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn incremental_native_roots_are_correct_after_branch_divergence() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("shared"), b"base").unwrap();
+        let base = r.commit("tester", "base").unwrap();
+        let base_root = r.native_tree_root(base).unwrap();
+        r.create_branch("feature").unwrap();
+        r.switch_branch("feature").unwrap();
+        fs::write(dir.path().join("feature-file"), b"feature").unwrap();
+        r.add("feature-file").unwrap();
+        let feature = r.commit("tester", "feature").unwrap();
+        let feature_root = r.native_tree_root(feature).unwrap();
+        r.switch_branch("main").unwrap();
+        fs::write(dir.path().join("main-file"), b"main").unwrap();
+        r.add("main-file").unwrap();
+        let main = r.commit("tester", "main").unwrap();
+        let main_root = r.native_tree_root(main).unwrap();
+        assert_ne!(feature_root, main_root);
+        assert_ne!(base_root, feature_root);
+        assert_eq!(r.native_tree_file(feature_root, "feature-file").unwrap(),
+                   Some(b"feature".to_vec()));
+        assert_eq!(r.native_tree_file(main_root, "feature-file").unwrap(), None);
+        assert_eq!(r.native_tree_file(main_root, "main-file").unwrap(),
+                   Some(b"main".to_vec()));
+        assert_eq!(feature_root, crate::tree::write_snapshot(
+            &r.store, &r.state_at(Some(feature)).unwrap()
+        ).unwrap());
+        assert_eq!(main_root, crate::tree::write_snapshot(
+            &r.store, &r.state_at(Some(main)).unwrap()
+        ).unwrap());
+        assert!(r.fsck().is_ok());
     }
 
     #[test] fn corrupt_object_detected() {
