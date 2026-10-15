@@ -128,10 +128,19 @@ impl ObjectStore {
 
     pub fn ids(&self) -> Result<Vec<ObjectId>> {
         let mut out = Vec::new();
-        if !self.dir.exists() { return Ok(out); }
+        match fs::symlink_metadata(&self.dir) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+            Err(e) => return Err(e.into()),
+            Ok(meta) if !meta.file_type().is_dir() || meta.file_type().is_symlink() => {
+                return Err(Error::Invalid("object storage directory is not a real directory".into()));
+            }
+            Ok(_) => {},
+        }
         for dir in fs::read_dir(&self.dir)? {
             let dir = dir?;
-            if !dir.file_type()?.is_dir() { continue; }
+            if !dir.file_type()?.is_dir() {
+                return Err(Error::Invalid("unexpected non-directory object fanout".into()));
+            }
             let prefix = dir.file_name().into_string().map_err(|_| Error::Invalid("invalid object prefix".into()))?;
             if prefix.len() != 2 { return Err(Error::Invalid("invalid object directory name".into())); }
             for entry in fs::read_dir(dir.path())? {
@@ -143,5 +152,81 @@ impl ObjectStore {
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::format::BLOB;
+    use std::sync::Arc;
+
+    fn store() -> (tempfile::TempDir, ObjectStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join(".loom");
+        fs::create_dir(&meta).unwrap();
+        fs::create_dir(meta.join("objects")).unwrap();
+        let store = ObjectStore::new(&meta);
+        (dir, store)
+    }
+
+    #[test]
+    fn immutable_publication_is_idempotent_with_parallel_writers() {
+        let (_dir, store) = store();
+        let store = Arc::new(store);
+        let handles: Vec<_> = (0..12)
+            .map(|_| {
+                let store = Arc::clone(&store);
+                std::thread::spawn(move || store.put(BLOB, b"same payload"))
+            })
+            .collect();
+        let ids: Vec<_> = handles.into_iter().map(|h| h.join().unwrap().unwrap()).collect();
+        assert!(ids.iter().all(|id| *id == ids[0]));
+        assert_eq!(store.ids().unwrap(), vec![ids[0]]);
+        assert_eq!(store.get(ids[0]).unwrap(),
+                   encode_object(BLOB, b"same payload").unwrap());
+    }
+
+    #[test]
+    fn existing_corrupt_object_cannot_be_silently_replaced() {
+        let (_dir, store) = store();
+        let id = store.put(BLOB, b"correct bytes").unwrap();
+        let path = store.path(id);
+        fs::write(&path, b"tampered").unwrap();
+        assert!(store.put(BLOB, b"correct bytes").is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"tampered");
+    }
+
+    #[test]
+    fn oversized_object_is_rejected_before_loading() {
+        let (_dir, store) = store();
+        let id = store.put(BLOB, b"small").unwrap();
+        let path = store.path(id);
+        let file = OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_len((crate::format::MAX_OBJECT_SIZE + 16) as u64).unwrap();
+        assert!(store.get(id).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reject_object_symlinks_and_symlinked_fanout_directory() {
+        use std::os::unix::fs::symlink;
+        let (dir, store) = store();
+        let id = store.put(BLOB, b"data").unwrap();
+        let target = dir.path().join("outside");
+        fs::write(&target, b"outside").unwrap();
+        let path = store.path(id);
+        fs::remove_file(&path).unwrap();
+        symlink(&target, &path).unwrap();
+        assert!(store.get(id).is_err());
+        assert!(store.put(BLOB, b"data").is_err());
+        fs::remove_file(&path).unwrap();
+
+        let parent = path.parent().unwrap();
+        fs::remove_dir(parent).unwrap();
+        symlink(dir.path(), parent).unwrap();
+        assert!(store.get(id).is_err());
+        assert!(store.put(BLOB, b"data").is_err());
+        assert!(store.ids().is_err());
     }
 }
