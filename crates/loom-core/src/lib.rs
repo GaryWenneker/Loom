@@ -3,6 +3,7 @@
 mod format;
 mod repository;
 mod store;
+mod text_merge;
 
 pub use format::{Change, ChangeKind, Changeset, ObjectId};
 pub use repository::{FileDiff, Repository, StatusEntry, StatusKind};
