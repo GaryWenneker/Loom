@@ -40,6 +40,8 @@ For every destructive workspace operation (switch, restore, reset, clean, merge,
 
 ## 3. Format and compatibility certification
 
+- Functional parity is evaluated against the [Git capability inventory](git-capability-parity.md) using behavior-oriented test fixtures. Matching Git commands is optional; achieving equivalent outcomes safely is required for claimed capabilities.
+
 - Golden hash/test vectors across all claimed OS/CPU combinations.
 - Roundtrips for blobs, trees, histories, merges, large files, file modes and symlinks (where claimed).
 - Invalid and adversarial decode inputs rejected within bounded time/memory.
