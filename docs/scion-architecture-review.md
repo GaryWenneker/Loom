@@ -18,7 +18,7 @@
 | Durability | Partial process-crash replay | Large production deployment; internal fuzzing | Fault matrix, backup/restore, audit |
 | Performance evidence | Cross-platform functional CI only | Vendor-reported large-scale operational gains | Independent reproducible benchmark fixtures |
 
-**This performance PR removes whole-worktree scanning from the explicit staged add/commit path. It does not change unindexed history reconstruction, full-worktree status or the native tree format, and no scale claim is made without benchmarks.**
+**Development progress:** selected-file staging no longer scans the whole worktree, and a derived SQLite branch path index now supports incremental staged commits. Full-worktree status, arbitrary revision reconstruction, scalable derived blame/ancestry, native tree format and server-side commits remain incomplete. No speedup is claimed without reproducible measurements.
 
 ## Architectural recommendations
 

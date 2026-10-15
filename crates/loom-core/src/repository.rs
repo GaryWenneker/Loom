@@ -75,6 +75,16 @@ impl Repository {
                  path TEXT PRIMARY KEY NOT NULL,
                  blob_id TEXT
              );
+             CREATE TABLE IF NOT EXISTS branch_path_index (
+                 branch TEXT NOT NULL,
+                 path TEXT NOT NULL,
+                 oid TEXT NOT NULL,
+                 PRIMARY KEY (branch, path)
+             );
+             CREATE TABLE IF NOT EXISTS branch_path_index_tip (
+                 branch TEXT PRIMARY KEY NOT NULL,
+                 oid TEXT NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS workspace_journal (
                  id INTEGER PRIMARY KEY CHECK(id=1),
                  operation TEXT NOT NULL,
@@ -422,10 +432,52 @@ impl Repository {
         Ok(())
     }
 
-    fn staged_changes(&self, old: &BTreeMap<String, ObjectId>) -> Result<Vec<Change>> {
+    /// A rebuildable derived index. First use on a legacy/stale branch
+    /// reconstructs its first-parent snapshot; subsequent staged commits
+    /// update only changed paths in the same transaction as the ref CAS.
+    fn ensure_branch_path_index(
+        &self, branch: &str, tip: Option<ObjectId>
+    ) -> Result<()> {
+        let expected = tip.map(|id| id.to_string()).unwrap_or_default();
+        let current: Option<String> = self.db.query_row(
+            "SELECT oid FROM branch_path_index_tip WHERE branch=?1",
+            [branch], |r| r.get(0),
+        ).optional()?;
+        if current.as_deref() == Some(expected.as_str()) {
+            return Ok(());
+        }
+        let full_state = self.state_at(tip)?;
+        let tx = self.db.unchecked_transaction()?;
+        tx.execute("DELETE FROM branch_path_index WHERE branch=?1", [branch])?;
+        {
+            let mut insert = tx.prepare(
+                "INSERT INTO branch_path_index(branch,path,oid) VALUES(?1,?2,?3)"
+            )?;
+            for (path, oid) in full_state {
+                insert.execute(params![branch, path, oid.to_string()])?;
+            }
+        }
+        tx.execute(
+            "INSERT INTO branch_path_index_tip(branch,oid) VALUES(?1,?2)
+             ON CONFLICT(branch) DO UPDATE SET oid=excluded.oid",
+            params![branch, expected],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn indexed_blob(&self, branch: &str, path: &str) -> Result<Option<ObjectId>> {
+        let value: Option<String> = self.db.query_row(
+            "SELECT oid FROM branch_path_index WHERE branch=?1 AND path=?2",
+            params![branch, path], |r| r.get(0),
+        ).optional()?;
+        value.map(|raw| ObjectId::parse(&raw)).transpose()
+    }
+
+    fn staged_changes_indexed(&self, branch: &str) -> Result<Vec<Change>> {
         let mut changes = Vec::new();
         for (path, blob) in self.staged_blobs()? {
-            let previous = old.get(&path).copied();
+            let previous = self.indexed_blob(branch, &path)?;
             if previous == blob { continue; }
             let kind = if blob.is_none() { ChangeKind::Delete }
                 else if previous.is_none() { ChangeKind::Add }
@@ -441,23 +493,44 @@ impl Repository {
         Ok(changes)
     }
 
-    /// Reject impossible file/directory combinations in the resulting tree.
-    /// A selective commit must not leave a tracked file alongside its child.
-    fn validate_staged_tree(
-        &self, original: &BTreeMap<String, ObjectId>, changes: &[Change]
+    /// Indexed collision check only touches ancestors and descendants of
+    /// staged changes; it does not enumerate the entire tracked path set.
+    fn validate_staged_tree_indexed(
+        &self, branch: &str, changes: &[Change]
     ) -> Result<()> {
-        let mut paths: BTreeSet<String> = original.keys().cloned().collect();
+        let staged: BTreeMap<&str, &Change> = changes.iter()
+            .map(|change| (change.path.as_str(), change)).collect();
         for change in changes {
-            match change.kind {
-                ChangeKind::Delete => { paths.remove(&change.path); }
-                ChangeKind::Add | ChangeKind::Modify => { paths.insert(change.path.clone()); }
-            }
-        }
-        for path in &paths {
-            for (idx, ch) in path.char_indices() {
-                if ch == '/' && paths.contains(&path[..idx]) {
+            if change.kind == ChangeKind::Delete { continue; }
+            for (idx, ch) in change.path.char_indices() {
+                if ch != '/' { continue; }
+                let ancestor = &change.path[..idx];
+                if let Some(other) = staged.get(ancestor) {
+                    if other.kind != ChangeKind::Delete {
+                        return Err(Error::Conflict(format!(
+                            "staged file/directory collision: {}", change.path
+                        )));
+                    }
+                } else if self.indexed_blob(branch, ancestor)?.is_some() {
                     return Err(Error::Conflict(format!(
-                        "staged snapshot contains a file/directory collision: {path}"
+                        "tracked file/directory collision: {}", change.path
+                    )));
+                }
+            }
+            let lower = format!("{}/", change.path);
+            // ASCII '/' sorts immediately below ASCII '0' in SQLite BINARY
+            // collation, giving an indexed range for descendants only.
+            let upper = format!("{}0", change.path);
+            let mut stmt = self.db.prepare(
+                "SELECT path FROM branch_path_index
+                 WHERE branch=?1 AND path>=?2 AND path<?3"
+            )?;
+            let paths = stmt.query_map(params![branch, lower, upper], |r| r.get::<_, String>(0))?;
+            for entry in paths {
+                let child = entry?;
+                if !staged.get(child.as_str()).is_some_and(|other| other.kind == ChangeKind::Delete) {
+                    return Err(Error::Conflict(format!(
+                        "staged file/directory collision: {}", change.path
                     )));
                 }
             }
@@ -466,7 +539,8 @@ impl Repository {
     }
 
     fn publish_staged_commit(
-        &self, branch: &str, previous: Option<ObjectId>, next: ObjectId
+        &self, branch: &str, previous: Option<ObjectId>, next: ObjectId,
+        changes: &[Change]
     ) -> Result<()> {
         let tx = self.db.unchecked_transaction()?;
         let moved = tx.execute(
@@ -476,6 +550,34 @@ impl Repository {
         if moved != 1 {
             return Err(Error::Conflict(format!("branch {branch} moved; staged files retained")));
         }
+        // Keep the derived path cache and its revision marker consistent with
+        // refs in the SAME SQLite transaction. An interrupted commit cannot
+        // publish a new ref alongside old cached file state.
+        for change in changes {
+            match change.kind {
+                ChangeKind::Delete => {
+                    tx.execute(
+                        "DELETE FROM branch_path_index WHERE branch=?1 AND path=?2",
+                        params![branch, change.path],
+                    )?;
+                }
+                ChangeKind::Add | ChangeKind::Modify => {
+                    let id = change.blob.ok_or_else(||
+                        Error::Invalid("staged update without blob".into())
+                    )?;
+                    tx.execute(
+                        "INSERT INTO branch_path_index(branch,path,oid)
+                         VALUES(?1,?2,?3)
+                         ON CONFLICT(branch,path) DO UPDATE SET oid=excluded.oid",
+                        params![branch, change.path, id.to_string()],
+                    )?;
+                }
+            }
+        }
+        tx.execute(
+            "UPDATE branch_path_index_tip SET oid=?1 WHERE branch=?2",
+            params![next.to_string(), branch],
+        )?;
         tx.execute("DELETE FROM stage_index", [])?;
         tx.commit()?;
         Ok(())
@@ -631,20 +733,23 @@ impl Repository {
         if author.trim().is_empty() || message.trim().is_empty() { return Err(Error::Invalid("author and commit message are required".into())); }
         let branch = self.current_branch()?;
         let prev = self.branch_tip(&branch)?;
-        let old = self.state_at(prev)?;
         let staged = self.staging_enabled()?;
         let changes = if staged {
-            // Staged bytes already have immutable object IDs. Reading the
-            // entire worktree again would make a small commit O(all files).
-            self.staged_changes(&old)?
+            // On first use or after a merge/legacy commit, rebuild from
+            // immutable history. Subsequent staged commits use indexed
+            // lookups and touch only paths named by the staged snapshot.
+            self.ensure_branch_path_index(&branch, prev)?;
+            let changes = self.staged_changes_indexed(&branch)?;
+            self.validate_staged_tree_indexed(&branch, &changes)?;
+            changes
         } else {
+            let old = self.state_at(prev)?;
             let files = self.scan_files()?;
             self.make_delta(&old, &files, true)?
         };
         if changes.is_empty() {
             return Err(Error::Invalid(if staged { "nothing staged to commit" } else { "nothing to commit" }.into()));
         }
-        if staged { self.validate_staged_tree(&old, &changes)?; }
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| Error::Invalid("system time before epoch".into()))?;
         let c = Changeset { parents: prev.into_iter().collect(), author: author.into(), message: message.into(),
             timestamp_seconds: now.as_secs() as i64, changes };
@@ -652,7 +757,7 @@ impl Repository {
         let (_, payload) = decode_object(&raw)?;
         let id = self.store.put(CHANGESET, payload)?;
         if staged {
-            self.publish_staged_commit(&branch, prev, id)?;
+            self.publish_staged_commit(&branch, prev, id, &c.changes)?;
         } else {
             self.save_ref_cas(&branch, prev, id)?;
         }
@@ -929,8 +1034,36 @@ impl Repository {
             }
             checked += 1;
         }
-        for (_, tip) in self.branches()? {
-            if let Some(id) = tip { self.get_changeset(id)?; self.state_at(Some(id))?; }
+        for (branch, tip) in self.branches()? {
+            if let Some(id) = tip { self.get_changeset(id)?; }
+            let expected = self.state_at(tip)?;
+            // Derived index is allowed to be absent or stale after merge,
+            // branch creation or legacy commit, but if its revision marker
+            // claims to be current its contents must match immutable history.
+            let indexed_tip: Option<String> = self.db.query_row(
+                "SELECT oid FROM branch_path_index_tip WHERE branch=?1",
+                [&branch], |row| row.get(0),
+            ).optional()?;
+            let head = tip.map(|id| id.to_string()).unwrap_or_default();
+            if indexed_tip.as_deref() == Some(head.as_str()) {
+                let mut stmt = self.db.prepare(
+                    "SELECT path,oid FROM branch_path_index WHERE branch=?1 ORDER BY path"
+                )?;
+                let entries = stmt.query_map([&branch], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })?;
+                let mut indexed = BTreeMap::new();
+                for row in entries {
+                    let (path, id) = row?;
+                    validate_path(&path)?;
+                    indexed.insert(path, ObjectId::parse(&id)?);
+                }
+                if indexed != expected {
+                    return Err(Error::Invalid(format!(
+                        "derived branch path index disagrees with history: {branch}"
+                    )));
+                }
+            }
         }
         Ok(checked)
     }
@@ -1091,6 +1224,74 @@ mod tests {
         assert_eq!(fs::read(dir.path().join("a")).unwrap(), b"merged");
         assert!(reopened.pending_transition().unwrap().is_none());
         assert!(reopened.status().unwrap().is_empty());
+    }
+
+
+    #[test]
+    fn derived_index_is_incremental_and_rebuildable() {
+        let (dir, r) = repo();
+        for i in 0..40 {
+            fs::write(dir.path().join(format!("file-{i:03}.txt")), format!("base {i}")).unwrap();
+        }
+        let baseline = r.commit("tester", "baseline").unwrap();
+        // Legacy repository lazily initializes its derived branch index.
+        assert!(r.db.query_row(
+            "SELECT oid FROM branch_path_index_tip WHERE branch='main'",
+            [], |row| row.get::<_, String>(0)
+        ).optional().unwrap().is_none());
+        for i in 0..12 {
+            fs::write(dir.path().join("file-000.txt"), format!("step {i}")).unwrap();
+            r.add("file-000.txt").unwrap();
+            r.commit("tester", &format!("step {i}")).unwrap();
+        }
+        let tip = r.head().unwrap().unwrap();
+        assert_ne!(tip, baseline);
+        let current: String = r.db.query_row(
+            "SELECT oid FROM branch_path_index_tip WHERE branch='main'",
+            [], |row| row.get(0)
+        ).unwrap();
+        assert_eq!(current, tip.to_string());
+        let size: i64 = r.db.query_row(
+            "SELECT count(*) FROM branch_path_index WHERE branch='main'",
+            [], |row| row.get(0)
+        ).unwrap();
+        assert_eq!(size, 40);
+        assert_eq!(r.indexed_blob("main", "file-000.txt").unwrap(),
+            r.state_at(Some(tip)).unwrap().get("file-000.txt").copied());
+
+        // Drop only derived data. History remains authoritative and an
+        // upcoming staged commit reconstructs the index from immutable data.
+        r.db.execute("DELETE FROM branch_path_index_tip", []).unwrap();
+        r.db.execute("DELETE FROM branch_path_index", []).unwrap();
+        fs::write(dir.path().join("file-001.txt"), b"recovered").unwrap();
+        r.add("file-001.txt").unwrap();
+        r.commit("tester", "after index eviction").unwrap();
+        assert!(r.fsck().is_ok());
+        assert_eq!(r.read_branch_file("main", "file-001.txt").unwrap(),
+            Some(b"recovered".to_vec()));
+    }
+
+    #[test]
+    fn derived_indexes_are_branch_isolated() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("shared"), b"original").unwrap();
+        r.commit("tester", "start").unwrap();
+        r.create_branch("feature").unwrap();
+        r.switch_branch("feature").unwrap();
+        fs::write(dir.path().join("shared"), b"feature").unwrap();
+        r.add("shared").unwrap();
+        r.commit("tester", "feature version").unwrap();
+        assert_eq!(r.read_branch_file("feature", "shared").unwrap(),
+            Some(b"feature".to_vec()));
+        r.switch_branch("main").unwrap();
+        fs::write(dir.path().join("shared"), b"main").unwrap();
+        r.add("shared").unwrap();
+        r.commit("tester", "main version").unwrap();
+        assert_eq!(r.read_branch_file("main", "shared").unwrap(),
+            Some(b"main".to_vec()));
+        assert_eq!(r.read_branch_file("feature", "shared").unwrap(),
+            Some(b"feature".to_vec()));
+        assert!(r.fsck().is_ok());
     }
 
     #[test] fn corrupt_object_detected() {
