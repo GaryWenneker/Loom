@@ -201,6 +201,44 @@ pub(crate) fn write_snapshot(
     save(store, &root, 0)
 }
 
+/// Resolve a tracked file directly from a native tree root without flattening
+/// the entire repository. Only directory objects on the requested path are
+/// loaded; unrelated subtrees and blobs remain untouched.
+///
+/// Returns None for a missing file, including when a path component names a
+/// regular file rather than a directory.
+pub(crate) fn lookup_file(
+    store: &crate::store::ObjectStore,
+    root: ObjectId,
+    path: &str,
+) -> Result<Option<ObjectId>> {
+    validate_path(path)?;
+    let components: Vec<&str> = path.split('/').collect();
+    if components.len() > 256 {
+        return Err(Error::Invalid("native tree path nesting limit reached".into()));
+    }
+    let mut current = root;
+    for (index, name) in components.iter().enumerate() {
+        let node = NativeTree::decode(&store.get(current)?)?;
+        if index > 0 && node.entries.is_empty() {
+            return Err(Error::Invalid("noncanonical empty native tree directory".into()));
+        }
+        let Ok(position) = node.entries.binary_search_by(|entry| entry.name.as_str().cmp(name))
+        else {
+            return Ok(None);
+        };
+        let entry = &node.entries[position];
+        let last = index + 1 == components.len();
+        match (last, entry.kind) {
+            (true, TreeEntryKind::File) => return Ok(Some(entry.object)),
+            (true, TreeEntryKind::Directory) => return Ok(None),
+            (false, TreeEntryKind::File) => return Ok(None),
+            (false, TreeEntryKind::Directory) => current = entry.object,
+        }
+    }
+    Ok(None)
+}
+
 /// Apply a changeset to a canonical immutable directory DAG. Only
 /// directories on paths touched by the changeset are opened and re-encoded.
 /// Unchanged sibling objects retain their IDs, including across revisions.
