@@ -168,6 +168,16 @@ pub(crate) fn write_snapshot(
         store.put(TREE, payload)
     }
 
+    // Validate the complete blob closure before publishing any tree node.
+    // A missing object or a tree masquerading as a file must fail closed.
+    for (path, blob) in state {
+        validate_path(path)?;
+        let object = store.get(*blob)?;
+        if decode_object(&object)?.0 != crate::format::BLOB {
+            return Err(Error::Invalid(format!("native tree file does not reference a blob: {path}")));
+        }
+    }
+
     let mut root = Folder::default();
     for (path, blob) in state {
         validate_path(path)?;
@@ -382,6 +392,9 @@ pub(crate) fn flatten_snapshot(
         }
         let result = (|| -> Result<()> {
             let node = NativeTree::decode(&store.get(id)?)?;
+            if depth > 0 && node.entries.is_empty() {
+                return Err(Error::Invalid("noncanonical empty native tree directory".into()));
+            }
             for entry in node.entries {
                 let path = if prefix.is_empty() {
                     entry.name.clone()
