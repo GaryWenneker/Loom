@@ -107,6 +107,15 @@ impl ObjectStore {
         }
         let file = fs::File::open(&path)?;
         let open_metadata = file.metadata()?;
+        // Reject multiply-linked objects: an external alias could mutate an
+        // otherwise immutable object without going through this store.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if open_metadata.nlink() != 1 {
+                return Err(Error::Invalid(format!("object has multiple hard links: {id}")));
+            }
+        }
         if !open_metadata.is_file() || open_metadata.len() > (crate::format::MAX_OBJECT_SIZE + 15) as u64 {
             return Err(Error::Invalid(format!("object changed during open: {id}")));
         }
@@ -205,6 +214,20 @@ mod tests {
         let file = OpenOptions::new().write(true).open(&path).unwrap();
         file.set_len((crate::format::MAX_OBJECT_SIZE + 16) as u64).unwrap();
         assert!(store.get(id).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reject_hardlinked_object_aliases_without_mutating_them() {
+        let (dir, store) = store();
+        let id = store.put(BLOB, b"protected").unwrap();
+        let alias = dir.path().join("external-alias");
+        fs::hard_link(store.path(id), &alias).unwrap();
+        assert!(store.get(id).is_err());
+        assert!(store.put(BLOB, b"protected").is_err());
+        assert_eq!(fs::read(&alias).unwrap(), encode_object(BLOB, b"protected").unwrap());
+        fs::remove_file(alias).unwrap();
+        assert!(store.get(id).is_ok());
     }
 
     #[cfg(unix)]
