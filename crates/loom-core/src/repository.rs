@@ -1126,6 +1126,36 @@ impl Repository {
             }
             checked += 1;
         }
+        // Staged blobs are independent durability roots: a prepared commit
+        // must never silently reference missing, corrupt or wrong-type objects.
+        // A deletion tombstone is valid only if the selected path is tracked
+        // at the current branch head.
+        let staged = self.staged_blobs()?;
+        if !staged.is_empty() {
+            if !self.staging_enabled()? {
+                return Err(Error::Invalid(
+                    "staging index has entries but staging mode is disabled".into()
+                ));
+            }
+            let tracked = self.state_at(self.head()?)?;
+            for (path, blob) in staged {
+                match blob {
+                    Some(id) => { self.blob_bytes(id)?; }
+                    None if tracked.contains_key(&path) => {},
+                    None => return Err(Error::Invalid(format!(
+                        "staged deletion does not reference a tracked path: {path}"
+                    ))),
+                }
+            }
+        }
+        // A pending workspace transition is another integrity root. Even
+        // when it has not published the destination ref, its immutable
+        // changeset must remain available for safe replay.
+        if let Some(pending) = self.pending_transition()? {
+            for id in [pending.before, pending.after].into_iter().flatten() {
+                self.get_changeset(id)?;
+            }
+        }
         for (branch, tip) in self.branches()? {
             if let Some(id) = tip { self.get_changeset(id)?; }
             let expected = self.state_at(tip)?;
