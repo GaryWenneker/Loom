@@ -2,7 +2,7 @@ use loom_core::{ObjectId, Repository, StatusKind};
 use std::{env, path::Path, process};
 
 fn usage() {
-    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path]\n  loom status\n  loom add PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom cat @CHANGESET_ID PATH\n  loom files BRANCH [PREFIX] [--null]\n  loom fsck\n");
+    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path]\n  loom status\n  loom add PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom cat @CHANGESET_ID PATH\n  loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]\n  loom fsck\n");
 }
 
 
@@ -148,9 +148,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let (branch, prefix) = match positional {
                 [branch] => (branch.as_str(), None),
                 [branch, prefix] => (branch.as_str(), Some(prefix.as_str())),
-                _ => return Err("usage: loom files BRANCH [PREFIX] [--null]".into()),
+                _ => return Err("usage: loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]".into()),
             };
-            let files = repo.list_branch_files(branch, prefix)?;
+            let files = if let Some(hex) = branch.strip_prefix('@') {
+                repo.list_revision_files(ObjectId::parse(hex)?, prefix)?
+            } else {
+                repo.list_branch_files(branch, prefix)?
+            };
             use std::io::Write;
             let stdout = std::io::stdout();
             let mut output = stdout.lock();
