@@ -91,3 +91,70 @@ impl ObjectBackend for ReplicatedObjectBackend {
         Ok(true)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::format::{encode_object, BLOB};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+    use std::collections::HashMap;
+
+    #[derive(Default)]
+    struct FakeDurable {
+        bytes: Mutex<HashMap<ObjectId, Vec<u8>>>,
+        fail: AtomicBool,
+    }
+    impl ObjectBackend for FakeDurable {
+        fn capabilities(&self) -> StoreCapabilities {
+            StoreCapabilities { durable_writes: true, conditional_create: true,
+                streaming_reads: false, streaming_writes: false, list_objects: false }
+        }
+        fn get(&self, id: ObjectId) -> Result<Vec<u8>> {
+            self.bytes.lock().unwrap().get(&id).cloned().ok_or_else(|| {
+                Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "missing"))
+            })
+        }
+        fn put_if_absent(&self, id: ObjectId, bytes: &[u8]) -> Result<()> {
+            if self.fail.load(Ordering::SeqCst) {
+                return Err(Error::Io(std::io::Error::other("injected outage")));
+            }
+            self.bytes.lock().unwrap().entry(id).or_insert_with(|| bytes.to_vec());
+            Ok(())
+        }
+        fn exists(&self, id: ObjectId) -> Result<bool> {
+            Ok(self.bytes.lock().unwrap().contains_key(&id))
+        }
+    }
+
+    #[test]
+    fn all_ack_and_retry_after_partial_failure() {
+        let first = Arc::new(FakeDurable::default());
+        let second = Arc::new(FakeDurable::default());
+        second.fail.store(true, Ordering::SeqCst);
+        let store = ReplicatedObjectBackend::new(vec![first.clone(), second.clone()]).unwrap();
+        let bytes = encode_object(BLOB, b"replication").unwrap();
+        let id = object_id(&bytes);
+        assert!(store.put_if_absent(id, &bytes).is_err());
+        assert!(!store.exists(id).unwrap());
+        second.fail.store(false, Ordering::SeqCst);
+        store.put_if_absent(id, &bytes).unwrap();
+        assert!(store.exists(id).unwrap());
+        assert_eq!(store.get(id).unwrap(), bytes);
+    }
+
+    #[test]
+    fn rejects_non_durable_replica() {
+        struct Volatile;
+        impl ObjectBackend for Volatile {
+            fn capabilities(&self) -> StoreCapabilities {
+                StoreCapabilities { durable_writes: false, conditional_create: true,
+                    streaming_reads: false, streaming_writes: false, list_objects: false }
+            }
+            fn get(&self, _: ObjectId) -> Result<Vec<u8>> { unreachable!() }
+            fn put_if_absent(&self, _: ObjectId, _: &[u8]) -> Result<()> { unreachable!() }
+            fn exists(&self, _: ObjectId) -> Result<bool> { unreachable!() }
+        }
+        assert!(ReplicatedObjectBackend::new(vec![Arc::new(Volatile)]).is_err());
+    }
+}
