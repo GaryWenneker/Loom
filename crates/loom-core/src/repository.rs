@@ -2343,6 +2343,54 @@ mod tests {
         assert!(r.fsck().is_err(), "missing native tree child must be detected");
     }
 
+
+    #[test]
+    fn native_object_navigation_avoids_ref_and_worktree_state() {
+        let (dir, r) = repo();
+        fs::create_dir_all(dir.path().join("src/deep")).unwrap();
+        fs::write(dir.path().join("README.md"), b"readme").unwrap();
+        fs::write(dir.path().join("src/deep/bytes.bin"), [0, 1, 255, 0]).unwrap();
+        let revision = r.commit("tester", "initial").unwrap();
+        let root = r.native_tree_root(revision).unwrap();
+
+        let top = r.native_tree_entries(root, None).unwrap();
+        assert_eq!(top.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+                   vec!["README.md", "src"]);
+        let src = r.native_tree_entries(root, Some("src")).unwrap();
+        assert_eq!(src.len(), 1);
+        assert_eq!(src[0].name, "deep");
+        assert_eq!(src[0].kind, crate::tree::TreeEntryKind::Directory);
+        let deep = r.native_tree_entries(root, Some("src/deep")).unwrap();
+        assert_eq!(deep[0].name, "bytes.bin");
+        assert_eq!(r.native_tree_file(root, "src/deep/bytes.bin").unwrap(),
+                   Some(vec![0, 1, 255, 0]));
+        assert_eq!(r.native_tree_file(root, "missing").unwrap(), None);
+
+        // After the worktree changes, the immutable root must still resolve
+        // the original bytes without consulting HEAD or cached revision paths.
+        fs::write(dir.path().join("src/deep/bytes.bin"), b"new").unwrap();
+        assert_eq!(r.native_tree_file(root, "src/deep/bytes.bin").unwrap(),
+                   Some(vec![0, 1, 255, 0]));
+        assert!(r.native_tree_file(root, "src").is_err());
+        assert!(r.native_tree_entries(root, Some("README.md")).is_err());
+        assert!(r.native_tree_file(root, "../escape").is_err());
+        assert!(r.native_tree_entries(root, Some("../escape")).is_err());
+        assert!(r.native_tree_entries(ObjectId([8;32]), None).is_err());
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn native_object_navigation_rejects_missing_target_blob() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("file"), b"original").unwrap();
+        let revision = r.commit("tester", "original").unwrap();
+        let root = r.native_tree_root(revision).unwrap();
+        let blob = r.native_tree_entries(root, None).unwrap()[0].object;
+        fs::remove_file(r.store.path_for_test(blob)).unwrap();
+        assert!(r.native_tree_file(root, "file").is_err());
+        assert!(r.fsck().is_err());
+    }
+
     #[test] fn corrupt_object_detected() {
         let (_dir, r) = repo();
         let oid = r.store.put(BLOB, b"x").unwrap();
