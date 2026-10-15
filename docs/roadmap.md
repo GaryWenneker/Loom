@@ -19,6 +19,7 @@ Checklist status reflects implemented source and tests, not an architectural pro
 - [x] Full-worktree scan, status, commit and first-parent log
 - [x] Local branch creation and switching
 - [x] CLI integration tests for a basic change/merge workflow
+- [x] Read-only branch/worktree diff and direct snapshot file reads (`loom diff`, `loom cat`)
 - [ ] Staging/index, ignores, tags, restores, fast derived history indexes
 - [ ] Symlinks, modes, non-UTF-8 files and chunked large file support
 
