@@ -8,7 +8,7 @@
 | Dimension | Loom today | Scion's reported design | Loom gap |
 |---|---|---|---|
 | Authoritative state | Local SQLite + immutable loose objects | Server-authoritative changesets; Spanner refs | Native server and multi-node authority |
-| Commit complexity | Full worktree scan and first-parent replay | O(changed paths) server-side commit goal | Native trees, incremental path indexes |
+| Commit complexity | First-parent replay; initial add/commit rescan the full worktree | O(changed paths) server-side commit goal | Native trees and derived path indexes remain necessary |
 | History/blame | First-parent log; graph scans | Derived ancestry, path and blame structures | Indexed history and merge bases |
 | Checkout | Full local files, partial crash journal | Sparse/virtual demand materialization | Safe sparse workspace protocol |
 | Cache topology | Per-repository loose objects | Shared daemon, regional caches, object services | Tiered content caches with leases |
@@ -17,6 +17,8 @@
 | Large data | 64 MiB per native object | Huge monorepo, object fetch by identity | Chunking, streaming, storage scale |
 | Durability | Partial process-crash replay | Large production deployment; internal fuzzing | Fault matrix, backup/restore, audit |
 | Performance evidence | Cross-platform functional CI only | Vendor-reported large-scale operational gains | Independent reproducible benchmark fixtures |
+
+**This performance PR removes whole-worktree scanning from the explicit staged add/commit path. It does not change unindexed history reconstruction, full-worktree status or the native tree format, and no scale claim is made without benchmarks.**
 
 ## Architectural recommendations
 
