@@ -714,8 +714,30 @@ impl Repository {
 
     /// Read native snapshot content by branch and relative path, with no checkout.
     /// Returns None when a file is absent from that branch.
+    /// Read a file from a branch tip using the derived path index when it
+    /// represents the same commit as the live ref. The joined lookup uses
+    /// one SQLite read snapshot, so a concurrent ref/index transaction cannot
+    /// mix a new branch tip with old cached paths.
+    ///
+    /// An absent or stale index is never trusted. The native immutable
+    /// history remains authoritative and can reconstruct the requested file.
     pub fn read_branch_file(&self, branch: &str, path: &str) -> Result<Option<Vec<u8>>> {
         validate_path(path)?;
+        let cached: Option<Option<String>> = self.db.query_row(
+            "SELECT i.oid FROM refs AS r
+             JOIN branch_path_index_tip AS t
+               ON t.branch=r.name AND t.oid=COALESCE(r.oid,'')
+             LEFT JOIN branch_path_index AS i
+               ON i.branch=r.name AND i.path=?2
+             WHERE r.name=?1",
+            params![branch, path],
+            |row| row.get(0),
+        ).optional()?;
+        match cached {
+            Some(Some(id)) => return self.blob_bytes(ObjectId::parse(&id)?).map(Some),
+            Some(None) => return Ok(None),
+            None => {},
+        }
         let state = self.state_at(self.branch_tip(branch)?)?;
         state.get(path).copied().map(|id| self.blob_bytes(id)).transpose()
     }
