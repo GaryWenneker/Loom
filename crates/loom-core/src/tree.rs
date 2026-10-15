@@ -201,6 +201,80 @@ pub(crate) fn write_snapshot(
     save(store, &root, 0)
 }
 
+/// List tracked files beneath a directory prefix without opening sibling
+/// subtrees outside the prefix. The result is ordered by canonical path.
+pub(crate) fn list_prefix(
+    store: &crate::store::ObjectStore,
+    root: ObjectId,
+    prefix: &str,
+) -> Result<std::collections::BTreeMap<String, ObjectId>> {
+    use std::collections::BTreeMap;
+
+    fn visit(
+        store: &crate::store::ObjectStore,
+        id: ObjectId,
+        base: &str,
+        depth: usize,
+        result: &mut BTreeMap<String, ObjectId>,
+    ) -> Result<()> {
+        if depth > 256 {
+            return Err(Error::Invalid("native tree nesting limit reached".into()));
+        }
+        let tree = NativeTree::decode(&store.get(id)?)?;
+        if depth > 0 && tree.entries.is_empty() {
+            return Err(Error::Invalid("noncanonical empty native tree directory".into()));
+        }
+        for entry in tree.entries {
+            let path = if base.is_empty() {
+                entry.name
+            } else {
+                format!("{base}/{}", entry.name)
+            };
+            match entry.kind {
+                TreeEntryKind::File => {
+                    result.insert(path, entry.object);
+                }
+                TreeEntryKind::Directory => {
+                    visit(store, entry.object, &path, depth + 1, result)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    let mut current = root;
+    let mut base = String::new();
+    if !prefix.is_empty() {
+        validate_path(prefix)?;
+        let parts: Vec<&str> = prefix.split('/').collect();
+        if parts.len() > 256 {
+            return Err(Error::Invalid("native tree path nesting limit reached".into()));
+        }
+        for (index, part) in parts.iter().enumerate() {
+            let tree = NativeTree::decode(&store.get(current)?)?;
+            if index > 0 && tree.entries.is_empty() {
+                return Err(Error::Invalid("noncanonical empty native tree directory".into()));
+            }
+            let Ok(position) = tree.entries.binary_search_by(|e| e.name.as_str().cmp(part)) else {
+                return Ok(BTreeMap::new());
+            };
+            let entry = &tree.entries[position];
+            base = if base.is_empty() { (*part).to_owned() } else { format!("{base}/{part}") };
+            if entry.kind == TreeEntryKind::File {
+                let mut result = BTreeMap::new();
+                if index + 1 == parts.len() {
+                    result.insert(base, entry.object);
+                }
+                return Ok(result);
+            }
+            current = entry.object;
+        }
+    }
+    let mut result = BTreeMap::new();
+    visit(store, current, &base, prefix.split('/').filter(|p| !p.is_empty()).count(), &mut result)?;
+    Ok(result)
+}
+
 /// Apply a changeset to a canonical immutable directory DAG. Only
 /// directories on paths touched by the changeset are opened and re-encoded.
 /// Unchanged sibling objects retain their IDs, including across revisions.
