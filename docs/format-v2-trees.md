@@ -56,8 +56,8 @@ The converter refuses unsafe paths, file-vs-directory collisions, excessive dept
 
 ## Integrity and recovery
 
-`loom tree @REVISION` verifies the changeset exists, computes the file state from immutable history, writes bottom-up tree objects with no-clobber content addressing and finally stores an optional SQLite revision-to-root mapping. On process interruption, previously published immutable nodes may remain unreferenced, but the original changeset history is not modified.
+`loom tree @REVISION` resolves the closest materialized first-parent ancestor root, or starts with the canonical empty tree when no checkpoint exists. It walks subsequent changesets and applies their file deltas using batched copy-on-write mutations: only directories along affected paths are re-encoded, and unchanged subtrees retain their IDs. It then stores an optional SQLite revision-to-root mapping. A first uncached lookup must still examine changeset metadata along the ancestor chain. On process interruption, previously published immutable nodes may remain unreferenced, but the original changeset history is not modified.
 
 `loom fsck` inspects all stored tree nodes, verifies their child object types and hashes, and cross-checks each derived revision-to-root mapping against the authoritative changeset file state. A corrupt mapping is rejected. Absence of a mapping does not lose source history: a later `loom tree` can regenerate the same root ID.
 
-**Remaining release blockers:** complete v1→v2 migration/rollback, portable path collision rules, historic file modes/symlinks, chunked large-file manifests, efficient *incremental* tree mutation for every commit, crash/power-loss safety and distributed object/ref protocols. See [release gates](release-gates.md) and [roadmap](roadmap.md).
+**Remaining release blockers:** complete v1→v2 migration/rollback, portable path collision rules, historic file modes/symlinks, chunked large-file manifests, automatic durable tree-root publication on every commit, crash/power-loss safety and distributed object/ref protocols. See [release gates](release-gates.md) and [roadmap](roadmap.md).
