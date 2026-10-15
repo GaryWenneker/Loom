@@ -1455,6 +1455,50 @@ impl Repository {
                 )));
             }
         }
+        // Historical tree checkpoints are disposable derivations, not
+        // additional authority. Validate both their completion markers and
+        // every cached path/ID against canonical first-parent replay.
+        let dangling: Option<String> = self.db.query_row(
+            "SELECT e.revision_oid FROM revision_tree_index AS e
+             LEFT JOIN revision_tree_index_tip AS t
+               ON t.revision_oid=e.revision_oid
+             WHERE t.revision_oid IS NULL LIMIT 1",
+            [], |row| row.get(0),
+        ).optional()?;
+        if let Some(id) = dangling {
+            return Err(Error::Invalid(format!(
+                "historical tree has entries without a completion marker: {id}"
+            )));
+        }
+        let mut marker_query = self.db.prepare(
+            "SELECT revision_oid,entry_count FROM revision_tree_index_tip"
+        )?;
+        let markers = marker_query.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for marker in markers {
+            let (raw_revision, expected_count) = marker?;
+            let revision = ObjectId::parse(&raw_revision)?;
+            let expected = self.state_at(Some(revision))?;
+            let mut actual = BTreeMap::new();
+            let mut contents = self.db.prepare(
+                "SELECT path,blob_oid FROM revision_tree_index
+                 WHERE revision_oid=?1"
+            )?;
+            let rows = contents.query_map([&raw_revision], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (path, oid) = row?;
+                validate_path(&path)?;
+                actual.insert(path, ObjectId::parse(&oid)?);
+            }
+            if actual.len() as i64 != expected_count || actual != expected {
+                return Err(Error::Invalid(format!(
+                    "historical tree cache differs from immutable changesets: {raw_revision}"
+                )));
+            }
+        }
         Ok(checked)
     }
 }
