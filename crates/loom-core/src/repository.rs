@@ -91,6 +91,16 @@ impl Repository {
                  blob_oid TEXT,
                  PRIMARY KEY (revision_oid, path)
              );
+             CREATE TABLE IF NOT EXISTS revision_tree_index (
+                 revision_oid TEXT NOT NULL,
+                 path TEXT NOT NULL,
+                 blob_oid TEXT NOT NULL,
+                 PRIMARY KEY (revision_oid, path)
+             );
+             CREATE TABLE IF NOT EXISTS revision_tree_index_tip (
+                 revision_oid TEXT PRIMARY KEY NOT NULL,
+                 entry_count INTEGER NOT NULL CHECK(entry_count >= 0)
+             );
              CREATE TABLE IF NOT EXISTS workspace_journal (
                  id INTEGER PRIMARY KEY CHECK(id=1),
                  operation TEXT NOT NULL,
@@ -835,6 +845,132 @@ impl Repository {
                 || prefix.is_some_and(|p| path.as_str() == p)
                 || directory_prefix.as_ref().is_some_and(|p| path.starts_with(p.as_str()))
         }).collect())
+    }
+
+    /// Build a complete read-only file snapshot for an immutable revision.
+    /// Cached ancestor snapshots are checkpoints; only subsequent first-parent
+    /// deltas need replaying. This is a derived SQLite view, NOT a canonical
+    /// native tree object and it never becomes an authoritative history root.
+    fn ensure_revision_tree_index(&self, revision: ObjectId) -> Result<()> {
+        let mut next = Some(revision);
+        let mut seen = HashSet::new();
+        let mut changesets = Vec::new();
+        let mut base = None;
+        while let Some(id) = next {
+            if seen.len() >= 1_000_000 {
+                return Err(Error::Invalid("history depth limit reached".into()));
+            }
+            if !seen.insert(id) {
+                return Err(Error::Invalid("cycle in first-parent history".into()));
+            }
+            let commit = self.get_changeset(id)?;
+            let indexed: Option<i64> = self.db.query_row(
+                "SELECT entry_count FROM revision_tree_index_tip
+                 WHERE revision_oid=?1",
+                [id.to_string()], |r| r.get(0),
+            ).optional()?;
+            if indexed.is_some() {
+                base = Some(id);
+                break;
+            }
+            next = commit.parents.first().copied();
+            changesets.push(commit);
+        }
+        if changesets.is_empty() { return Ok(()); }
+
+        let mut state = BTreeMap::new();
+        if let Some(id) = base {
+            let mut statement = self.db.prepare(
+                "SELECT path,blob_oid FROM revision_tree_index
+                 WHERE revision_oid=?1 ORDER BY path"
+            )?;
+            let rows = statement.query_map([id.to_string()], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+            for item in rows {
+                let (path, raw_blob) = item?;
+                validate_path(&path)?;
+                state.insert(path, ObjectId::parse(&raw_blob)?);
+            }
+        }
+        for commit in changesets.iter().rev() {
+            for change in &commit.changes {
+                if change.kind == ChangeKind::Delete {
+                    state.remove(&change.path);
+                } else {
+                    let blob = change.blob.ok_or_else(||
+                        Error::Invalid("historical update is missing blob".into())
+                    )?;
+                    state.insert(change.path.clone(), blob);
+                }
+            }
+        }
+        // All entries and the completion marker are committed atomically.
+        // Interrupted builders cannot expose a partially indexed revision.
+        let tx = self.db.unchecked_transaction()?;
+        tx.execute("DELETE FROM revision_tree_index WHERE revision_oid=?1",
+                   [revision.to_string()])?;
+        {
+            let mut insert = tx.prepare(
+                "INSERT INTO revision_tree_index(revision_oid,path,blob_oid)
+                 VALUES(?1,?2,?3)"
+            )?;
+            for (path, blob) in &state {
+                insert.execute(params![revision.to_string(), path, blob.to_string()])?;
+            }
+        }
+        tx.execute(
+            "INSERT INTO revision_tree_index_tip(revision_oid,entry_count)
+             VALUES(?1,?2)
+             ON CONFLICT(revision_oid) DO UPDATE
+             SET entry_count=excluded.entry_count",
+            params![revision.to_string(), state.len() as i64],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// List paths in any immutable historical revision without switching
+    /// branches or changing the user worktree. A first query materializes a
+    /// derived snapshot; repeat and prefix queries use indexed SQLite ranges.
+    pub fn list_revision_files(
+        &self, revision: ObjectId, prefix: Option<&str>
+    ) -> Result<Vec<String>> {
+        if let Some(path) = prefix { validate_path(path)?; }
+        self.ensure_revision_tree_index(revision)?;
+        let key = revision.to_string();
+        let mut files = Vec::new();
+        if let Some(path) = prefix {
+            let lower = format!("{path}/");
+            let upper = format!("{path}0");
+            let mut stmt = self.db.prepare(
+                "SELECT path FROM revision_tree_index
+                 WHERE revision_oid=?1 AND path=?2
+                 UNION ALL
+                 SELECT path FROM revision_tree_index
+                 WHERE revision_oid=?1 AND path>=?3 AND path<?4
+                 ORDER BY path"
+            )?;
+            let rows = stmt.query_map(params![&key, path, lower, upper],
+                |row| row.get::<_, String>(0))?;
+            for row in rows {
+                let name = row?;
+                validate_path(&name)?;
+                files.push(name);
+            }
+        } else {
+            let mut stmt = self.db.prepare(
+                "SELECT path FROM revision_tree_index
+                 WHERE revision_oid=?1 ORDER BY path"
+            )?;
+            let rows = stmt.query_map([&key], |row| row.get::<_, String>(0))?;
+            for row in rows {
+                let name = row?;
+                validate_path(&name)?;
+                files.push(name);
+            }
+        }
+        Ok(files)
     }
 
     /// Resolve one file at a historical changeset without constructing the
