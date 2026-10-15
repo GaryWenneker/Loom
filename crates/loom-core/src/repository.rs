@@ -686,6 +686,86 @@ mod tests {
         assert_eq!(fs::read(dir.path().join("a")).unwrap(), b"first");
         assert_eq!(r.current_branch().unwrap(), "main");
     }
+
+    #[test]
+    fn recovers_interrupted_switch_from_mixed_file_state() {
+        let (dir, repo) = repo();
+        fs::write(dir.path().join("a.txt"), b"base a").unwrap();
+        fs::write(dir.path().join("b.txt"), b"base b").unwrap();
+        repo.commit("tester", "baseline").unwrap();
+        repo.create_branch("feature").unwrap();
+        repo.switch_branch("feature").unwrap();
+        fs::write(dir.path().join("a.txt"), b"feature a").unwrap();
+        fs::write(dir.path().join("b.txt"), b"feature b").unwrap();
+        repo.commit("tester", "updated").unwrap();
+        repo.switch_branch("main").unwrap();
+
+        let current = repo.head().unwrap();
+        let next = repo.branch_tip("feature").unwrap();
+        repo.begin_transition(&PendingTransition {
+            operation: "switch".into(), from_branch: "main".into(),
+            to_branch: "feature".into(), before: current, after: next,
+        }).unwrap();
+        // Imitate a terminated process: only the first file made it to disk.
+        fs::write(dir.path().join("a.txt"), b"feature a").unwrap();
+        drop(repo);
+
+        let reopened = Repository::discover(dir.path()).unwrap();
+        assert_eq!(reopened.current_branch().unwrap(), "feature");
+        assert_eq!(fs::read(dir.path().join("a.txt")).unwrap(), b"feature a");
+        assert_eq!(fs::read(dir.path().join("b.txt")).unwrap(), b"feature b");
+        assert!(reopened.pending_transition().unwrap().is_none());
+        assert!(reopened.status().unwrap().is_empty());
+    }
+
+    #[test]
+    fn recovery_never_discards_untracked_user_files() {
+        let (dir, repo) = repo();
+        fs::write(dir.path().join("a"), b"v1").unwrap();
+        repo.commit("tester", "baseline").unwrap();
+        repo.create_branch("feature").unwrap();
+        repo.begin_transition(&PendingTransition {
+            operation: "switch".into(), from_branch: "main".into(),
+            to_branch: "feature".into(), before: repo.head().unwrap(),
+            after: repo.branch_tip("feature").unwrap(),
+        }).unwrap();
+        drop(repo);
+        fs::write(dir.path().join("user.txt"), b"untouched").unwrap();
+        assert!(Repository::discover(dir.path()).is_err());
+        assert_eq!(fs::read(dir.path().join("user.txt")).unwrap(), b"untouched");
+        fs::remove_file(dir.path().join("user.txt")).unwrap();
+        let reopened = Repository::discover(dir.path()).unwrap();
+        assert_eq!(reopened.current_branch().unwrap(), "feature");
+    }
+
+    #[test]
+    fn merge_journal_publishes_ref_only_after_materialization() {
+        let (dir, repo) = repo();
+        fs::write(dir.path().join("a"), b"base").unwrap();
+        repo.commit("tester", "base").unwrap();
+        let first = repo.head().unwrap().unwrap();
+        let blob = repo.store.put(BLOB, b"merged").unwrap();
+        let merged = Changeset {
+            parents: vec![first, first], author: "tester".into(), message: "merge".into(),
+            timestamp_seconds: 1,
+            changes: vec![Change { kind: ChangeKind::Modify, path: "a".into(), blob: Some(blob) }],
+        };
+        let bytes = merged.encode().unwrap();
+        let (_, payload) = decode_object(&bytes).unwrap();
+        let merged_id = repo.store.put(CHANGESET, payload).unwrap();
+        repo.begin_transition(&PendingTransition {
+            operation: "merge".into(), from_branch: "main".into(), to_branch: "main".into(),
+            before: Some(first), after: Some(merged_id),
+        }).unwrap();
+        assert_eq!(repo.head().unwrap(), Some(first));
+        drop(repo);
+        let reopened = Repository::discover(dir.path()).unwrap();
+        assert_eq!(reopened.head().unwrap(), Some(merged_id));
+        assert_eq!(fs::read(dir.path().join("a")).unwrap(), b"merged");
+        assert!(reopened.pending_transition().unwrap().is_none());
+        assert!(reopened.status().unwrap().is_empty());
+    }
+
     #[test] fn corrupt_object_detected() {
         let (_, r) = repo();
         let oid = r.store.put(BLOB, b"x").unwrap();
