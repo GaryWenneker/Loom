@@ -4,6 +4,8 @@ Loom is an experimental, standalone **native version control system**, implement
 
 It is **not built on Git** and is not an extension of AX. A separate Git compatibility bridge is planned.
 
+**Product direction:** Git is the **functional baseline**, not a syntax or architecture template. Loom may offer fewer steps, reversible operations and agent-safe workflows, but must eventually preserve equivalent user capabilities. See the [Git capability inventory](docs/git-capability-parity.md).
+
 > **Experimental alpha:** the repository and object format can change. Never use Loom as the only copy of important source code. Current version only supports regular UTF-8-named files under 64 MiB, without preserved executable bits or symlinks.
 
 ## Implemented today
@@ -16,7 +18,8 @@ It is **not built on Git** and is not an extension of AX. A separate Git compati
 - Local full-worktree status, commits, log, branch creation/switching, basic conservative merges and fsck.
 - Opt-in persistent native staging index: `loom add PATH...`, `loom unstage PATH...`, frozen content snapshots and staged-only commits. Once enabled, every later commit requires explicit staging; existing repositories retain legacy commit-all behavior until their first `loom add`.
 - A CLI named `loom`.
-- Read-only `loom diff` for worktree changes and comparisons between branch snapshots; text patches use unified diff output, large/binary changes are reported without textual hunks.
+- Read-only `loom diff` for worktree changes and comparisons between branch snapshots; `loom diff --staged` and `loom diff --unstaged` show the two sides of the staging boundary independently.
+- `loom review` displays both prepared commit content and remaining uncommitted workspace edits in one view. Text patches use unified diff output; large/binary changes are reported without textual hunks.
 - `loom cat BRANCH PATH` for binary-safe direct access to native snapshot files without checkout.
 - Cross-platform compilation, tests and Rust dependency auditing in GitHub Actions.
 

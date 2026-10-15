@@ -466,6 +466,83 @@ impl Repository {
         Ok(result)
     }
 
+    /// Construct the next commit snapshot without modifying HEAD, the
+    /// staging index or the working tree.
+    fn staged_state(&self) -> Result<BTreeMap<String, ObjectId>> {
+        let mut state = self.state_at(self.head()?)?;
+        if self.staging_enabled()? {
+            for (path, value) in self.staged_blobs()? {
+                if let Some(id) = value {
+                    state.insert(path, id);
+                } else {
+                    state.remove(&path);
+                }
+            }
+        }
+        Ok(state)
+    }
+
+    /// Show the exact content the next explicitly staged commit would record.
+    /// In legacy commit-all mode this is empty because nothing is staged.
+    pub fn diff_staged(&self) -> Result<Vec<FileDiff>> {
+        if !self.staging_enabled()? { return Ok(Vec::new()); }
+        let base = self.state_at(self.head()?)?;
+        let staged = self.staged_state()?;
+        let mut paths = BTreeSet::new();
+        paths.extend(base.keys().cloned());
+        paths.extend(staged.keys().cloned());
+        let mut result = Vec::new();
+        for path in paths {
+            let before = base.get(&path);
+            let after = staged.get(&path);
+            if before == after { continue; }
+            result.push(FileDiff {
+                path,
+                before: before.map(|id| self.blob_bytes(*id)).transpose()?,
+                after: after.map(|id| self.blob_bytes(*id)).transpose()?,
+            });
+        }
+        Ok(result)
+    }
+
+    /// Compare working files against the staged snapshot, not HEAD. Files
+    /// captured by 'add' are thus only shown when edited *after* staging.
+    pub fn diff_unstaged(&self) -> Result<Vec<FileDiff>> {
+        let staged = self.staged_state()?;
+        let files = self.scan_files()?;
+        let mut paths = BTreeSet::new();
+        paths.extend(staged.keys().cloned());
+        paths.extend(files.keys().cloned());
+        let mut result = Vec::new();
+        for path in paths {
+            let before = staged.get(&path);
+            let after = files.get(&path);
+            let after_id = after.map(|bytes|
+                encode_object(BLOB, bytes).map(|encoded| object_id(&encoded))
+            ).transpose()?;
+            if before.copied() == after_id { continue; }
+            result.push(FileDiff {
+                path,
+                before: before.map(|id| self.blob_bytes(*id)).transpose()?,
+                after: after.cloned(),
+            });
+        }
+        Ok(result)
+    }
+
+    /// Accurate post-stage working tree status. This is informational;
+    /// safety gates still use the full HEAD-to-worktree status.
+    pub fn unstaged_status(&self) -> Result<Vec<StatusEntry>> {
+        Ok(self.diff_unstaged()?.into_iter().map(|change| {
+            let kind = match (change.before.is_some(), change.after.is_some()) {
+                (false, true) => StatusKind::Added,
+                (true, false) => StatusKind::Deleted,
+                _ => StatusKind::Modified,
+            };
+            StatusEntry { path: change.path, kind }
+        }).collect())
+    }
+
     /// Compare two branch tips without materializing either worktree.
     pub fn diff_branches(&self, from: &str, to: &str) -> Result<Vec<FileDiff>> {
         let left = self.state_at(self.branch_tip(from)?)?;

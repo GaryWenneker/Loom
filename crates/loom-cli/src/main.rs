@@ -2,7 +2,7 @@ use loom_core::{Repository, StatusKind};
 use std::{env, path::Path, process};
 
 fn usage() {
-    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path]\n  loom status\n  loom add PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom diff [FROM_BRANCH TO_BRANCH]\n  loom cat BRANCH PATH\n  loom fsck\n");
+    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path]\n  loom status\n  loom add PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom fsck\n");
 }
 
 
@@ -52,7 +52,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     println!("staged {flag} {}", change.path);
                 }
             }
-            let changes = repo.status()?;
+            let changes = repo.unstaged_status()?;
             if changes.is_empty() { println!("Working tree clean"); }
             for change in changes {
                 let flag = match change.kind { StatusKind::Added => "A", StatusKind::Modified => "M", StatusKind::Deleted => "D" };
@@ -117,12 +117,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             println!("Merged {name} as {oid}");
         }
         "diff" => {
-            let changes = match args.len() {
-                1 => repo.diff_worktree()?,
-                3 => repo.diff_branches(&args[1], &args[2])?,
-                _ => return Err("usage: loom diff [FROM_BRANCH TO_BRANCH]".into()),
+            let changes = match args.as_slice() {
+                [_] => repo.diff_worktree()?,
+                [_, option] if option == "--staged" => repo.diff_staged()?,
+                [_, option] if option == "--unstaged" => repo.diff_unstaged()?,
+                [_, from, to] => repo.diff_branches(from, to)?,
+                _ => return Err("usage: loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]".into()),
             };
             for change in &changes { print_diff(change); }
+        }
+        "review" => {
+            if args.len() != 1 { return Err("usage: loom review".into()); }
+            println!("=== Ready to commit (staged) ===");
+            let staged = repo.diff_staged()?;
+            if staged.is_empty() { println!("No staged changes"); }
+            for change in &staged { print_diff(change); }
+            println!("=== Working changes (not staged) ===");
+            let working = repo.diff_unstaged()?;
+            if working.is_empty() { println!("No unstaged changes"); }
+            for change in &working { print_diff(change); }
+            if !repo.staging_enabled()? {
+                println!("Legacy commit-all mode: 'loom commit' currently includes all working changes.");
+            }
         }
         "cat" => {
             if args.len() != 3 { return Err("usage: loom cat BRANCH PATH".into()); }
