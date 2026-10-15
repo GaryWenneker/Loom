@@ -77,7 +77,12 @@ impl ObjectStore {
             drop(file);
             self.checked_parent(id)?;
             match fs::hard_link(&tmp, &path) {
-                Ok(()) => {},
+                Ok(()) => {
+                    // Drop the temporary alias before any other writer can
+                    // validate the newly published object. Other writers may
+                    // still observe the short publication window.
+                    fs::remove_file(&tmp)?;
+                },
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                     // Another writer published first. Never modify their inode.
                     self.get(id)?;
@@ -88,7 +93,7 @@ impl ObjectStore {
             fs::File::open(parent)?.sync_all()?;
             Ok(())
         })();
-        let cleanup_result = fs::remove_file(&tmp);
+        let cleanup_result = if tmp.exists() { fs::remove_file(&tmp) } else { Ok(()) };
         publish_result?;
         cleanup_result?;
         Ok(id)
@@ -107,6 +112,21 @@ impl ObjectStore {
         }
         let file = fs::File::open(&path)?;
         let open_metadata = file.metadata()?;
+        // Hard-link publication briefly creates two names for one inode.
+        // Give a concurrent publisher a bounded opportunity to unlink its
+        // temporary name, but never accept a persistently multiply-linked
+        // object. This is a liveness concession, not a race-free security API.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            for attempt in 0..100 {
+                if file.metadata()?.nlink() == 1 { break; }
+                if attempt == 99 {
+                    return Err(Error::Invalid(format!("object has multiple hard links: {id}")));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
         if !open_metadata.is_file() || open_metadata.len() > (crate::format::MAX_OBJECT_SIZE + 15) as u64 {
             return Err(Error::Invalid(format!("object changed during open: {id}")));
         }
@@ -205,6 +225,20 @@ mod tests {
         let file = OpenOptions::new().write(true).open(&path).unwrap();
         file.set_len((crate::format::MAX_OBJECT_SIZE + 16) as u64).unwrap();
         assert!(store.get(id).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reject_hardlinked_object_aliases_without_mutating_them() {
+        let (dir, store) = store();
+        let id = store.put(BLOB, b"protected").unwrap();
+        let alias = dir.path().join("external-alias");
+        fs::hard_link(store.path(id), &alias).unwrap();
+        assert!(store.get(id).is_err());
+        assert!(store.put(BLOB, b"protected").is_err());
+        assert_eq!(fs::read(&alias).unwrap(), encode_object(BLOB, b"protected").unwrap());
+        fs::remove_file(alias).unwrap();
+        assert!(store.get(id).is_ok());
     }
 
     #[cfg(unix)]

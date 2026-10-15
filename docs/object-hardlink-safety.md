@@ -1,0 +1,5 @@
+# Immutable object hard-link integrity
+
+On Unix, Loom refuses to read an object whose opened inode has more than one hard link. The same guard applies when an existing object is verified during an idempotent publication. This prevents an outside hard-link alias from silently mutating a stored object through another filename. The regression test creates an external alias, verifies that both reads and repeated publication fail, and verifies normal access after removing the alias.
+
+This check is intentionally fail-closed. It does not guarantee protection against a privileged adversary racing directory replacement, replacing a file between path inspection and open, or changing file contents through an already-open descriptor. The Unix link-count check is not a Windows security guarantee. Complete directory-handle-relative traversal and platform-specific hard-link defenses remain outstanding under issue #19. The canonical native object format and migration requirements remain tracked in issue #13. These limits prevent treating this change as a complete object-store security certification.
