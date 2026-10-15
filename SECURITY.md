@@ -14,4 +14,6 @@ A useful report provides the affected revision, minimal reproduction, impact, af
 
 Important risk areas include immutable object publication, compromised object paths, symlink/hardlink traversal, recovery replay, corrupted changeset DAGs, memory exhaustion, and future repository authorization and remote object access.
 
+The native engine checks existing `.loom` metadata paths, SQLite sidecars and the workspace lock for symlinks or non-regular files before opening them. Concurrent path replacement (TOCTOU), hardlink aliasing and cross-platform handle-relative confinement are **not** yet proven safe. Do not use untrusted or concurrently writable repository metadata directories.
+
 Successful automated tests or an audit of dependencies do not establish production security. See the [engineering findings](docs/code-review.md) and [release gates](docs/release-gates.md).

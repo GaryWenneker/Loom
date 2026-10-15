@@ -24,6 +24,10 @@ Conservative merging refuses ambiguous edits and does not have `merge --continue
 
 A pending journal may refuse recovery if unexpected user edits exist. **Do not delete journal files or internal SQLite tables to force progress.** Back up the full worktree and `.loom` directory before collecting diagnostics.
 
+## Unsafe repository metadata
+
+Loom refuses a symlinked `.loom` directory, SQLite database or sidecar, and a symlinked `.loom/workspace.lock`. Do not bypass the error by removing or replacing metadata files. Preserve a complete copy of the repository and inspect the filesystem for unexpected links. This is a pre-open safety check; concurrent filesystem races remain outside the current alpha guarantees.
+
 ## Object integrity error
 
 Stop mutating the affected repository, retain byte-for-byte copies and report the smallest reproducible case. Automatic repair and disaster recovery are not currently available.

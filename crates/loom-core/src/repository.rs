@@ -65,7 +65,37 @@ impl Repository {
         Err(Error::Invalid("not in a Loom repository".into()))
     }
 
+    /// Refuse pre-existing metadata links and special files before SQLite or
+    /// the workspace lock opens them. This does not close concurrent TOCTOU
+    /// races; stronger handle-relative opening remains a release gate.
+    fn check_metadata_dir(meta: &Path) -> Result<()> {
+        let ty = fs::symlink_metadata(meta)?.file_type();
+        if !ty.is_dir() || ty.is_symlink() {
+            return Err(Error::Invalid(format!(
+                "repository metadata is not a real directory: {}", meta.display()
+            )));
+        }
+        Ok(())
+    }
+
+    fn check_metadata_file(path: &Path) -> Result<()> {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_file() => Ok(()),
+            Ok(_) => Err(Error::Invalid(format!(
+                "repository metadata is not a regular file: {}", path.display()
+            ))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     fn connect(meta: &Path) -> Result<Connection> {
+        Self::check_metadata_dir(meta)?;
+        // SQLite may open these sidecars itself; reject malicious links before
+        // the first connection, not only the primary database path.
+        for name in ["index.sqlite", "index.sqlite-wal", "index.sqlite-shm", "index.sqlite-journal"] {
+            Self::check_metadata_file(&meta.join(name))?;
+        }
         let db = Connection::open(meta.join("index.sqlite"))?;
         db.execute_batch(
             "PRAGMA journal_mode=WAL;
@@ -101,12 +131,25 @@ impl Repository {
     /// The OS releases this file lock on process exit, including abnormal termination.
     fn lock_worktree(&self) -> Result<fs::File> {
         use fs2::FileExt;
-        let lock_path = self.root.join(".loom").join("workspace.lock");
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(lock_path)?;
+        let meta = self.root.join(".loom");
+        Self::check_metadata_dir(&meta)?;
+        let lock_path = meta.join("workspace.lock");
+        Self::check_metadata_file(&lock_path)?;
+        // create_new avoids following a symlink placed at an absent lock path.
+        // If another process created the lock first, reopen only a regular file.
+        let file = match fs::OpenOptions::new()
+            .read(true).write(true).create_new(true).open(&lock_path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                Self::check_metadata_file(&lock_path)?;
+                fs::OpenOptions::new().read(true).write(true).open(&lock_path)?
+            }
+            Err(e) => return Err(e.into()),
+        };
+        if !file.metadata()?.is_file() {
+            return Err(Error::Invalid("workspace lock is not a regular file".into()));
+        }
+        Self::check_metadata_file(&lock_path)?;
         file.lock_exclusive()?;
         Ok(file)
     }
@@ -1199,6 +1242,58 @@ mod tests {
         let repo = Repository::init(dir.path()).unwrap();
         (dir, repo)
     }
+    #[cfg(unix)]
+    #[test]
+    fn discover_rejects_symlinked_metadata_directory() {
+        use std::os::unix::fs::symlink;
+        let real = tempfile::tempdir().unwrap();
+        let repo = Repository::init(real.path()).unwrap();
+        drop(repo);
+        let linked = tempfile::tempdir().unwrap();
+        symlink(real.path().join(".loom"), linked.path().join(".loom")).unwrap();
+        assert!(matches!(Repository::discover(linked.path()), Err(Error::Invalid(_))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_rejects_symlinked_database_and_sqlite_sidecars() {
+        use std::os::unix::fs::symlink;
+        let (dir, repo) = repo();
+        drop(repo);
+        let meta = dir.path().join(".loom");
+        let outside = dir.path().join("outside");
+        fs::write(&outside, b"untouched").unwrap();
+        let db = meta.join("index.sqlite");
+        fs::remove_file(&db).unwrap();
+        symlink(&outside, &db).unwrap();
+        assert!(matches!(Repository::discover(dir.path()), Err(Error::Invalid(_))));
+        fs::remove_file(&db).unwrap();
+
+        // SQLite's auxiliary files are also potential write redirections.
+        // The database is restored by initializing a fresh disposable repo.
+        let second = tempfile::tempdir().unwrap();
+        let repo = Repository::init(second.path()).unwrap();
+        drop(repo);
+        let journal = second.path().join(".loom/index.sqlite-journal");
+        if journal.exists() { fs::remove_file(&journal).unwrap(); }
+        symlink(&outside, &journal).unwrap();
+        assert!(matches!(Repository::discover(second.path()), Err(Error::Invalid(_))));
+        assert_eq!(fs::read(&outside).unwrap(), b"untouched");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_lock_rejects_symlink_without_opening_target() {
+        use std::os::unix::fs::symlink;
+        let (dir, repo) = repo();
+        let outside = dir.path().join("outside");
+        fs::write(&outside, b"untouched").unwrap();
+        symlink(&outside, dir.path().join(".loom/workspace.lock")).unwrap();
+        assert!(matches!(repo.create_branch("should-not-exist"), Err(Error::Invalid(_))));
+        assert_eq!(fs::read(&outside).unwrap(), b"untouched");
+        assert_eq!(repo.branches().unwrap().len(), 1);
+    }
+
     #[test] fn basic_commit_status_log_fsck() {
         let (dir, r) = repo();
         assert_eq!(r.current_branch().unwrap(), "main");
