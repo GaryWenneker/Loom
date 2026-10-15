@@ -75,6 +75,16 @@ impl Repository {
                  path TEXT PRIMARY KEY NOT NULL,
                  blob_id TEXT
              );
+             CREATE TABLE IF NOT EXISTS branch_path_index (
+                 branch TEXT NOT NULL,
+                 path TEXT NOT NULL,
+                 oid TEXT NOT NULL,
+                 PRIMARY KEY (branch, path)
+             );
+             CREATE TABLE IF NOT EXISTS branch_path_index_tip (
+                 branch TEXT PRIMARY KEY NOT NULL,
+                 oid TEXT NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS workspace_journal (
                  id INTEGER PRIMARY KEY CHECK(id=1),
                  operation TEXT NOT NULL,
@@ -419,6 +429,112 @@ impl Repository {
         let _guard = self.lock_worktree()?;
         self.recover_locked()?;
         self.db.execute("DELETE FROM stage_index WHERE path=?1", [path])?;
+        Ok(())
+    }
+
+    /// A rebuildable derived index. First use on a legacy/stale branch
+    /// reconstructs its first-parent snapshot; subsequent staged commits
+    /// update only changed paths in the same transaction as the ref CAS.
+    fn ensure_branch_path_index(
+        &self, branch: &str, tip: Option<ObjectId>
+    ) -> Result<()> {
+        let expected = tip.map(|id| id.to_string()).unwrap_or_default();
+        let current: Option<String> = self.db.query_row(
+            "SELECT oid FROM branch_path_index_tip WHERE branch=?1",
+            [branch], |r| r.get(0),
+        ).optional()?;
+        if current.as_deref() == Some(expected.as_str()) {
+            return Ok(());
+        }
+        let full_state = self.state_at(tip)?;
+        let tx = self.db.unchecked_transaction()?;
+        tx.execute("DELETE FROM branch_path_index WHERE branch=?1", [branch])?;
+        {
+            let mut insert = tx.prepare(
+                "INSERT INTO branch_path_index(branch,path,oid) VALUES(?1,?2,?3)"
+            )?;
+            for (path, oid) in full_state {
+                insert.execute(params![branch, path, oid.to_string()])?;
+            }
+        }
+        tx.execute(
+            "INSERT INTO branch_path_index_tip(branch,oid) VALUES(?1,?2)
+             ON CONFLICT(branch) DO UPDATE SET oid=excluded.oid",
+            params![branch, expected],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn indexed_blob(&self, branch: &str, path: &str) -> Result<Option<ObjectId>> {
+        let value: Option<String> = self.db.query_row(
+            "SELECT oid FROM branch_path_index WHERE branch=?1 AND path=?2",
+            params![branch, path], |r| r.get(0),
+        ).optional()?;
+        value.map(|raw| ObjectId::parse(&raw)).transpose()
+    }
+
+    fn staged_changes_indexed(&self, branch: &str) -> Result<Vec<Change>> {
+        let mut changes = Vec::new();
+        for (path, blob) in self.staged_blobs()? {
+            let previous = self.indexed_blob(branch, &path)?;
+            if previous == blob { continue; }
+            let kind = if blob.is_none() { ChangeKind::Delete }
+                else if previous.is_none() { ChangeKind::Add }
+                else { ChangeKind::Modify };
+            if let Some(id) = blob {
+                let raw = self.store.get(id)?;
+                if decode_object(&raw)?.0 != BLOB {
+                    return Err(Error::Invalid(format!("staged object is not a blob: {path}")));
+                }
+            }
+            changes.push(Change { path, kind, blob });
+        }
+        Ok(changes)
+    }
+
+    /// Indexed collision check only touches ancestors and descendants of
+    /// staged changes; it does not enumerate the entire tracked path set.
+    fn validate_staged_tree_indexed(
+        &self, branch: &str, changes: &[Change]
+    ) -> Result<()> {
+        let staged: BTreeMap<&str, &Change> = changes.iter()
+            .map(|change| (change.path.as_str(), change)).collect();
+        for change in changes {
+            if change.kind == ChangeKind::Delete { continue; }
+            for (idx, ch) in change.path.char_indices() {
+                if ch != '/' { continue; }
+                let ancestor = &change.path[..idx];
+                if let Some(other) = staged.get(ancestor) {
+                    if other.kind != ChangeKind::Delete {
+                        return Err(Error::Conflict(format!(
+                            "staged file/directory collision: {}", change.path
+                        )));
+                    }
+                } else if self.indexed_blob(branch, ancestor)?.is_some() {
+                    return Err(Error::Conflict(format!(
+                        "tracked file/directory collision: {}", change.path
+                    )));
+                }
+            }
+            let lower = format!("{}/", change.path);
+            // ASCII '/' sorts immediately below ASCII '0' in SQLite BINARY
+            // collation, giving an indexed range for descendants only.
+            let upper = format!("{}0", change.path);
+            let mut stmt = self.db.prepare(
+                "SELECT path FROM branch_path_index
+                 WHERE branch=?1 AND path>=?2 AND path<?3"
+            )?;
+            let paths = stmt.query_map(params![branch, lower, upper], |r| r.get::<_, String>(0))?;
+            for entry in paths {
+                let child = entry?;
+                if !staged.get(child.as_str()).is_some_and(|other| other.kind == ChangeKind::Delete) {
+                    return Err(Error::Conflict(format!(
+                        "staged file/directory collision: {}", change.path
+                    )));
+                }
+            }
+        }
         Ok(())
     }
 
