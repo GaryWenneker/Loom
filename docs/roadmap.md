@@ -33,9 +33,9 @@ P2 complete portable local VCS
           |
 P3 correct merge, index & crash recovery
           |
-          +---- P4 Git migration / conformance ----+
+          +---- P4 native server and secure sync ---+
           |                                        |
-          +---- P5 native server and secure sync ---+---- P6 agent concurrency, sparse workspaces
+          +---- P5 Git migration / conformance -----+---- P6 agent concurrency, sparse workspaces
                                                       |
                                                P7 scale + storage backends
                                                       |
@@ -119,19 +119,7 @@ P4 and P5 may be developed independently after the native state/metadata contrac
 
 **Gate P3:** property-based DAG and merge tests, conflict fixtures, power-loss-inspired fault model, repeated abort/restart and concurrent process tests produce no lost user edits and fully recoverable published history.
 
-## P4 — Git interoperability ([issue #5](https://github.com/GaryWenneker/Loom/issues/5))
-
-- [ ] Build a **separate** `loom-git` crate/CLI adapter; no dependency from `loom-core` to Git formats or Git executables.
-- [ ] Import all declared-supported blob/tree/commit/tag graphs with parents, merge structure, author/committer identity, timezone, messages, timestamps, file modes, symlinks and refs.
-- [ ] Persist idempotent native-ID ↔ Git-OID mappings and preserve original Git object bytes/metadata when exact re-export is claimed.
-- [ ] Define compatibility behavior for Git SHA-1 and SHA-256 repos, signed commits/tags, Git LFS pointers, submodules/gitlinks, shallow clones, replace refs, sparse checkout and unsupported extensions.
-- [ ] Implement native → Git export and semantic round-trip tests; unsupported cases must fail explicitly rather than silently discard metadata or signatures.
-- [ ] Implement GitHub/GitLab fetch/push via a distinct bridge, with ahead/behind state, remote ref CAS, no automatic force-push and recoverable interruptions.
-- [ ] Add representative public-repo fixtures, signed fixtures and protocol conformance tests; benchmark migration disk and bandwidth.
-
-**Gate P4:** declared feature matrix passes deterministic Git → Loom → Git and Loom → Git → Loom content/history tests; unsafe feature conversion is blocked; no destructive remote update by default.
-
-## P5 — Native client/server and offline sync ([issue #4](https://github.com/GaryWenneker/Loom/issues/4))
+## P4 — Native client/server and offline sync ([issue #4](https://github.com/GaryWenneker/Loom/issues/4))
 
 - [ ] Versioned Protobuf/gRPC API: capability handshake, Object/Changeset/Ref/History/Diff/Workspace/Admin services, bounded streaming and explicit errors.
 - [ ] Define **remote authority** for mutable refs; immutable object transport over HTTPS/TLS, checksum verification and missing-object discovery.
@@ -143,6 +131,18 @@ P4 and P5 may be developed independently after the native state/metadata contrac
 - [ ] Ship self-hosted single-node deployment, TLS setup, install/update docs, health/readiness, logs, metrics and backups.
 
 **Gate P5:** no unauthorized object leaks, no missing object closure, lossless offline divergence resolution, reproducible 100-writer race tests, secure interoperation between mixed supported versions.
+
+## P5 — Git interoperability ([issue #5](https://github.com/GaryWenneker/Loom/issues/5))
+
+- [ ] Build a **separate** `loom-git` crate/CLI adapter; no dependency from `loom-core` to Git formats or Git executables.
+- [ ] Import all declared-supported blob/tree/commit/tag graphs with parents, merge structure, author/committer identity, timezone, messages, timestamps, file modes, symlinks and refs.
+- [ ] Persist idempotent native-ID ↔ Git-OID mappings and preserve original Git object bytes/metadata when exact re-export is claimed.
+- [ ] Define compatibility behavior for Git SHA-1 and SHA-256 repos, signed commits/tags, Git LFS pointers, submodules/gitlinks, shallow clones, replace refs, sparse checkout and unsupported extensions.
+- [ ] Implement native → Git export and semantic round-trip tests; unsupported cases must fail explicitly rather than silently discard metadata or signatures.
+- [ ] Implement GitHub/GitLab fetch/push via a distinct bridge, with ahead/behind state, remote ref CAS, no automatic force-push and recoverable interruptions.
+- [ ] Add representative public-repo fixtures, signed fixtures and protocol conformance tests; benchmark migration disk and bandwidth.
+
+**Gate P4:** declared feature matrix passes deterministic Git → Loom → Git and Loom → Git → Loom content/history tests; unsafe feature conversion is blocked; no destructive remote update by default.
 
 ## P6 — Agent-scale workspaces and developer platform ([issues #4](https://github.com/GaryWenneker/Loom/issues/4) and [#6](https://github.com/GaryWenneker/Loom/issues/6))
 
