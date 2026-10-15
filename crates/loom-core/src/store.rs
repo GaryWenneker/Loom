@@ -1,6 +1,6 @@
 use crate::format::{decode_object, encode_object, object_id, ObjectId};
 use crate::{Error, Result};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -44,7 +44,7 @@ impl ObjectStore {
                 Err(e) => return Err(Error::Io(e)),
             }
             #[cfg(unix)]
-            File::open(parent)?.sync_all()?;
+            fs::File::open(parent)?.sync_all()?;
             Ok(())
         })();
         if result.is_err() { let _ = fs::remove_file(&tmp); }
@@ -61,6 +61,9 @@ impl ObjectStore {
         decode_object(&bytes)?;
         Ok(bytes)
     }
+
+    #[cfg(test)]
+    pub(crate) fn path_for_test(&self, id: ObjectId) -> PathBuf { self.path(id) }
 
     pub fn ids(&self) -> Result<Vec<ObjectId>> {
         let mut out = Vec::new();
