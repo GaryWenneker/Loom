@@ -607,7 +607,7 @@ impl Repository {
 
     fn publish_staged_commit(
         &self, branch: &str, previous: Option<ObjectId>, next: ObjectId,
-        changes: &[Change]
+        changes: &[Change], native_tree: ObjectId
     ) -> Result<()> {
         let tx = self.db.unchecked_transaction()?;
         let moved = tx.execute(
@@ -644,6 +644,14 @@ impl Repository {
         tx.execute(
             "UPDATE branch_path_index_tip SET oid=?1 WHERE branch=?2",
             params![next.to_string(), branch],
+        )?;
+        // Publish the immutable tree root in the same DB transaction as the
+        // branch ref CAS and path index. Before this point, all immutable
+        // blobs, changesets and tree nodes have already been persisted.
+        tx.execute(
+            "INSERT INTO revision_native_tree(revision_oid,root_oid)
+             VALUES(?1,?2)",
+            params![next.to_string(), native_tree.to_string()],
         )?;
         tx.execute("DELETE FROM stage_index", [])?;
         tx.commit()?;
@@ -1222,11 +1230,27 @@ impl Repository {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| Error::Invalid("system time before epoch".into()))?;
         let c = Changeset { parents: prev.into_iter().collect(), author: author.into(), message: message.into(),
             timestamp_seconds: now.as_secs() as i64, changes };
+        // Staged commits publish a native tree in the same transaction as
+        // their ref/index update. The initial root may require one lazy
+        // bootstrap from v1 history; later staged commits touch changed
+        // directory paths only. Legacy commit-all mode is unchanged.
+        let native_tree = if staged {
+            let previous_root = if let Some(parent) = prev {
+                self.native_tree_root(parent)?
+            } else {
+                crate::tree::write_snapshot(&self.store, &BTreeMap::new())?
+            };
+            Some(crate::tree::apply_changes(
+                &self.store, previous_root, &c.changes
+            )?)
+        } else {
+            None
+        };
         let raw = c.encode()?;
         let (_, payload) = decode_object(&raw)?;
         let id = self.store.put(CHANGESET, payload)?;
-        if staged {
-            self.publish_staged_commit(&branch, prev, id, &c.changes)?;
+        if let Some(root) = native_tree {
+            self.publish_staged_commit(&branch, prev, id, &c.changes, root)?;
         } else {
             self.save_ref_cas(&branch, prev, id)?;
         }
