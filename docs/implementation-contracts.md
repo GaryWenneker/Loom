@@ -5,7 +5,7 @@
 ## 1. Product and compatibility boundaries
 
 - Loom works offline as an embedded Rust engine plus CLI; an optional server provides collaboration and scale. The two modes use the **same** native object and transaction semantics.
-- No dependence on Git, AX, proprietary cloud services, or AI models in `loom-core`. Git/GitHub/GitLab integration is an isolated adapter. AI agents are ordinary clients.
+- The native `loom-core` operates offline without Git executables, proprietary cloud services or AI models. Git/GitHub/GitLab integration is an isolated adapter. AI agents are ordinary clients.
 - Source control primitives are the product: no mandatory issue tracker, code-review UI, hosting service or CI runner.
 - macOS/Linux/Windows are first-class; do not promise a feature on a platform without a validated filesystem contract for it.
 - Acceptable native performance must be reproducibly demonstrated; the 200x infrastructure figure associated with other VCS systems is **not** a Loom target or claim.

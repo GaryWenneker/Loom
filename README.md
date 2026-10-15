@@ -2,7 +2,7 @@
 
 Loom is an experimental, standalone **native version control system**, implemented in Rust.
 
-It is **not built on Git** and is not an extension of AX. A separate Git compatibility bridge is planned.
+Loom has its own native storage engine and object format. A separate Git interoperability bridge is planned.
 
 **Product direction:** Git is the **functional baseline**, not a syntax or architecture template. Loom may offer fewer steps, reversible operations and agent-safe workflows, but must eventually preserve equivalent user capabilities. See the [Git capability inventory](docs/git-capability-parity.md).
 
@@ -53,6 +53,20 @@ echo hello > hello.txt
 ```
 
 Run `loom help` for the supported CLI. The example assumes the binary is accessible at the indicated relative path; otherwise use its absolute path or add it to `PATH`.
+
+## Documentation and architecture review
+
+- [Getting started](docs/getting-started.md): build, initialize, stage and work with branches.
+- [CLI reference](docs/cli-reference.md): available commands and current limitations.
+- [Engineering code review](docs/code-review.md): ranked correctness and security findings.
+- [Scion architecture assessment](docs/scion-architecture-review.md): where the current engine meets or falls short of agent-scale source control.
+- [Roadmap and gates](docs/roadmap.md): planned features, dependencies, acceptance criteria.
+
+## Project resources
+
+- [Concepts](docs/concepts.md) and [support matrix](docs/support-matrix.md)
+- [Troubleshooting](docs/troubleshooting.md) and [development guide](docs/development.md)
+- [Contributing](CONTRIBUTING.md), [security policy](SECURITY.md) and [changelog](CHANGELOG.md)
 
 ## Plan
 

@@ -1,6 +1,6 @@
 # Loom architecture
 
-Loom is a **standalone** version control system. It does not depend on Git or AX.
+Loom is a standalone version control system with its own object storage engine and history model.
 
 ## Invariants
 

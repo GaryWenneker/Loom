@@ -1,0 +1,31 @@
+# Command-line reference
+
+**Version:** Loom 0.1 experimental alpha. Run `loom help` to view the installed CLI's own usage. Except for `init` and help, commands require a Loom worktree.
+
+| Command | Current behavior |
+|---|---|
+| `loom init [path]` | Initialize a local repository |
+| `loom status` | Show current branch, staged and remaining changes |
+| `loom add PATH [PATH ...]` | Capture each selected file as an immutable staged snapshot |
+| `loom unstage PATH [PATH ...]` | Unstage files without deleting worktree contents |
+| `loom review` | View staged and later worktree changes together |
+| `loom diff` | Compare worktree against HEAD |
+| `loom diff --staged` | Compare staged content against HEAD |
+| `loom diff --unstaged` | Compare worktree with staged content |
+| `loom diff FROM TO` | Compare branch tip snapshots |
+| `loom commit -m MESSAGE [--author NAME]` | Commit selected staged changes |
+| `loom log [limit]` | Show first-parent commit history (default: 20) |
+| `loom branch list` | List named local branches |
+| `loom branch create NAME` | Create a local branch |
+| `loom switch NAME` | Switch branches if workspace is clean |
+| `loom merge NAME [-m MESSAGE]` | Conservative merge; unresolved conflicts reject |
+| `loom cat BRANCH PATH` | Stream exact file bytes from a native snapshot |
+| `loom fsck` | Perform basic object and reference integrity checks |
+
+The first `loom add` enables persistent explicit staging in v1. Earlier commit-all behavior is transitional. A missing tracked file can be staged as a deletion. Directory-wide staging and partial hunk selection are unavailable.
+
+Commands exit nonzero on error and diagnostics go to stderr. Typed exit codes and structured JSON output are not implemented.
+
+**Unavailable:** clone/fetch/push/pull/remote, tags, rebase, cherry-pick, revert, restore, stash, interactive conflicts, signing, full metadata preservation.
+
+[Getting started](getting-started.md) · [Concepts](concepts.md) · [Support matrix](support-matrix.md).
