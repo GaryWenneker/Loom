@@ -18,7 +18,7 @@
 | `loom branch list` | List named local branches |
 | `loom branch create NAME` | Create a local branch |
 | `loom switch NAME` | Switch branches if workspace is clean |
-| `loom merge NAME [-m MESSAGE]` | Conservative merge using the best DAG common ancestor. Refuses criss-cross histories with multiple independent merge bases and histories with no common ancestor; virtual-base and unrelated-history merges are not supported yet. |
+| `loom merge NAME [-m MESSAGE]` | Conservative merge using the best DAG common ancestor. Performs journaled fast-forward for a descendant source branch, or a no-op when already up to date. A divergent branch merge creates a two-parent changeset. Refuses criss-cross histories with multiple independent merge bases and histories with no common ancestor; virtual-base and unrelated-history merges are not supported yet. |
 | `loom merge-bases LEFT_BRANCH RIGHT_BRANCH` | Print every best common ancestor (one immutable changeset ID per line, sorted); no checkout or branch mutation. Unborn/disconnected histories print nothing. |
 | `loom cat BRANCH PATH` | Stream exact file bytes from a native snapshot |
 | `loom cat @CHANGESET_ID PATH` | Read historical file bytes without checkout, using a rebuildable lookup cache. |
