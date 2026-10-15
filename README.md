@@ -54,6 +54,14 @@ echo hello > hello.txt
 
 Run `loom help` for the supported CLI. The example assumes the binary is accessible at the indicated relative path; otherwise use its absolute path or add it to `PATH`.
 
+## Documentation and architecture review
+
+- [Getting started](docs/getting-started.md): build, initialize, stage and work with branches.
+- [CLI reference](docs/cli-reference.md): available commands and current limitations.
+- [Engineering code review](docs/code-review.md): ranked correctness and security findings.
+- [Scion architecture assessment](docs/scion-architecture-review.md): where the current engine meets or falls short of agent-scale source control.
+- [Roadmap and gates](docs/roadmap.md): planned features, dependencies, acceptance criteria.
+
 ## Plan
 
 The [architecture](docs/architecture.md), [implementation contracts](docs/implementation-contracts.md), [release gates](docs/release-gates.md), [native format](docs/format-v1.md), [ADRs](docs/adr-001-native-engine.md) and [complete delivery roadmap](docs/roadmap.md) document decisions, priorities, dependencies and objective acceptance criteria. The roadmap distinguishes merged features from planned work.
