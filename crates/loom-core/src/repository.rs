@@ -279,6 +279,53 @@ impl Repository {
         Ok(result)
     }
 
+    /// Read a single user-selected path, without scanning unrelated files.
+    /// Missing or directory paths are represented as None for staged deletion.
+    /// This is an alpha safeguard, not a race-free handle-relative traversal.
+    fn read_staging_path(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        validate_path(path)?;
+        let mut ancestor = self.root.clone();
+        let mut parts = path.split('/').peekable();
+        while let Some(component) = parts.next() {
+            ancestor.push(component);
+            let metadata = match fs::symlink_metadata(&ancestor) {
+                Ok(value) => value,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(e) => return Err(e.into()),
+            };
+            if metadata.file_type().is_symlink() {
+                return Err(Error::Invalid(format!(
+                    "symlinks unsupported in staged path: {path}"
+                )));
+            }
+            if parts.peek().is_some() {
+                if !metadata.is_dir() {
+                    return Ok(None);
+                }
+                continue;
+            }
+            if metadata.is_dir() { return Ok(None); }
+            if !metadata.is_file() {
+                return Err(Error::Invalid(format!("unsupported staged file type: {path}")));
+            }
+            if metadata.len() > MAX_OBJECT_SIZE as u64 {
+                return Err(Error::Invalid(format!("file exceeds 64 MiB: {path}")));
+            }
+            use std::io::Read;
+            let file = fs::File::open(&ancestor)?;
+            if !file.metadata()?.is_file() {
+                return Err(Error::Invalid(format!("staged path changed type: {path}")));
+            }
+            let mut bytes = Vec::new();
+            file.take((MAX_OBJECT_SIZE + 1) as u64).read_to_end(&mut bytes)?;
+            if bytes.len() > MAX_OBJECT_SIZE {
+                return Err(Error::Invalid(format!("file exceeds 64 MiB: {path}")));
+            }
+            return Ok(Some(bytes));
+        }
+        Ok(None)
+    }
+
     fn make_delta(&self, old: &BTreeMap<String,ObjectId>, files: &BTreeMap<String, Vec<u8>>, persist: bool) -> Result<Vec<Change>> {
         let mut changes = Vec::new();
         for (path, bytes) in files {
@@ -342,10 +389,9 @@ impl Repository {
         validate_path(path)?;
         let _guard = self.lock_worktree()?;
         self.recover_locked()?;
-        let files = self.scan_files()?;
         let before = self.state_at(self.head()?)?;
-        let blob_id = match files.get(path) {
-            Some(bytes) => Some(self.store.put(BLOB, bytes)?),
+        let blob_id = match self.read_staging_path(path)? {
+            Some(bytes) => Some(self.store.put(BLOB, &bytes)?),
             None if before.contains_key(path) => None,
             None => return Err(Error::Invalid(format!("file is neither tracked nor present: {path}"))),
         };
@@ -586,11 +632,13 @@ impl Repository {
         let branch = self.current_branch()?;
         let prev = self.branch_tip(&branch)?;
         let old = self.state_at(prev)?;
-        let files = self.scan_files()?;
         let staged = self.staging_enabled()?;
         let changes = if staged {
+            // Staged bytes already have immutable object IDs. Reading the
+            // entire worktree again would make a small commit O(all files).
             self.staged_changes(&old)?
         } else {
+            let files = self.scan_files()?;
             self.make_delta(&old, &files, true)?
         };
         if changes.is_empty() {
