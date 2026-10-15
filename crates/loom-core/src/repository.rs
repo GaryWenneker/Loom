@@ -218,6 +218,14 @@ impl Repository {
         Ok(result)
     }
 
+    /// Read native snapshot content by branch and relative path, with no checkout.
+    /// Returns None when a file is absent from that branch.
+    pub fn read_branch_file(&self, branch: &str, path: &str) -> Result<Option<Vec<u8>>> {
+        validate_path(path)?;
+        let state = self.state_at(self.branch_tip(branch)?)?;
+        state.get(path).copied().map(|id| self.blob_bytes(id)).transpose()
+    }
+
     fn blob_bytes(&self, id: ObjectId) -> Result<Vec<u8>> {
         let raw = self.store.get(id)?;
         let (kind, payload) = decode_object(&raw)?;
