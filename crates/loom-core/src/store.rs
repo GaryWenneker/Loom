@@ -105,7 +105,7 @@ impl ObjectStore {
         if link_metadata.len() > (crate::format::MAX_OBJECT_SIZE + 15) as u64 {
             return Err(Error::Invalid(format!("object exceeds v1 read limit: {id}")));
         }
-        let mut file = fs::File::open(&path)?;
+        let file = fs::File::open(&path)?;
         let open_metadata = file.metadata()?;
         if !open_metadata.is_file() || open_metadata.len() > (crate::format::MAX_OBJECT_SIZE + 15) as u64 {
             return Err(Error::Invalid(format!("object changed during open: {id}")));
