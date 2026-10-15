@@ -582,7 +582,8 @@ impl Repository {
     }
 
     fn publish_staged_commit(
-        &self, branch: &str, previous: Option<ObjectId>, next: ObjectId
+        &self, branch: &str, previous: Option<ObjectId>, next: ObjectId,
+        changes: &[Change]
     ) -> Result<()> {
         let tx = self.db.unchecked_transaction()?;
         let moved = tx.execute(
@@ -592,6 +593,34 @@ impl Repository {
         if moved != 1 {
             return Err(Error::Conflict(format!("branch {branch} moved; staged files retained")));
         }
+        // Keep the derived path cache and its revision marker consistent with
+        // refs in the SAME SQLite transaction. An interrupted commit cannot
+        // publish a new ref alongside old cached file state.
+        for change in changes {
+            match change.kind {
+                ChangeKind::Delete => {
+                    tx.execute(
+                        "DELETE FROM branch_path_index WHERE branch=?1 AND path=?2",
+                        params![branch, change.path],
+                    )?;
+                }
+                ChangeKind::Add | ChangeKind::Modify => {
+                    let id = change.blob.ok_or_else(||
+                        Error::Invalid("staged update without blob".into())
+                    )?;
+                    tx.execute(
+                        "INSERT INTO branch_path_index(branch,path,oid)
+                         VALUES(?1,?2,?3)
+                         ON CONFLICT(branch,path) DO UPDATE SET oid=excluded.oid",
+                        params![branch, change.path, id.to_string()],
+                    )?;
+                }
+            }
+        }
+        tx.execute(
+            "UPDATE branch_path_index_tip SET oid=?1 WHERE branch=?2",
+            params![next.to_string(), branch],
+        )?;
         tx.execute("DELETE FROM stage_index", [])?;
         tx.commit()?;
         Ok(())
@@ -747,28 +776,31 @@ impl Repository {
         if author.trim().is_empty() || message.trim().is_empty() { return Err(Error::Invalid("author and commit message are required".into())); }
         let branch = self.current_branch()?;
         let prev = self.branch_tip(&branch)?;
-        let old = self.state_at(prev)?;
         let staged = self.staging_enabled()?;
         let changes = if staged {
-            // Staged bytes already have immutable object IDs. Reading the
-            // entire worktree again would make a small commit O(all files).
-            self.staged_changes(&old)?
+            // On first use or after a merge/legacy commit, rebuild from
+            // immutable history. Subsequent staged commits use indexed
+            // lookups and touch only paths named by the staged snapshot.
+            self.ensure_branch_path_index(&branch, prev)?;
+            let changes = self.staged_changes_indexed(&branch)?;
+            self.validate_staged_tree_indexed(&branch, &changes)?;
+            changes
         } else {
+            let old = self.state_at(prev)?;
             let files = self.scan_files()?;
             self.make_delta(&old, &files, true)?
         };
         if changes.is_empty() {
             return Err(Error::Invalid(if staged { "nothing staged to commit" } else { "nothing to commit" }.into()));
         }
-        if staged { self.validate_staged_tree(&old, &changes)?; }
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| Error::Invalid("system time before epoch".into()))?;
         let c = Changeset { parents: prev.into_iter().collect(), author: author.into(), message: message.into(),
-            timestamp_seconds: now.as_secs() as i64, changes };
+            timestamp_seconds: now.as_secs() as i64, changes: changes.clone() };
         let raw = c.encode()?;
         let (_, payload) = decode_object(&raw)?;
         let id = self.store.put(CHANGESET, payload)?;
         if staged {
-            self.publish_staged_commit(&branch, prev, id)?;
+            self.publish_staged_commit(&branch, prev, id, &changes)?;
         } else {
             self.save_ref_cas(&branch, prev, id)?;
         }
