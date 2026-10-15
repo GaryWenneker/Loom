@@ -451,6 +451,131 @@ mod tests {
     }
 
     #[test]
+    fn delta_roots_match_canonical_rebuild_across_directory_transitions() {
+        use crate::format::{BLOB, Change, ChangeKind};
+        use std::collections::BTreeMap;
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join(".loom");
+        fs::create_dir(&meta).unwrap();
+        fs::create_dir(meta.join("objects")).unwrap();
+        let store = crate::store::ObjectStore::new(&meta);
+        let blob = |contents: &[u8]| store.put(BLOB, contents).unwrap();
+        let a = blob(b"a");
+        let b = blob(b"b");
+        let c = blob(b"c");
+        let d = blob(b"d");
+        let state = BTreeMap::from([
+            ("src/a".to_string(), a),
+            ("src/sub/b".to_string(), b),
+            ("config".to_string(), c),
+        ]);
+        let original = write_snapshot(&store, &state).unwrap();
+        let original_src = NativeTree::decode(&store.get(original).unwrap()).unwrap()
+            .entries.into_iter().find(|e| e.name == "src").unwrap().object;
+        let steps = [
+            vec![
+                Change { kind: ChangeKind::Modify, path: "src/a".into(), blob: Some(d) },
+                Change { kind: ChangeKind::Delete, path: "src/sub/b".into(), blob: None },
+                Change { kind: ChangeKind::Add, path: "new".into(), blob: Some(b) },
+            ],
+            vec![
+                Change { kind: ChangeKind::Delete, path: "config".into(), blob: None },
+                Change { kind: ChangeKind::Add, path: "config/nested".into(), blob: Some(c) },
+            ],
+            vec![
+                Change { kind: ChangeKind::Delete, path: "config/nested".into(), blob: None },
+                Change { kind: ChangeKind::Add, path: "config".into(), blob: Some(a) },
+            ],
+            vec![
+                Change { kind: ChangeKind::Delete, path: "src/a".into(), blob: None },
+                Change { kind: ChangeKind::Delete, path: "new".into(), blob: None },
+                Change { kind: ChangeKind::Delete, path: "config".into(), blob: None },
+            ],
+        ];
+        let mut expected = state;
+        let mut root = original;
+        for changes in steps {
+            for change in &changes {
+                if change.kind == ChangeKind::Delete {
+                    expected.remove(&change.path);
+                } else {
+                    expected.insert(change.path.clone(), change.blob.unwrap());
+                }
+            }
+            root = apply_changes(&store, root, &changes).unwrap();
+            assert_eq!(root, write_snapshot(&store, &expected).unwrap());
+            assert_eq!(flatten_snapshot(&store, root).unwrap(), expected);
+        }
+        assert!(expected.is_empty());
+        // Original root is immutable and its source directory still exists.
+        let retained = NativeTree::decode(&store.get(original).unwrap()).unwrap();
+        assert_eq!(retained.entries.into_iter().find(|e| e.name == "src").unwrap().object,
+                   original_src);
+    }
+
+    #[test]
+    fn unchanged_sibling_trees_keep_their_original_ids() {
+        use crate::format::{BLOB, Change, ChangeKind};
+        use std::collections::BTreeMap;
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join(".loom");
+        fs::create_dir(&meta).unwrap();
+        fs::create_dir(meta.join("objects")).unwrap();
+        let store = crate::store::ObjectStore::new(&meta);
+        let a = store.put(BLOB, b"a").unwrap();
+        let b = store.put(BLOB, b"b").unwrap();
+        let c = store.put(BLOB, b"c").unwrap();
+        let old = write_snapshot(&store, &BTreeMap::from([
+            ("left/a".to_string(), a),
+            ("right/b".to_string(), b),
+        ])).unwrap();
+        let next = apply_changes(&store, old, &[
+            Change { kind: ChangeKind::Modify, path: "left/a".into(), blob: Some(c) }
+        ]).unwrap();
+        let child = |root| NativeTree::decode(&store.get(root).unwrap()).unwrap()
+            .entries.into_iter().find(|e| e.name == "right").unwrap().object;
+        assert_eq!(child(old), child(next));
+        assert_ne!(old, next);
+        assert_eq!(apply_changes(&store, old, &[]).unwrap(), old);
+    }
+
+    #[test]
+    fn invalid_edits_fail_without_publishing_a_new_root() {
+        use crate::format::{BLOB, Change, ChangeKind};
+        use std::collections::BTreeMap;
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join(".loom");
+        fs::create_dir(&meta).unwrap();
+        fs::create_dir(meta.join("objects")).unwrap();
+        let store = crate::store::ObjectStore::new(&meta);
+        let a = store.put(BLOB, b"a").unwrap();
+        let root = write_snapshot(&store, &BTreeMap::from([
+            ("file".to_string(), a),
+        ])).unwrap();
+        let add = |path: &str| Change {
+            kind: ChangeKind::Add,
+            path: path.into(),
+            blob: Some(a),
+        };
+        assert!(apply_changes(&store, root, &[add("file/nested")]).is_err());
+        assert!(apply_changes(&store, root, &[add("x"), add("x/y")]).is_err());
+        assert!(apply_changes(&store, root, &[add("../escape")]).is_err());
+        assert!(apply_changes(&store, root, &[
+            Change { kind: ChangeKind::Delete, path: "file".into(), blob: Some(a) }
+        ]).is_err());
+        assert!(apply_changes(&store, root, &[
+            add("x"), add("x")
+        ]).is_err());
+        assert!(apply_changes(&store, root, &[Change {
+            kind: ChangeKind::Add, path: "blob".into(), blob: Some(root)
+        }]).is_err());
+        assert_eq!(flatten_snapshot(&store, root).unwrap().get("file"), Some(&a));
+    }
+
+    #[test]
     fn reject_noncanonical_names_and_directory_flags() {
         let cases = ["../escape", "two/components", ".loom", ".git", "a\\b", ""];
         for name in cases {
