@@ -117,6 +117,6 @@ mod tests {
                 refs.compare_and_swap("main", None, Some(ObjectId([n; 32]))).unwrap()
             })
         }).collect();
-        assert_eq!(workers.into_iter().filter(|w| w.join().unwrap()).count(), 1);
+        assert_eq!(workers.into_iter().map(|w| w.join().unwrap()).filter(|won| *won).count(), 1);
     }
 }
