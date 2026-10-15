@@ -2,7 +2,7 @@ use loom_core::{Repository, StatusKind};
 use std::{env, path::Path, process};
 
 fn usage() {
-    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path]\n  loom status\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom diff [FROM_BRANCH TO_BRANCH]\n  loom cat BRANCH PATH\n  loom fsck\n");
+    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path]\n  loom status\n  loom add PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom diff [FROM_BRANCH TO_BRANCH]\n  loom cat BRANCH PATH\n  loom fsck\n");
 }
 
 
@@ -41,11 +41,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
         "status" => {
             println!("On branch {}", repo.current_branch()?);
+            let staged = repo.staged_status()?;
+            if repo.staging_enabled()? {
+                println!("Explicit staging enabled");
+                if staged.is_empty() { println!("No changes staged"); }
+                for change in staged {
+                    let flag = match change.kind {
+                        StatusKind::Added => "A", StatusKind::Modified => "M", StatusKind::Deleted => "D"
+                    };
+                    println!("staged {flag} {}", change.path);
+                }
+            }
             let changes = repo.status()?;
             if changes.is_empty() { println!("Working tree clean"); }
             for change in changes {
                 let flag = match change.kind { StatusKind::Added => "A", StatusKind::Modified => "M", StatusKind::Deleted => "D" };
                 println!("{flag} {}", change.path);
+            }
+        }
+        "add" | "unstage" => {
+            if args.len() < 2 {
+                return Err(format!("usage: loom {cmd} PATH [PATH ...]").into());
+            }
+            for path in &args[1..] {
+                if cmd == "add" { repo.add(path)?; }
+                else { repo.unstage(path)?; }
+                println!("{} {path}", if cmd == "add" { "Staged" } else { "Unstaged" });
             }
         }
         "commit" => {
