@@ -3092,6 +3092,120 @@ mod tests {
         assert!(r.fsck().is_ok());
     }
 
+
+    #[test]
+    fn fast_forward_merge_preserves_source_changeset_identity_and_tree() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("base"), b"base").unwrap();
+        let base = r.commit("tester", "root").unwrap();
+        r.create_branch("feature").unwrap();
+        r.switch_branch("feature").unwrap();
+        fs::write(dir.path().join("new"), b"feature content").unwrap();
+        r.commit("tester", "first feature commit").unwrap();
+        fs::write(dir.path().join("new"), b"second version").unwrap();
+        let feature_tip = r.commit("tester", "second feature commit").unwrap();
+        let expected_root = r.native_tree_root(feature_tip).unwrap();
+        r.switch_branch("main").unwrap();
+        assert_eq!(r.head().unwrap(), Some(base));
+        assert!(!dir.path().join("new").exists());
+        let merged = r.merge_branch("feature", "tester", "no synthetic commit").unwrap();
+        assert_eq!(merged, feature_tip);
+        assert_eq!(r.head().unwrap(), Some(feature_tip));
+        assert_eq!(r.get_changeset(merged).unwrap().parents.len(), 1,
+                   "fast-forward must not introduce a merge changeset");
+        assert_eq!(fs::read(dir.path().join("new")).unwrap(), b"second version");
+        assert_eq!(r.native_tree_root(merged).unwrap(), expected_root);
+        assert!(r.pending_transition().unwrap().is_none());
+
+        // Merging a branch that is already contained must be a no-op.
+        let second = r.merge_branch("feature", "tester", "already up-to-date").unwrap();
+        assert_eq!(second, merged);
+        assert_eq!(r.head().unwrap(), Some(feature_tip));
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn fast_forward_noop_when_source_is_ancestor_of_current_branch() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("shared"), b"root").unwrap();
+        let root = r.commit("tester", "root").unwrap();
+        r.create_branch("old").unwrap();
+        fs::write(dir.path().join("new"), b"newer").unwrap();
+        let tip = r.commit("tester", "later").unwrap();
+        assert_eq!(r.branch_tip("old").unwrap(), Some(root));
+        assert_eq!(r.merge_branch("old", "tester", "already contained").unwrap(), tip);
+        assert_eq!(r.head().unwrap(), Some(tip));
+        assert!(r.pending_transition().unwrap().is_none());
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn interrupted_fast_forward_recovery_replays_without_creating_merge_commit() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("base"), b"root").unwrap();
+        let root = r.commit("tester", "root").unwrap();
+        r.create_branch("feature").unwrap();
+        r.switch_branch("feature").unwrap();
+        fs::write(dir.path().join("feature"), b"first").unwrap();
+        r.commit("tester", "first").unwrap();
+        fs::write(dir.path().join("feature"), b"second").unwrap();
+        let target = r.commit("tester", "second").unwrap();
+        let target_root = r.native_tree_root(target).unwrap();
+        r.switch_branch("main").unwrap();
+        r.begin_transition(&PendingTransition {
+            operation: "fast-forward".into(),
+            from_branch: "main".into(), to_branch: "main".into(),
+            before: Some(root), after: Some(target),
+        }).unwrap();
+        assert_eq!(r.head().unwrap(), Some(root));
+        drop(r);
+        let reopened = Repository::discover(dir.path()).unwrap();
+        assert_eq!(reopened.head().unwrap(), Some(target));
+        assert_eq!(reopened.native_tree_root(target).unwrap(), target_root);
+        assert_eq!(fs::read(dir.path().join("feature")).unwrap(), b"second");
+        assert!(reopened.pending_transition().unwrap().is_none());
+        assert!(reopened.fsck().is_ok());
+    }
+
+    #[test]
+    fn fast_forward_recovery_refuses_unexpected_user_changes_and_invalid_ancestry() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("base"), b"root").unwrap();
+        let original = r.commit("tester", "root").unwrap();
+        r.create_branch("feature").unwrap();
+        r.switch_branch("feature").unwrap();
+        fs::write(dir.path().join("base"), b"new").unwrap();
+        let target = r.commit("tester", "updated").unwrap();
+        r.switch_branch("main").unwrap();
+        r.begin_transition(&PendingTransition {
+            operation: "fast-forward".into(),
+            from_branch: "main".into(), to_branch: "main".into(),
+            before: Some(original), after: Some(target),
+        }).unwrap();
+        fs::write(dir.path().join("base"), b"user edited").unwrap();
+        assert!(r.recover_locked().is_err());
+        assert_eq!(r.head().unwrap(), Some(original));
+        assert_eq!(fs::read(dir.path().join("base")).unwrap(), b"user edited");
+        assert!(r.pending_transition().unwrap().is_some());
+        fs::write(dir.path().join("base"), b"root").unwrap();
+        r.recover_locked().unwrap();
+        assert_eq!(r.head().unwrap(), Some(target));
+        assert!(r.pending_transition().unwrap().is_none());
+        assert!(r.fsck().is_ok());
+
+        // A forged recovery journal pointing backwards must not rewrite
+        // HEAD or the worktree, even if both object IDs are valid.
+        r.begin_transition(&PendingTransition {
+            operation: "fast-forward".into(),
+            from_branch: "main".into(), to_branch: "main".into(),
+            before: Some(target), after: Some(original),
+        }).unwrap();
+        assert!(r.recover_locked().is_err());
+        assert_eq!(r.head().unwrap(), Some(target));
+        assert!(r.pending_transition().unwrap().is_some());
+        assert_eq!(fs::read(dir.path().join("base")).unwrap(), b"new");
+    }
+
     #[test] fn non_overlapping_merge_and_conflict_rejection() {
         let (dir, r) = repo();
         fs::write(dir.path().join("a"), b"base-a").unwrap();
