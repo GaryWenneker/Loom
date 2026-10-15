@@ -189,7 +189,7 @@ impl Repository {
         for path in paths {
             let before = previous.get(&path);
             let after = files.get(&path);
-            let after_id = after.map(|bytes| object_id(&encode_object(BLOB, bytes)?)).transpose()?;
+            let after_id = after.map(|bytes| encode_object(BLOB, bytes).map(|encoded| object_id(&encoded))).transpose()?;
             if before.copied() == after_id { continue; }
             let old = before.map(|id| self.blob_bytes(*id)).transpose()?;
             result.push(FileDiff { path, before: old, after: after.cloned() });
