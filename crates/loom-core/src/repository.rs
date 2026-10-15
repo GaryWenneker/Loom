@@ -739,6 +739,50 @@ mod tests {
     }
 
     #[test]
+    fn switch_handles_file_directory_transitions_in_both_directions() {
+        let (dir, repo) = repo();
+        fs::write(dir.path().join("node"), b"one").unwrap();
+        repo.commit("tester", "node is file").unwrap();
+        repo.create_branch("directory").unwrap();
+        repo.switch_branch("directory").unwrap();
+        fs::remove_file(dir.path().join("node")).unwrap();
+        fs::create_dir(dir.path().join("node")).unwrap();
+        fs::write(dir.path().join("node").join("leaf"), b"two").unwrap();
+        repo.commit("tester", "node is directory").unwrap();
+        repo.switch_branch("main").unwrap();
+        assert_eq!(fs::read(dir.path().join("node")).unwrap(), b"one");
+        repo.switch_branch("directory").unwrap();
+        assert_eq!(fs::read(dir.path().join("node").join("leaf")).unwrap(), b"two");
+        assert!(repo.status().unwrap().is_empty());
+    }
+
+    #[test]
+    fn recovery_refuses_user_modifications_without_moving_head() {
+        let (dir, repo) = repo();
+        fs::write(dir.path().join("file"), b"main").unwrap();
+        repo.commit("tester", "base").unwrap();
+        repo.create_branch("feature").unwrap();
+        repo.switch_branch("feature").unwrap();
+        fs::write(dir.path().join("file"), b"feature").unwrap();
+        repo.commit("tester", "feature").unwrap();
+        repo.switch_branch("main").unwrap();
+        let before = repo.head().unwrap();
+        repo.begin_transition(&PendingTransition {
+            operation: "switch".into(), from_branch: "main".into(),
+            to_branch: "feature".into(), before, after: repo.branch_tip("feature").unwrap(),
+        }).unwrap();
+        drop(repo);
+        fs::write(dir.path().join("file"), b"user edit").unwrap();
+        assert!(Repository::discover(dir.path()).is_err());
+        assert_eq!(fs::read(dir.path().join("file")).unwrap(), b"user edit");
+        // The pending intent survives and can be resumed only after manual repair.
+        fs::write(dir.path().join("file"), b"main").unwrap();
+        let reopened = Repository::discover(dir.path()).unwrap();
+        assert_eq!(reopened.current_branch().unwrap(), "feature");
+        assert!(reopened.status().unwrap().is_empty());
+    }
+
+    #[test]
     fn merge_journal_publishes_ref_only_after_materialization() {
         let (dir, repo) = repo();
         fs::write(dir.path().join("a"), b"base").unwrap();
