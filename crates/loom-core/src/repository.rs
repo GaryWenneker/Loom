@@ -71,6 +71,10 @@ impl Repository {
             "PRAGMA journal_mode=WAL;
              PRAGMA synchronous=FULL;
              PRAGMA busy_timeout=5000;
+             CREATE TABLE IF NOT EXISTS stage_index (
+                 path TEXT PRIMARY KEY NOT NULL,
+                 blob_id TEXT
+             );
              CREATE TABLE IF NOT EXISTS workspace_journal (
                  id INTEGER PRIMARY KEY CHECK(id=1),
                  operation TEXT NOT NULL,
@@ -295,6 +299,118 @@ impl Repository {
         Ok(changes)
     }
 
+    /// Staging is opt-in for existing v1 repositories. Once enabled, commits
+    /// always require an explicit set of staged paths; there is no silent fallback.
+    pub fn staging_enabled(&self) -> Result<bool> {
+        let value: Option<String> = self.db.query_row(
+            "SELECT value FROM meta WHERE key='staging_mode'", [], |r| r.get(0)
+        ).optional()?;
+        Ok(value.as_deref() == Some("enabled"))
+    }
+
+    fn staged_blobs(&self) -> Result<BTreeMap<String, Option<ObjectId>>> {
+        let mut rows = self.db.prepare("SELECT path,blob_id FROM stage_index ORDER BY path")?;
+        let mut entries = rows.query([])?;
+        let mut map = BTreeMap::new();
+        while let Some(row) = entries.next()? {
+            let path: String = row.get(0)?;
+            validate_path(&path)?;
+            let oid: Option<String> = row.get(1)?;
+            map.insert(path, oid.map(|value| ObjectId::parse(&value)).transpose()?);
+        }
+        Ok(map)
+    }
+
+    pub fn staged_status(&self) -> Result<Vec<StatusEntry>> {
+        let old = self.state_at(self.head()?)?;
+        let mut changes = Vec::new();
+        for (path, blob) in self.staged_blobs()? {
+            let kind = match (old.get(&path), blob) {
+                (None, Some(_)) => StatusKind::Added,
+                (Some(_), Some(_)) => StatusKind::Modified,
+                (Some(_), None) => StatusKind::Deleted,
+                (None, None) => return Err(Error::Invalid(format!("invalid staged deletion: {path}"))),
+            };
+            changes.push(StatusEntry { path, kind });
+        }
+        Ok(changes)
+    }
+
+    /// Capture the exact bytes currently on disk for one path; later edits do
+    /// not alter the staged snapshot. Missing tracked paths become deletions.
+    pub fn add(&self, path: &str) -> Result<()> {
+        validate_path(path)?;
+        let _guard = self.lock_worktree()?;
+        self.recover_locked()?;
+        let files = self.scan_files()?;
+        let before = self.state_at(self.head()?)?;
+        let blob_id = match files.get(path) {
+            Some(bytes) => Some(self.store.put(BLOB, bytes)?),
+            None if before.contains_key(path) => None,
+            None => return Err(Error::Invalid(format!("file is neither tracked nor present: {path}"))),
+        };
+        let prior = before.get(path).copied();
+        let tx = self.db.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO meta(key,value) VALUES ('staging_mode','enabled')
+             ON CONFLICT(key) DO UPDATE SET value='enabled'", []
+        )?;
+        if prior == blob_id {
+            tx.execute("DELETE FROM stage_index WHERE path=?1", [path])?;
+        } else {
+            tx.execute(
+                "INSERT INTO stage_index(path,blob_id) VALUES(?1,?2)
+                 ON CONFLICT(path) DO UPDATE SET blob_id=excluded.blob_id",
+                params![path, blob_id.map(|id| id.to_string())]
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn unstage(&self, path: &str) -> Result<()> {
+        validate_path(path)?;
+        let _guard = self.lock_worktree()?;
+        self.recover_locked()?;
+        self.db.execute("DELETE FROM stage_index WHERE path=?1", [path])?;
+        Ok(())
+    }
+
+    fn staged_changes(&self, old: &BTreeMap<String, ObjectId>) -> Result<Vec<Change>> {
+        let mut changes = Vec::new();
+        for (path, blob) in self.staged_blobs()? {
+            let previous = old.get(&path).copied();
+            if previous == blob { continue; }
+            let kind = if blob.is_none() { ChangeKind::Delete }
+                else if previous.is_none() { ChangeKind::Add }
+                else { ChangeKind::Modify };
+            if let Some(id) = blob {
+                let raw = self.store.get(id)?;
+                if decode_object(&raw)?.0 != BLOB {
+                    return Err(Error::Invalid(format!("staged object is not a blob: {path}")));
+                }
+            }
+            changes.push(Change { path, kind, blob });
+        }
+        Ok(changes)
+    }
+
+    fn publish_staged_commit(
+        &self, branch: &str, previous: Option<ObjectId>, next: ObjectId
+    ) -> Result<()> {
+        let tx = self.db.unchecked_transaction()?;
+        let moved = tx.execute(
+            "UPDATE refs SET oid=?1 WHERE name=?2 AND oid IS ?3",
+            params![next.to_string(), branch, previous.map(|id| id.to_string())]
+        )?;
+        if moved != 1 {
+            return Err(Error::Conflict(format!("branch {branch} moved; staged files retained")));
+        }
+        tx.execute("DELETE FROM stage_index", [])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn status(&self) -> Result<Vec<StatusEntry>> {
         let old = self.state_at(self.head()?)?;
         let files = self.scan_files()?;
@@ -370,15 +486,26 @@ impl Repository {
         let prev = self.branch_tip(&branch)?;
         let old = self.state_at(prev)?;
         let files = self.scan_files()?;
-        let changes = self.make_delta(&old, &files, true)?;
-        if changes.is_empty() { return Err(Error::Invalid("nothing to commit".into())); }
+        let staged = self.staging_enabled()?;
+        let changes = if staged {
+            self.staged_changes(&old)?
+        } else {
+            self.make_delta(&old, &files, true)?
+        };
+        if changes.is_empty() {
+            return Err(Error::Invalid(if staged { "nothing staged to commit" } else { "nothing to commit" }.into()));
+        }
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| Error::Invalid("system time before epoch".into()))?;
         let c = Changeset { parents: prev.into_iter().collect(), author: author.into(), message: message.into(),
             timestamp_seconds: now.as_secs() as i64, changes };
         let raw = c.encode()?;
         let (_, payload) = decode_object(&raw)?;
         let id = self.store.put(CHANGESET, payload)?;
-        self.save_ref_cas(&branch, prev, id)?;
+        if staged {
+            self.publish_staged_commit(&branch, prev, id)?;
+        } else {
+            self.save_ref_cas(&branch, prev, id)?;
+        }
         Ok(id)
     }
 
@@ -490,6 +617,9 @@ impl Repository {
     pub fn switch_branch(&self, name: &str) -> Result<()> {
         let _worktree_guard = self.lock_worktree()?;
         self.recover_locked()?;
+        if !self.staged_blobs()?.is_empty() {
+            return Err(Error::Conflict("unstage or commit staged changes before switching branches".into()));
+        }
         if !self.status()?.is_empty() {
             return Err(Error::Conflict("working tree has uncommitted or untracked files".into()));
         }
@@ -537,6 +667,9 @@ impl Repository {
     pub fn merge_branch(&self, name: &str, author: &str, message: &str) -> Result<ObjectId> {
         let _worktree_guard = self.lock_worktree()?;
         self.recover_locked()?;
+        if !self.staged_blobs()?.is_empty() {
+            return Err(Error::Conflict("unstage or commit staged changes before merging".into()));
+        }
         if author.trim().is_empty() || message.trim().is_empty() {
             return Err(Error::Invalid("author and message required".into()));
         }
