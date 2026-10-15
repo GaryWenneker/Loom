@@ -111,7 +111,8 @@ P4 and P5 may be developed independently after the native state/metadata contrac
 
 **To complete**
 - [x] Enumerate undominated common ancestors across the full DAG. Refuse criss-cross merges with multiple best bases and unrelated histories instead of guessing by shortest distance or using an implicit empty base; expose read-only `loom merge-bases` for inspection.
-- [ ] Implement recursive/virtual-base merging for multiple best bases, explicit fast-forward semantics and scalable derived ancestry indexes.
+- [x] Journaled fast-forward and already-up-to-date semantics: advance refs without redundant merge commits and replay interrupted worktree transitions.
+- [ ] Implement recursive/virtual-base merging for multiple best bases and scalable derived ancestry indexes.
 - [ ] Implement full typed three-way conflicts: edit/edit, delete/edit, add/add, rename/rename, rename/delete, binary, mode, symlink and file/directory collisions.
 - [ ] Persist conflicts and support `merge --continue/--abort`, reproducible conflict markers, custom merge drivers and safe retries.
 - [ ] Implement rebase, cherry-pick, revert, squash, bisect and an operation log supporting safe undo/redo; retain old unreachable heads for explicit recovery.
