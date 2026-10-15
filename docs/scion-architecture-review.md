@@ -20,6 +20,8 @@
 
 **Development progress:** selected-file staging no longer scans the whole worktree, and a derived SQLite branch path index now supports incremental staged commits. Full-worktree status, arbitrary revision reconstruction, scalable derived blame/ancestry, native tree format and server-side commits remain incomplete. No speedup is claimed without reproducible measurements.
 
+**Incremental read improvement:** the current branch path index can now answer direct branch-tip file reads in one snapshot-consistent SQLite query, without replaying the first-parent DAG. When the derived index is absent or its revision marker no longer matches the authoritative ref, Loom falls back to immutable history. This covers direct file reads only, not general revision queries, ancestry, blame or sparse remote retrieval.
+
 ## Architectural recommendations
 
 1. **Fix integrity before new services.** Object creation must never overwrite an existing immutable path. Harden filesystem traversal, staged read boundaries and process/power-loss fault injection.
