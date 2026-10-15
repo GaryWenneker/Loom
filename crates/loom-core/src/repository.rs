@@ -971,6 +971,67 @@ impl Repository {
         Ok(root)
     }
 
+    /// Resolve one immutable directory node by root ID and path, without
+    /// asking SQLite for a branch or reconstructing a changeset history.
+    fn native_directory(
+        &self, root: ObjectId, directory: Option<&str>
+    ) -> Result<crate::tree::NativeTree> {
+        let mut current = root;
+        if let Some(path) = directory {
+            validate_path(path)?;
+            for component in path.split('/') {
+                let node = crate::tree::NativeTree::decode(&self.store.get(current)?)?;
+                let pos = node.entries.binary_search_by(|entry|
+                    entry.name.as_str().cmp(component)
+                ).map_err(|_| Error::Invalid(format!(
+                    "directory does not exist in native tree: {path}"
+                )))?;
+                let child = &node.entries[pos];
+                if child.kind != crate::tree::TreeEntryKind::Directory {
+                    return Err(Error::Invalid(format!(
+                        "path is not a directory in native tree: {path}"
+                    )));
+                }
+                current = child.object;
+            }
+        }
+        crate::tree::NativeTree::decode(&self.store.get(current)?)
+    }
+
+    /// Retrieve one immediate directory listing from immutable tree objects.
+    /// This touches O(directory depth) objects and the requested directory,
+    /// regardless of commit count or unrelated filesystem content.
+    pub fn native_tree_entries(
+        &self, root: ObjectId, directory: Option<&str>
+    ) -> Result<Vec<crate::tree::TreeEntry>> {
+        Ok(self.native_directory(root, directory)?.entries)
+    }
+
+    /// Read a native file from a tree root, with no checkout, branch ref or
+    /// SQLite index lookup. Each directory is addressed by its immutable ID.
+    pub fn native_tree_file(
+        &self, root: ObjectId, path: &str
+    ) -> Result<Option<Vec<u8>>> {
+        validate_path(path)?;
+        let (directory, filename) = match path.rsplit_once('/') {
+            Some((dir, file)) => (Some(dir), file),
+            None => (None, path),
+        };
+        let node = self.native_directory(root, directory)?;
+        let Ok(pos) = node.entries.binary_search_by(|entry|
+            entry.name.as_str().cmp(filename)
+        ) else {
+            return Ok(None);
+        };
+        let entry = &node.entries[pos];
+        if entry.kind != crate::tree::TreeEntryKind::File {
+            return Err(Error::Invalid(format!(
+                "path is a directory, not a file: {path}"
+            )));
+        }
+        self.blob_bytes(entry.object).map(Some)
+    }
+
     /// List paths in any immutable historical revision without switching
     /// branches or changing the user worktree. A first query materializes a
     /// derived snapshot; repeat and prefix queries use indexed SQLite ranges.
