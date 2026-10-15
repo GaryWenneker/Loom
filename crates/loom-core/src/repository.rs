@@ -185,6 +185,19 @@ impl Repository {
                     return Err(Error::Invalid("merge journal parent mismatch".into()));
                 }
             }
+            "fast-forward" => {
+                if p.to_branch != p.from_branch {
+                    return Err(Error::Invalid("malformed fast-forward recovery journal".into()));
+                }
+                let (Some(before), Some(after)) = (p.before, p.after) else {
+                    return Err(Error::Invalid("fast-forward requires two committed revisions".into()));
+                };
+                if before == after || !self.ancestor_ids(after)?.contains(&before) {
+                    return Err(Error::Conflict(
+                        "fast-forward recovery halted: destination does not descend from HEAD".into()
+                    ));
+                }
+            }
             _ => return Err(Error::Invalid("unknown workspace journal operation".into())),
         }
         let before = self.state_at(p.before)?;
@@ -192,23 +205,29 @@ impl Repository {
         // For merges, derive and validate the immutable destination tree
         // BEFORE the first worktree mutation. Failure leaves the durable
         // journal intact and never publishes a new ref or root mapping.
-        let merge_tree = if p.operation == "merge" {
+        let merge_tree = if matches!(p.operation.as_str(), "merge" | "fast-forward") {
             let after_id = p.after.ok_or_else(||
                 Error::Invalid("merge journal is missing target changeset".into())
             )?;
-            let target = self.get_changeset(after_id)?;
-            let base_root = self.native_tree_root(p.before.ok_or_else(||
-                Error::Invalid("merge journal is missing parent".into())
-            )?)?;
-            let root = crate::tree::apply_changes(
-                &self.store, base_root, &target.changes
-            )?;
+            let root = if p.operation == "merge" {
+                let target = self.get_changeset(after_id)?;
+                let base_root = self.native_tree_root(p.before.ok_or_else(||
+                    Error::Invalid("merge journal is missing parent".into())
+                )?)?;
+                crate::tree::apply_changes(
+                    &self.store, base_root, &target.changes
+                )?
+            } else {
+                // Fast-forward reuses the already published immutable target
+                // revision and tree, potentially through multiple commits.
+                self.native_tree_root(after_id)?
+            };
             // A cached parent root could be damaged independently of the
             // immutable changeset chain. The merge path already loads both
             // complete states, so verify closure before modifying user files.
             if crate::tree::flatten_snapshot(&self.store, root)? != after {
                 return Err(Error::Invalid(
-                    "merge native tree differs from immutable history".into()
+                    "transition native tree differs from immutable history".into()
                 ));
             }
             Some((after_id, root))
@@ -234,7 +253,7 @@ impl Repository {
             if changed != 1 { return Err(Error::Conflict("merge ref moved during recovery".into())); }
             if let Some((revision, root)) = merge_tree {
                 tx.execute(
-                    "INSERT INTO revision_native_tree(revision_oid,root_oid)
+                    "INSERT OR IGNORE INTO revision_native_tree(revision_oid,root_oid)
                      VALUES(?1,?2)",
                     params![revision.to_string(), root.to_string()],
                 )?;
@@ -1515,6 +1534,24 @@ impl Repository {
                 "branches have unrelated histories; refusing merge without a common ancestor".into()
             )
         })?;
+        if base_id == theirs {
+            // Already contains the source branch. There is nothing to do.
+            return Ok(ours);
+        }
+        if base_id == ours {
+            // Fast-forward the original branch without manufacturing a new
+            // changeset. The worktree and branchref still need a recoverable
+            // two-phase transition: durable journal first, ref CAS last.
+            self.begin_transition(&PendingTransition {
+                operation: "fast-forward".into(),
+                from_branch: branch.clone(),
+                to_branch: branch,
+                before: Some(ours),
+                after: Some(theirs),
+            })?;
+            self.recover_locked()?;
+            return Ok(theirs);
+        }
         let base = self.state_at(Some(base_id))?;
         let our_files = self.state_at(Some(ours))?;
         let their_files = self.state_at(Some(theirs))?;
