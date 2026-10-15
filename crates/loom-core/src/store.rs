@@ -229,6 +229,21 @@ mod tests {
     }
 
     #[test]
+    fn filesystem_implements_portable_object_backend_contract() {
+        use crate::storage_backend::ObjectBackend;
+        let (_dir, store) = store();
+        let bytes = encode_object(BLOB, b"portable-object").unwrap();
+        let id = object_id(&bytes);
+        assert!(!ObjectBackend::exists(&store, id).unwrap());
+        ObjectBackend::put_if_absent(&store, id, &bytes).unwrap();
+        ObjectBackend::put_if_absent(&store, id, &bytes).unwrap();
+        assert!(ObjectBackend::exists(&store, id).unwrap());
+        assert_eq!(ObjectBackend::get(&store, id).unwrap(), bytes);
+        assert!(store.capabilities().conditional_create);
+        assert!(ObjectBackend::put_if_absent(&store, ObjectId([0; 32]), &bytes).is_err());
+    }
+
+    #[test]
     fn immutable_publication_is_idempotent_with_parallel_writers() {
         let (_dir, store) = store();
         let store = Arc::new(store);
