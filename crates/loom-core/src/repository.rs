@@ -939,21 +939,50 @@ impl Repository {
     /// Native tree nodes use the separately versioned v2 object envelope.
     /// The revision -> root mapping is a rebuildable derived index.
     pub fn native_tree_root(&self, revision: ObjectId) -> Result<ObjectId> {
-        self.get_changeset(revision)?;
         let key = revision.to_string();
-        let cached: Option<String> = self.db.query_row(
-            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
-            [&key], |row| row.get(0),
-        ).optional()?;
-        if let Some(raw) = cached {
-            let root = ObjectId::parse(&raw)?;
-            crate::tree::NativeTree::decode(&self.store.get(root)?)?;
-            return Ok(root);
+        let mut pending = Vec::new();
+        let mut cursor = Some(revision);
+        let mut visited = HashSet::new();
+        let mut ancestor_root = None;
+
+        // Walk immutable changeset metadata to the closest previously
+        // materialized root. Unlike state_at + write_snapshot, this never
+        // constructs a complete path map when an ancestor root exists.
+        while let Some(id) = cursor {
+            if visited.len() >= 1_000_000 || !visited.insert(id) {
+                return Err(Error::Invalid(
+                    "native tree ancestry cycle or depth limit".into()
+                ));
+            }
+            let commit = self.get_changeset(id)?;
+            let cached: Option<String> = self.db.query_row(
+                "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+                [id.to_string()], |row| row.get(0),
+            ).optional()?;
+            if let Some(raw) = cached {
+                let root = ObjectId::parse(&raw)?;
+                crate::tree::NativeTree::decode(&self.store.get(root)?)?;
+                ancestor_root = Some(root);
+                break;
+            }
+            cursor = commit.parents.first().copied();
+            pending.push(commit);
         }
-        // Use canonical history rather than a possibly stale derived SQLite
-        // path index when creating an immutable source-of-truth object.
-        let state = self.state_at(Some(revision))?;
-        let root = crate::tree::write_snapshot(&self.store, &state)?;
+
+        let mut root = match ancestor_root {
+            Some(id) => id,
+            None => crate::tree::write_snapshot(
+                &self.store, &BTreeMap::new()
+            )?,
+        };
+        for commit in pending.iter().rev() {
+            root = crate::tree::apply_changes(
+                &self.store, root, &commit.changes
+            )?;
+        }
+        // The mapping is derived data. It is persisted only once every
+        // referenced immutable tree object is fully written. A race must
+        // resolve to the same deterministic root or fail closed.
         self.db.execute(
             "INSERT OR IGNORE INTO revision_native_tree(revision_oid,root_oid)
              VALUES(?1,?2)",
