@@ -44,6 +44,8 @@ The canonical empty tree is a 19-byte envelope:
 |  LOOM+NUL  |v2|tree|     u64 payload=4       |u32 count=0|
 ```
 
+Direct object reads are available using `loom tree ls @TREE_ID [DIRECTORY]` and `loom tree cat @TREE_ID PATH`. These follow only the selected immutable directory path and verify every opened object's hash; they do not need a checkout or SQLite branch state.
+
 The serialized content of a tree is independent of the insertion order used to construct it. Equal directories have equal object IDs. If a file changes in one directory, unaffected sibling trees keep their original object IDs.
 
 ## What this implementation actually preserves

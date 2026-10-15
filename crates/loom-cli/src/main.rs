@@ -2,7 +2,7 @@ use loom_core::{ObjectId, Repository, StatusKind};
 use std::{env, path::Path, process};
 
 fn usage() {
-    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path]\n  loom status\n  loom add PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom cat @CHANGESET_ID PATH\n  loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]\n  loom tree @CHANGESET_ID\n  loom fsck\n");
+    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path]\n  loom status\n  loom add PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom cat @CHANGESET_ID PATH\n  loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]\n  loom tree @CHANGESET_ID\n  loom tree ls @TREE_ID [DIR]\n  loom tree cat @TREE_ID PATH\n  loom fsck\n");
 }
 
 
@@ -168,13 +168,54 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         "tree" => {
-            if args.len() != 2 {
-                return Err("usage: loom tree @CHANGESET_ID".into());
+            match args.as_slice() {
+                [_, revision] if revision.starts_with('@') => {
+                    let root = repo.native_tree_root(
+                        ObjectId::parse(&revision[1..])?
+                    )?;
+                    println!("{root}");
+                }
+                [_, action, root] if action == "ls" => {
+                    let hex = root.strip_prefix('@')
+                        .ok_or("tree ls requires a @TREE_ID")?;
+                    let entries = repo.native_tree_entries(
+                        ObjectId::parse(hex)?, None
+                    )?;
+                    for entry in entries {
+                        let kind = match entry.kind {
+                            loom_core::TreeEntryKind::File => "file",
+                            loom_core::TreeEntryKind::Directory => "dir",
+                        };
+                        println!("{kind} {} {:?}", entry.object, entry.name);
+                    }
+                }
+                [_, action, root, directory] if action == "ls" => {
+                    let hex = root.strip_prefix('@')
+                        .ok_or("tree ls requires a @TREE_ID")?;
+                    let entries = repo.native_tree_entries(
+                        ObjectId::parse(hex)?, Some(directory)
+                    )?;
+                    for entry in entries {
+                        let kind = match entry.kind {
+                            loom_core::TreeEntryKind::File => "file",
+                            loom_core::TreeEntryKind::Directory => "dir",
+                        };
+                        println!("{kind} {} {:?}", entry.object, entry.name);
+                    }
+                }
+                [_, action, root, path] if action == "cat" => {
+                    let hex = root.strip_prefix('@')
+                        .ok_or("tree cat requires a @TREE_ID")?;
+                    let data = repo.native_tree_file(
+                        ObjectId::parse(hex)?, path
+                    )?.ok_or_else(|| format!("not a file in native tree: {path}"))?;
+                    use std::io::Write;
+                    std::io::stdout().lock().write_all(&data)?;
+                }
+                _ => return Err(
+                    "usage: loom tree @CHANGESET_ID | ls @TREE_ID [DIR] | cat @TREE_ID PATH".into()
+                ),
             }
-            let hex = args[1].strip_prefix('@')
-                .ok_or("tree requires a historical @CHANGESET_ID")?;
-            let root = repo.native_tree_root(ObjectId::parse(hex)?)?;
-            println!("{root}");
         }
         "cat" => {
             if args.len() != 3 { return Err("usage: loom cat BRANCH|@CHANGESET_ID PATH".into()); }
