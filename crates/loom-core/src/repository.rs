@@ -12,6 +12,10 @@ pub enum StatusKind { Added, Modified, Deleted }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusEntry { pub path: String, pub kind: StatusKind }
 
+/// File contents before and after a change. None means the file is absent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileDiff { pub path: String, pub before: Option<Vec<u8>>, pub after: Option<Vec<u8>> }
+
 pub struct Repository { root: PathBuf, db: Connection, store: ObjectStore }
 
 impl Repository {
@@ -170,6 +174,55 @@ impl Repository {
             ChangeKind::Add => StatusKind::Added, ChangeKind::Modify => StatusKind::Modified,
             ChangeKind::Delete => StatusKind::Deleted
         }}).collect())
+    }
+
+
+    /// Compare the current worktree with HEAD without modifying the repository.
+    /// The initial implementation scans full files and is limited by the v1 blob cap.
+    pub fn diff_worktree(&self) -> Result<Vec<FileDiff>> {
+        let previous = self.state_at(self.head()?)?;
+        let files = self.scan_files()?;
+        let mut paths = BTreeSet::new();
+        paths.extend(previous.keys().cloned());
+        paths.extend(files.keys().cloned());
+        let mut result = Vec::new();
+        for path in paths {
+            let before = previous.get(&path);
+            let after = files.get(&path);
+            let after_id = after.map(|bytes| object_id(&encode_object(BLOB, bytes)?)).transpose()?;
+            if before.copied() == after_id { continue; }
+            let old = before.map(|id| self.blob_bytes(*id)).transpose()?;
+            result.push(FileDiff { path, before: old, after: after.cloned() });
+        }
+        Ok(result)
+    }
+
+    /// Compare two branch tips without materializing either worktree.
+    pub fn diff_branches(&self, from: &str, to: &str) -> Result<Vec<FileDiff>> {
+        let left = self.state_at(self.branch_tip(from)?)?;
+        let right = self.state_at(self.branch_tip(to)?)?;
+        let mut paths = BTreeSet::new();
+        paths.extend(left.keys().cloned());
+        paths.extend(right.keys().cloned());
+        let mut result = Vec::new();
+        for path in paths {
+            let before = left.get(&path);
+            let after = right.get(&path);
+            if before == after { continue; }
+            result.push(FileDiff {
+                path,
+                before: before.map(|id| self.blob_bytes(*id)).transpose()?,
+                after: after.map(|id| self.blob_bytes(*id)).transpose()?,
+            });
+        }
+        Ok(result)
+    }
+
+    fn blob_bytes(&self, id: ObjectId) -> Result<Vec<u8>> {
+        let raw = self.store.get(id)?;
+        let (kind, payload) = decode_object(&raw)?;
+        if kind != BLOB { return Err(Error::Invalid(format!("expected blob object: {id}"))); }
+        Ok(payload.to_vec())
     }
 
     pub fn commit(&self, author: &str, message: &str) -> Result<ObjectId> {
