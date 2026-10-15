@@ -113,8 +113,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             } else { format!("Merge branch {name}") };
             let author = env::var("LOOM_AUTHOR").or_else(|_| env::var("USER"))
                 .or_else(|_| env::var("USERNAME")).unwrap_or_else(|_| "unknown".into());
+            let before = repo.head()?;
+            let source_tip = repo.branch_tip(name)?;
             let oid = repo.merge_branch(name, &author, &message)?;
-            println!("Merged {name} as {oid}");
+            if before == Some(oid) {
+                println!("Already up to date with {name} ({oid})");
+            } else if source_tip == Some(oid) {
+                println!("Fast-forwarded to {name} ({oid})");
+            } else {
+                println!("Merged {name} as {oid}");
+            }
         }
         "merge-bases" => {
             if args.len() != 3 {
