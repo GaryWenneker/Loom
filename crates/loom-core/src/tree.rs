@@ -512,6 +512,22 @@ mod tests {
     }
 
     #[test]
+    fn empty_incremental_change_preserves_root_identity() {
+        use crate::format::BLOB;
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join(".loom");
+        fs::create_dir(&meta).unwrap();
+        fs::create_dir(meta.join("objects")).unwrap();
+        let store = crate::store::ObjectStore::new(&meta);
+        let blob = store.put(BLOB, b"same").unwrap();
+        let mut state = std::collections::BTreeMap::new();
+        state.insert("a/file".into(), blob);
+        let root = write_snapshot(&store, &state).unwrap();
+        assert_eq!(apply_changes(&store, root, &[]).unwrap(), root);
+    }
+
+    #[test]
     fn roundtrip_and_deterministic_identity() {
         let source = tree();
         let bytes = source.encode().unwrap();
