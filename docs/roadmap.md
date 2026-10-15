@@ -28,7 +28,8 @@ Checklist status reflects implemented source and tests, not an architectural pro
 - [x] Conflicting file changes reject the merge without moving HEAD
 - [x] Bounded, conservative textual three-way merge for independent lines (no rename detection)
 - [ ] Full typed conflict model, conflict continuation and advanced merge cases
-- [ ] Safe rebase, revert, undo and crash-recoverable workspaces
+- [x] Initial journal-based process-crash recovery for branch switches and merges, including untracked-file refusal tests
+- [ ] Full crash-failpoint matrix, power-loss/fsync validation, rebase, revert and undo
 - [x] Advisory cross-process serialization of local worktree mutations, with CLI locking integration test
 - [ ] Complete concurrency model tests and merge-graph property tests
 

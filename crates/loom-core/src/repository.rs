@@ -5,6 +5,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,6 +16,19 @@ pub struct StatusEntry { pub path: String, pub kind: StatusKind }
 /// File contents before and after a change. None means the file is absent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileDiff { pub path: String, pub before: Option<Vec<u8>>, pub after: Option<Vec<u8>> }
+
+static STAGE_NONCE: AtomicU64 = AtomicU64::new(0);
+
+// A durable transition descriptor. Object IDs point to immutable snapshots; SQLite
+// publishes the ref/HEAD change only after worktree materialization completes.
+#[derive(Debug, Clone)]
+struct PendingTransition {
+    operation: String,
+    from_branch: String,
+    to_branch: String,
+    before: Option<ObjectId>,
+    after: Option<ObjectId>,
+}
 
 pub struct Repository { root: PathBuf, db: Connection, store: ObjectStore }
 
@@ -40,7 +54,12 @@ impl Repository {
         for dir in start.ancestors() {
             let meta = dir.join(".loom");
             if meta.join("index.sqlite").exists() {
-                return Ok(Self { root: dir.to_path_buf(), db: Self::connect(&meta)?, store: ObjectStore::new(&meta) });
+                let repo = Self { root: dir.to_path_buf(), db: Self::connect(&meta)?, store: ObjectStore::new(&meta) };
+                {
+                    let _guard = repo.lock_worktree()?;
+                    repo.recover_locked()?;
+                }
+                return Ok(repo);
             }
         }
         Err(Error::Invalid("not in a Loom repository".into()))
@@ -48,7 +67,19 @@ impl Repository {
 
     fn connect(meta: &Path) -> Result<Connection> {
         let db = Connection::open(meta.join("index.sqlite"))?;
-        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;")?;
+        db.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=FULL;
+             PRAGMA busy_timeout=5000;
+             CREATE TABLE IF NOT EXISTS workspace_journal (
+                 id INTEGER PRIMARY KEY CHECK(id=1),
+                 operation TEXT NOT NULL,
+                 from_branch TEXT NOT NULL,
+                 to_branch TEXT NOT NULL,
+                 before_oid TEXT,
+                 after_oid TEXT
+             );"
+        )?;
         Ok(db)
     }
 
@@ -64,6 +95,88 @@ impl Repository {
             .open(lock_path)?;
         file.lock_exclusive()?;
         Ok(file)
+    }
+
+
+    fn pending_transition(&self) -> Result<Option<PendingTransition>> {
+        type JournalRow = (String, String, String, Option<String>, Option<String>);
+        let row: Option<JournalRow> = self.db.query_row(
+            "SELECT operation,from_branch,to_branch,before_oid,after_oid
+             FROM workspace_journal WHERE id=1",
+            [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))
+        ).optional()?;
+        row.map(|(operation,from_branch,to_branch,before,after)| {
+            Ok(PendingTransition {
+                operation, from_branch, to_branch,
+                before: before.map(|s| ObjectId::parse(&s)).transpose()?,
+                after: after.map(|s| ObjectId::parse(&s)).transpose()?,
+            })
+        }).transpose()
+    }
+
+    fn begin_transition(&self, p: &PendingTransition) -> Result<()> {
+        // The INSERT is a durable intent record before the first filesystem change.
+        self.db.execute(
+            "INSERT INTO workspace_journal
+             (id,operation,from_branch,to_branch,before_oid,after_oid)
+             VALUES (1,?1,?2,?3,?4,?5)",
+            params![p.operation,p.from_branch,p.to_branch,
+                p.before.map(|id| id.to_string()),p.after.map(|id| id.to_string())]
+        )?;
+        Ok(())
+    }
+
+    /// Replay an interrupted transition while holding the cross-process lock.
+    /// Refuse to overwrite unexpected user edits or unexpected branch movement.
+    fn recover_locked(&self) -> Result<()> {
+        let Some(p) = self.pending_transition()? else { return Ok(()); };
+        if self.current_branch()? != p.from_branch {
+            return Err(Error::Conflict("workspace recovery requires the original HEAD branch".into()));
+        }
+        if self.branch_tip(&p.from_branch)? != p.before {
+            return Err(Error::Conflict("workspace recovery halted: original ref changed".into()));
+        }
+        match p.operation.as_str() {
+            "switch" => {
+                if self.branch_tip(&p.to_branch)? != p.after {
+                    return Err(Error::Conflict("workspace recovery halted: destination ref changed".into()));
+                }
+            }
+            "merge" => {
+                if p.to_branch != p.from_branch || p.after.is_none() {
+                    return Err(Error::Invalid("malformed merge recovery journal".into()));
+                }
+                let target = self.get_changeset(p.after.expect("checked above"))?;
+                if target.parents.first().copied() != p.before {
+                    return Err(Error::Invalid("merge journal parent mismatch".into()));
+                }
+            }
+            _ => return Err(Error::Invalid("unknown workspace journal operation".into())),
+        }
+        let before = self.state_at(p.before)?;
+        let after = self.state_at(p.after)?;
+        self.materialize(&after, &before)?;
+        // The only commit point: both HEAD/ref update and journal deletion are atomic.
+        let tx = self.db.unchecked_transaction()?;
+        if p.operation == "switch" {
+            let changed = tx.execute(
+                "UPDATE meta SET value=?1 WHERE key='head' AND value=?2",
+                params![p.to_branch,p.from_branch]
+            )?;
+            if changed != 1 { return Err(Error::Conflict("HEAD changed during recovery".into())); }
+        } else {
+            let changed = tx.execute(
+                "UPDATE refs SET oid=?1 WHERE name=?2 AND oid IS ?3",
+                params![p.after.map(|id| id.to_string()),p.from_branch,
+                    p.before.map(|id| id.to_string())]
+            )?;
+            if changed != 1 { return Err(Error::Conflict("merge ref moved during recovery".into())); }
+        }
+        tx.execute("DELETE FROM workspace_journal WHERE id=1", [])?;
+        tx.commit()?;
+        // Staged files never live in the user worktree. A crash before cleanup is harmless.
+        let _ = fs::remove_dir_all(self.root.join(".loom").join("staging"));
+        Ok(())
     }
 
     pub fn root(&self) -> &Path { &self.root }
@@ -102,6 +215,7 @@ impl Repository {
     }
     pub fn create_branch(&self, name: &str) -> Result<()> {
         let _worktree_guard = self.lock_worktree()?;
+        self.recover_locked()?;
         if name.is_empty() || name.len() > 128 ||
            !name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.')) ||
            name.starts_with('/') || name.ends_with('/') || name.contains("..") || name.contains("//") {
@@ -250,6 +364,7 @@ impl Repository {
 
     pub fn commit(&self, author: &str, message: &str) -> Result<ObjectId> {
         let _worktree_guard = self.lock_worktree()?;
+        self.recover_locked()?;
         if author.trim().is_empty() || message.trim().is_empty() { return Err(Error::Invalid("author and commit message are required".into())); }
         let branch = self.current_branch()?;
         let prev = self.branch_tip(&branch)?;
@@ -282,40 +397,115 @@ impl Repository {
     }
 
     fn materialize(&self, target: &BTreeMap<String,ObjectId>, previous: &BTreeMap<String,ObjectId>) -> Result<()> {
-        // No untracked files are permitted by switch's clean-working-tree gate.
-        for path in previous.keys() {
-            if !target.contains_key(path) {
-                let full = self.root.join(path);
-                fs::remove_file(full)?;
+        // Reject file/directory collisions and unexpected files before touching the worktree.
+        for path in target.keys() {
+            for (idx, ch) in path.char_indices() {
+                if ch == '/' && target.contains_key(&path[..idx]) {
+                    return Err(Error::Conflict(format!("file/directory collision: {path}")));
+                }
             }
         }
-        // Remove now-empty directories deepest first to permit file/directory transitions.
-        let mut dirs: Vec<PathBuf> = previous.keys().filter_map(|p| self.root.join(p).parent().map(Path::to_path_buf)).collect();
+        let actual = self.scan_files()?;
+        let mut known = BTreeSet::new();
+        known.extend(previous.keys().cloned());
+        known.extend(target.keys().cloned());
+        for path in actual.keys() {
+            if !known.contains(path) {
+                return Err(Error::Conflict(format!("untracked file blocks recovery: {path}")));
+            }
+        }
+        for path in &known {
+            let before = previous.get(path).copied();
+            let after = target.get(path).copied();
+            if let Some(bytes) = actual.get(path) {
+                let encoded = encode_object(BLOB, bytes)?;
+                let current = object_id(&encoded);
+                if Some(current) != before && Some(current) != after {
+                    return Err(Error::Conflict(format!("modified file blocks recovery: {path}")));
+                }
+            } else if before.is_some() && after.is_some() {
+                return Err(Error::Conflict(format!("missing tracked file blocks recovery: {path}")));
+            }
+        }
+        // Verify every required blob before removing anything.
+        for id in target.values() { self.blob_bytes(*id)?; }
+
+        for path in previous.keys() {
+            if target.contains_key(path) { continue; }
+            let full = self.root.join(path);
+            match fs::symlink_metadata(&full) {
+                Ok(meta) if meta.is_file() => fs::remove_file(&full)?,
+                Ok(meta) if meta.is_dir() && target.keys().any(|p| p.starts_with(&format!("{path}/"))) => {},
+                Ok(_) => return Err(Error::Conflict(format!("unexpected path type during recovery: {path}"))),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+                Err(e) => return Err(e.into()),
+            }
+        }
+        let mut dirs: Vec<PathBuf> = previous.keys()
+            .filter_map(|p| self.root.join(p).parent().map(Path::to_path_buf)).collect();
         dirs.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
         dirs.dedup();
         for dir in dirs {
-            if dir != self.root { let _ = fs::remove_dir(dir); }
+            if dir == self.root { continue; }
+            match fs::remove_dir(&dir) {
+                Ok(()) => {},
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty) => {},
+                Err(e) => return Err(e.into()),
+            }
         }
+
+        // Stage each file under .loom, fsync it and atomically rename into place.
+        // A crash can leave old/new mixtures but never a partially written tracked file.
+        let staging = self.root.join(".loom").join("staging");
+        fs::create_dir_all(&staging)?;
         for (path, oid) in target {
-            if previous.get(path) == Some(oid) { continue; }
-            let raw = self.store.get(*oid)?;
-            let (kind, bytes) = decode_object(&raw)?;
-            if kind != BLOB { return Err(Error::Invalid(format!("non-blob at {path}"))); }
+            let already_correct = actual.get(path).is_some_and(|bytes| {
+                encode_object(BLOB, bytes).is_ok_and(|encoded| object_id(&encoded) == *oid)
+            });
+            if already_correct { continue; }
+            let bytes = self.blob_bytes(*oid)?;
             let full = self.root.join(path);
             if let Some(parent) = full.parent() { fs::create_dir_all(parent)?; }
-            fs::write(full, bytes)?;
+            let mut tempfile = None;
+            for _ in 0..16 {
+                let nonce = STAGE_NONCE.fetch_add(1, Ordering::Relaxed);
+                let candidate = staging.join(format!("{}-{nonce}", std::process::id()));
+                match fs::OpenOptions::new().create_new(true).write(true).open(&candidate) {
+                    Ok(file) => { tempfile = Some((candidate, file)); break; }
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {},
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            let (temp, mut file) = tempfile.ok_or_else(|| Error::Conflict("unable to allocate a staging file".into()))?;
+            use std::io::Write;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            drop(file);
+            fs::rename(&temp, &full)?;
+            #[cfg(unix)]
+            if let Some(parent) = full.parent() { fs::File::open(parent)?.sync_all()?; }
         }
         Ok(())
     }
     pub fn switch_branch(&self, name: &str) -> Result<()> {
         let _worktree_guard = self.lock_worktree()?;
-        if !self.status()?.is_empty() { return Err(Error::Conflict("working tree has uncommitted or untracked files".into())); }
-        let old = self.state_at(self.head()?)?;
-        let new = self.state_at(self.branch_tip(name)?)?;
-        for id in new.values() { self.store.get(*id)?; }
-        self.materialize(&new, &old)?;
-        self.db.execute("UPDATE meta SET value=?1 WHERE key='head'", [name])?;
-        Ok(())
+        self.recover_locked()?;
+        if !self.status()?.is_empty() {
+            return Err(Error::Conflict("working tree has uncommitted or untracked files".into()));
+        }
+        let old_branch = self.current_branch()?;
+        let before = self.head()?;
+        let after = self.branch_tip(name)?;
+        if old_branch == name { return Ok(()); }
+        for id in self.state_at(after)?.values() { self.blob_bytes(*id)?; }
+        self.begin_transition(&PendingTransition {
+            operation: "switch".into(),
+            from_branch: old_branch,
+            to_branch: name.into(),
+            before,
+            after,
+        })?;
+        self.recover_locked()
     }
 
 
@@ -346,6 +536,7 @@ impl Repository {
     /// This is not yet a complete rename-aware or structured conflict engine.
     pub fn merge_branch(&self, name: &str, author: &str, message: &str) -> Result<ObjectId> {
         let _worktree_guard = self.lock_worktree()?;
+        self.recover_locked()?;
         if author.trim().is_empty() || message.trim().is_empty() {
             return Err(Error::Invalid("author and message required".into()));
         }
@@ -423,9 +614,14 @@ impl Repository {
         let encoded = commit.encode()?;
         let (_, payload) = decode_object(&encoded)?;
         let id = self.store.put(CHANGESET, payload)?;
-        self.save_ref_cas(&branch, Some(ours), id)?;
-        // Workspace materialization is not crash-atomic in v1.
-        self.materialize(&merged, &our_files)?;
+        self.begin_transition(&PendingTransition {
+            operation: "merge".into(),
+            from_branch: branch.clone(),
+            to_branch: branch,
+            before: Some(ours),
+            after: Some(id),
+        })?;
+        self.recover_locked()?;
         Ok(id)
     }
 
@@ -490,6 +686,130 @@ mod tests {
         assert_eq!(fs::read(dir.path().join("a")).unwrap(), b"first");
         assert_eq!(r.current_branch().unwrap(), "main");
     }
+
+    #[test]
+    fn recovers_interrupted_switch_from_mixed_file_state() {
+        let (dir, repo) = repo();
+        fs::write(dir.path().join("a.txt"), b"base a").unwrap();
+        fs::write(dir.path().join("b.txt"), b"base b").unwrap();
+        repo.commit("tester", "baseline").unwrap();
+        repo.create_branch("feature").unwrap();
+        repo.switch_branch("feature").unwrap();
+        fs::write(dir.path().join("a.txt"), b"feature a").unwrap();
+        fs::write(dir.path().join("b.txt"), b"feature b").unwrap();
+        repo.commit("tester", "updated").unwrap();
+        repo.switch_branch("main").unwrap();
+
+        let current = repo.head().unwrap();
+        let next = repo.branch_tip("feature").unwrap();
+        repo.begin_transition(&PendingTransition {
+            operation: "switch".into(), from_branch: "main".into(),
+            to_branch: "feature".into(), before: current, after: next,
+        }).unwrap();
+        // Imitate a terminated process: only the first file made it to disk.
+        fs::write(dir.path().join("a.txt"), b"feature a").unwrap();
+        drop(repo);
+
+        let reopened = Repository::discover(dir.path()).unwrap();
+        assert_eq!(reopened.current_branch().unwrap(), "feature");
+        assert_eq!(fs::read(dir.path().join("a.txt")).unwrap(), b"feature a");
+        assert_eq!(fs::read(dir.path().join("b.txt")).unwrap(), b"feature b");
+        assert!(reopened.pending_transition().unwrap().is_none());
+        assert!(reopened.status().unwrap().is_empty());
+    }
+
+    #[test]
+    fn recovery_never_discards_untracked_user_files() {
+        let (dir, repo) = repo();
+        fs::write(dir.path().join("a"), b"v1").unwrap();
+        repo.commit("tester", "baseline").unwrap();
+        repo.create_branch("feature").unwrap();
+        repo.begin_transition(&PendingTransition {
+            operation: "switch".into(), from_branch: "main".into(),
+            to_branch: "feature".into(), before: repo.head().unwrap(),
+            after: repo.branch_tip("feature").unwrap(),
+        }).unwrap();
+        drop(repo);
+        fs::write(dir.path().join("user.txt"), b"untouched").unwrap();
+        assert!(Repository::discover(dir.path()).is_err());
+        assert_eq!(fs::read(dir.path().join("user.txt")).unwrap(), b"untouched");
+        fs::remove_file(dir.path().join("user.txt")).unwrap();
+        let reopened = Repository::discover(dir.path()).unwrap();
+        assert_eq!(reopened.current_branch().unwrap(), "feature");
+    }
+
+    #[test]
+    fn switch_handles_file_directory_transitions_in_both_directions() {
+        let (dir, repo) = repo();
+        fs::write(dir.path().join("node"), b"one").unwrap();
+        repo.commit("tester", "node is file").unwrap();
+        repo.create_branch("directory").unwrap();
+        repo.switch_branch("directory").unwrap();
+        fs::remove_file(dir.path().join("node")).unwrap();
+        fs::create_dir(dir.path().join("node")).unwrap();
+        fs::write(dir.path().join("node").join("leaf"), b"two").unwrap();
+        repo.commit("tester", "node is directory").unwrap();
+        repo.switch_branch("main").unwrap();
+        assert_eq!(fs::read(dir.path().join("node")).unwrap(), b"one");
+        repo.switch_branch("directory").unwrap();
+        assert_eq!(fs::read(dir.path().join("node").join("leaf")).unwrap(), b"two");
+        assert!(repo.status().unwrap().is_empty());
+    }
+
+    #[test]
+    fn recovery_refuses_user_modifications_without_moving_head() {
+        let (dir, repo) = repo();
+        fs::write(dir.path().join("file"), b"main").unwrap();
+        repo.commit("tester", "base").unwrap();
+        repo.create_branch("feature").unwrap();
+        repo.switch_branch("feature").unwrap();
+        fs::write(dir.path().join("file"), b"feature").unwrap();
+        repo.commit("tester", "feature").unwrap();
+        repo.switch_branch("main").unwrap();
+        let before = repo.head().unwrap();
+        repo.begin_transition(&PendingTransition {
+            operation: "switch".into(), from_branch: "main".into(),
+            to_branch: "feature".into(), before, after: repo.branch_tip("feature").unwrap(),
+        }).unwrap();
+        drop(repo);
+        fs::write(dir.path().join("file"), b"user edit").unwrap();
+        assert!(Repository::discover(dir.path()).is_err());
+        assert_eq!(fs::read(dir.path().join("file")).unwrap(), b"user edit");
+        // The pending intent survives and can be resumed only after manual repair.
+        fs::write(dir.path().join("file"), b"main").unwrap();
+        let reopened = Repository::discover(dir.path()).unwrap();
+        assert_eq!(reopened.current_branch().unwrap(), "feature");
+        assert!(reopened.status().unwrap().is_empty());
+    }
+
+    #[test]
+    fn merge_journal_publishes_ref_only_after_materialization() {
+        let (dir, repo) = repo();
+        fs::write(dir.path().join("a"), b"base").unwrap();
+        repo.commit("tester", "base").unwrap();
+        let first = repo.head().unwrap().unwrap();
+        let blob = repo.store.put(BLOB, b"merged").unwrap();
+        let merged = Changeset {
+            parents: vec![first, first], author: "tester".into(), message: "merge".into(),
+            timestamp_seconds: 1,
+            changes: vec![Change { kind: ChangeKind::Modify, path: "a".into(), blob: Some(blob) }],
+        };
+        let bytes = merged.encode().unwrap();
+        let (_, payload) = decode_object(&bytes).unwrap();
+        let merged_id = repo.store.put(CHANGESET, payload).unwrap();
+        repo.begin_transition(&PendingTransition {
+            operation: "merge".into(), from_branch: "main".into(), to_branch: "main".into(),
+            before: Some(first), after: Some(merged_id),
+        }).unwrap();
+        assert_eq!(repo.head().unwrap(), Some(first));
+        drop(repo);
+        let reopened = Repository::discover(dir.path()).unwrap();
+        assert_eq!(reopened.head().unwrap(), Some(merged_id));
+        assert_eq!(fs::read(dir.path().join("a")).unwrap(), b"merged");
+        assert!(reopened.pending_transition().unwrap().is_none());
+        assert!(reopened.status().unwrap().is_empty());
+    }
+
     #[test] fn corrupt_object_detected() {
         let (_, r) = repo();
         let oid = r.store.put(BLOB, b"x").unwrap();
