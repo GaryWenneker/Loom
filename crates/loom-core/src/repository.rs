@@ -1510,7 +1510,12 @@ impl Repository {
         let ours = self.head()?.ok_or_else(|| Error::Invalid("cannot merge into unborn branch".into()))?;
         let theirs = self.branch_tip(name)?.ok_or_else(|| Error::Invalid("cannot merge unborn branch".into()))?;
         if ours == theirs { return Ok(ours); }
-        let base = self.state_at(self.merge_base(ours, theirs)?)?;
+        let base_id = self.merge_base(ours, theirs)?.ok_or_else(|| {
+            Error::Conflict(
+                "branches have unrelated histories; refusing merge without a common ancestor".into()
+            )
+        })?;
+        let base = self.state_at(Some(base_id))?;
         let our_files = self.state_at(Some(ours))?;
         let their_files = self.state_at(Some(theirs))?;
         let mut keys = BTreeSet::new();
@@ -3036,6 +3041,18 @@ mod tests {
         let (_, payload) = decode_object(&raw).unwrap();
         let other = r.store.put(CHANGESET, payload).unwrap();
         assert_eq!(r.best_merge_bases(first, other).unwrap(), Vec::<ObjectId>::new());
+        r.create_branch("unrelated").unwrap();
+        r.db.execute(
+            "UPDATE refs SET oid=?1 WHERE name='unrelated'",
+            [other.to_string()],
+        ).unwrap();
+        assert!(r.branch_merge_bases("main", "unrelated").unwrap().is_empty());
+        let err = r.merge_branch("unrelated", "tester", "must refuse").unwrap_err();
+        assert!(format!("{err}").contains("unrelated histories"));
+        assert_eq!(r.head().unwrap(), Some(first));
+        assert!(r.pending_transition().unwrap().is_none());
+        assert_eq!(fs::read(dir.path().join("file")).unwrap(), b"one");
+        assert!(r.fsck().is_ok());
     }
 
     #[test] fn non_overlapping_merge_and_conflict_rejection() {
