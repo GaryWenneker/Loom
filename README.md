@@ -2,7 +2,7 @@
 
 Loom is an experimental, standalone **native version control system**, implemented in Rust.
 
-It is **not built on Git** and is not an extension of AX. A separate Git compatibility bridge is planned.
+Loom has its own native storage engine and object format. A separate Git interoperability bridge is planned.
 
 **Product direction:** Git is the **functional baseline**, not a syntax or architecture template. Loom may offer fewer steps, reversible operations and agent-safe workflows, but must eventually preserve equivalent user capabilities. See the [Git capability inventory](docs/git-capability-parity.md).
 
