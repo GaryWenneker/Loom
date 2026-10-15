@@ -53,7 +53,7 @@ Run `loom help` for the supported CLI. The example assumes the binary is accessi
 
 ## Plan
 
-The [architecture](docs/architecture.md), [native format](docs/format-v1.md), [ADRs](docs/adr-001-native-engine.md) and [roadmap](docs/roadmap.md) document decisions and remaining engineering.
+The [architecture](docs/architecture.md), [implementation contracts](docs/implementation-contracts.md), [release gates](docs/release-gates.md), [native format](docs/format-v1.md), [ADRs](docs/adr-001-native-engine.md) and [complete delivery roadmap](docs/roadmap.md) document decisions, priorities, dependencies and objective acceptance criteria. The roadmap distinguishes merged features from planned work.
 
 Tracked delivery issues: [native safety](https://github.com/GaryWenneker/Loom/issues/1), [full local VCS](https://github.com/GaryWenneker/Loom/issues/2), [merges/recovery](https://github.com/GaryWenneker/Loom/issues/3), [server/agents](https://github.com/GaryWenneker/Loom/issues/4), [Git bridge](https://github.com/GaryWenneker/Loom/issues/5), [scale](https://github.com/GaryWenneker/Loom/issues/6), and [production hardening](https://github.com/GaryWenneker/Loom/issues/7).
 

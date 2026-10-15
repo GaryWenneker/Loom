@@ -27,4 +27,6 @@ The initial engine uses loose objects under `.loom/objects/xx/yyyy...` and local
 - Cache hierarchy, distributed object storage and resumable object transfer.
 - Standalone Git import/export/bridge crate, preserving compatibility metadata.
 
-See the [roadmap](roadmap.md). A documented architectural intention is **not** implemented functionality.
+The full target design is specified in [implementation contracts](implementation-contracts.md). Release quality and no-data-loss evidence are defined in [release gates](release-gates.md). Progress and dependencies are tracked in the [roadmap](roadmap.md).
+
+The existing v1 engine does **not** yet have native trees, metadata-complete histories, a Git adapter or a remote server. A documented architectural intention is **not** implemented functionality.
