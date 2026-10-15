@@ -5,7 +5,7 @@ mod repository;
 mod store;
 
 pub use format::{Change, ChangeKind, Changeset, ObjectId};
-pub use repository::{Repository, StatusEntry, StatusKind};
+pub use repository::{FileDiff, Repository, StatusEntry, StatusKind};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
