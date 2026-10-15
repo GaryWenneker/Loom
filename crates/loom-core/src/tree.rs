@@ -512,6 +512,22 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_rejects_paths_beyond_native_depth_limit() {
+        use crate::format::BLOB;
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join(".loom");
+        fs::create_dir(&meta).unwrap();
+        fs::create_dir(meta.join("objects")).unwrap();
+        let store = crate::store::ObjectStore::new(&meta);
+        let blob = store.put(BLOB, b"data").unwrap();
+        let path = std::iter::repeat("d").take(257).collect::<Vec<_>>().join("/");
+        let mut state = std::collections::BTreeMap::new();
+        state.insert(path, blob);
+        assert!(write_snapshot(&store, &state).is_err());
+    }
+
+    #[test]
     fn roundtrip_and_deterministic_identity() {
         let source = tree();
         let bytes = source.encode().unwrap();
