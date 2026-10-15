@@ -64,6 +64,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             repo.switch_branch(name)?;
             println!("Switched to branch {name}");
         }
+        "merge" => {
+            let name = args.get(1).ok_or("merge requires a source branch")?;
+            let message = if let Some(pos) = args.iter().position(|x| x == "-m") {
+                args.get(pos+1).ok_or("missing -m value")?.clone()
+            } else { format!("Merge branch {name}") };
+            let author = env::var("LOOM_AUTHOR").or_else(|_| env::var("USER"))
+                .or_else(|_| env::var("USERNAME")).unwrap_or_else(|_| "unknown".into());
+            let oid = repo.merge_branch(name, &author, &message)?;
+            println!("Merged {name} as {oid}");
+        }
         "fsck" => println!("Verified {} native objects and branch references", repo.fsck()?),
         _ => { usage(); return Err(format!("unknown command: {cmd}").into()); }
     }
