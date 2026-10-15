@@ -60,4 +60,4 @@ The converter refuses unsafe paths, file-vs-directory collisions, excessive dept
 
 `loom fsck` inspects all stored tree nodes, verifies their child object types and hashes, and cross-checks each derived revision-to-root mapping against the authoritative changeset file state. A corrupt mapping is rejected. Absence of a mapping does not lose source history: a later `loom tree` can regenerate the same root ID.
 
-**Remaining release blockers:** complete v1→v2 migration/rollback, portable path collision rules, historic file modes/symlinks, chunked large-file manifests, automatic durable tree-root publication for legacy commit-all and merge transitions, crash/power-loss safety and distributed object/ref protocols. See [release gates](release-gates.md) and [roadmap](roadmap.md).
+**Remaining release blockers:** complete v1→v2 migration/rollback, portable path collision rules, historic file modes/symlinks, chunked large-file manifests, automatic durable tree-root publication with merge recovery, crash/power-loss safety and distributed object/ref protocols. See [release gates](release-gates.md) and [roadmap](roadmap.md).
