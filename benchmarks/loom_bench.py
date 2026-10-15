@@ -58,7 +58,7 @@ def fixture(root: Path, count: int) -> None:
 def sample(executable: Path, count: int, repeat: int, skip_status: bool) -> dict:
     results: dict[str, list[float]] = {
         "add_ms": [], "commit_ms": [], "status_ms": [],
-        "cat_ms": [], "fsck_ms": [],
+        "cat_ms": [], "files_ms": [], "fsck_ms": [],
     }
     with tempfile.TemporaryDirectory(prefix="loom-bench-") as temp:
         root = Path(temp)
@@ -78,6 +78,9 @@ def sample(executable: Path, count: int, repeat: int, skip_status: bool) -> dict
             )
             results["cat_ms"].append(
                 run(executable, root, "cat", "main", "focus.txt")
+            )
+            results["files_ms"].append(
+                run(executable, root, "files", "main", "focus.txt")
             )
             if not skip_status:
                 results["status_ms"].append(run(executable, root, "status"))
@@ -128,7 +131,8 @@ def main() -> int:
         "loom_executable_sha256": hashlib.sha256(exe.read_bytes()).hexdigest(),
         "notes": [
             "Untracked fixtures only. This measures targeted selected-file add and commit, "
-            "plus full status and native fsck. It does not measure giant tracked histories.",
+            "plus indexed branch file lookups, full status and native fsck. "
+            "It does not measure giant tracked histories.",
             "Timings include CLI process startup. Low sample counts make tail percentiles unreliable.",
             "No RAM/CPU or Scion measurements are claimed by this harness.",
         ],
