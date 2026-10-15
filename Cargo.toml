@@ -1,0 +1,14 @@
+[workspace]
+members = ["crates/loom-core", "crates/loom-cli"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/GaryWenneker/Loom"
+rust-version = "1.85"
+
+[workspace.dependencies]
+blake3 = "1.8"
+rusqlite = { version = "0.37", features = ["bundled"] }
