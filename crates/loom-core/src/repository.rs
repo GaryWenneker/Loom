@@ -240,11 +240,26 @@ impl Repository {
         }
         Ok(out)
     }
-    fn save_ref_cas(&self, name: &str, expected: Option<ObjectId>, next: ObjectId) -> Result<()> {
-        // SQLite IS safely supports null and values, and protects against lost updates.
-        let changed = self.db.execute("UPDATE refs SET oid=?1 WHERE name=?2 AND oid IS ?3",
-            params![next.to_string(), name, expected.map(|id| id.to_string())])?;
-        if changed != 1 { return Err(Error::Conflict(format!("branch {name} moved; retry after inspecting current head"))); }
+    /// Publish a legacy commit ref and its derived immutable tree root in
+    /// one SQLite transaction. Object publication happens before this call.
+    /// Failed compare-and-swap leaves neither the ref nor the root mapping.
+    fn save_ref_cas_with_tree(
+        &self, name: &str, expected: Option<ObjectId>, next: ObjectId,
+        root: ObjectId,
+    ) -> Result<()> {
+        let tx = self.db.unchecked_transaction()?;
+        let changed = tx.execute(
+            "UPDATE refs SET oid=?1 WHERE name=?2 AND oid IS ?3",
+            params![next.to_string(), name, expected.map(|id| id.to_string())],
+        )?;
+        if changed != 1 {
+            return Err(Error::Conflict(format!("branch {name} moved; retry after inspecting current head")));
+        }
+        tx.execute(
+            "INSERT INTO revision_native_tree(revision_oid,root_oid) VALUES(?1,?2)",
+            params![next.to_string(), root.to_string()],
+        )?;
+        tx.commit()?;
         Ok(())
     }
     pub fn create_branch(&self, name: &str) -> Result<()> {
@@ -1230,29 +1245,25 @@ impl Repository {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| Error::Invalid("system time before epoch".into()))?;
         let c = Changeset { parents: prev.into_iter().collect(), author: author.into(), message: message.into(),
             timestamp_seconds: now.as_secs() as i64, changes };
-        // Staged commits publish a native tree in the same transaction as
-        // their ref/index update. The initial root may require one lazy
-        // bootstrap from v1 history; later staged commits touch changed
-        // directory paths only. Legacy commit-all mode is unchanged.
-        let native_tree = if staged {
-            let previous_root = if let Some(parent) = prev {
-                self.native_tree_root(parent)?
-            } else {
-                crate::tree::write_snapshot(&self.store, &BTreeMap::new())?
-            };
-            Some(crate::tree::apply_changes(
-                &self.store, previous_root, &c.changes
-            )?)
+        // Both staged and legacy commit-all updates now publish immutable
+        // native roots alongside the branch ref. Legacy mode still scans the
+        // worktree to compute its changes; applying those changes to the
+        // existing root only revisits modified directory paths.
+        let previous_root = if let Some(parent) = prev {
+            self.native_tree_root(parent)?
         } else {
-            None
+            crate::tree::write_snapshot(&self.store, &BTreeMap::new())?
         };
+        let native_tree = crate::tree::apply_changes(
+            &self.store, previous_root, &c.changes
+        )?;
         let raw = c.encode()?;
         let (_, payload) = decode_object(&raw)?;
         let id = self.store.put(CHANGESET, payload)?;
-        if let Some(root) = native_tree {
-            self.publish_staged_commit(&branch, prev, id, &c.changes, root)?;
+        if staged {
+            self.publish_staged_commit(&branch, prev, id, &c.changes, native_tree)?;
         } else {
-            self.save_ref_cas(&branch, prev, id)?;
+            self.save_ref_cas_with_tree(&branch, prev, id, native_tree)?;
         }
         Ok(id)
     }
@@ -2520,10 +2531,14 @@ mod tests {
         fs::write(dir.path().join("src/file"), b"v1").unwrap();
         fs::write(dir.path().join("stable"), b"unchanged").unwrap();
         let base = r.commit("tester", "legacy baseline").unwrap();
-        assert!(r.db.query_row(
+        let base_root: String = r.db.query_row(
             "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
-            [base.to_string()], |row| row.get::<_, String>(0)
-        ).optional().unwrap().is_none());
+            [base.to_string()], |row| row.get(0)
+        ).unwrap();
+        assert_eq!(ObjectId::parse(&base_root).unwrap(),
+                   crate::tree::write_snapshot(
+                       &r.store, &r.state_at(Some(base)).unwrap()
+                   ).unwrap());
 
         fs::write(dir.path().join("src/file"), b"v2").unwrap();
         r.add("src/file").unwrap();
@@ -2599,6 +2614,69 @@ mod tests {
         assert_eq!(r.native_tree_file(root, "node/child").unwrap(),
                    Some(b"nested".to_vec()));
         assert_eq!(r.native_tree_entries(root, Some("node")).unwrap().len(), 1);
+        assert!(r.fsck().is_ok());
+    }
+
+
+    #[test]
+    fn legacy_commit_all_atomically_publishes_native_tree_roots() {
+        let (dir, r) = repo();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/one"), b"one").unwrap();
+        fs::write(dir.path().join("stable"), b"unchanged").unwrap();
+        let first = r.commit("tester", "first legacy").unwrap();
+        let first_root: String = r.db.query_row(
+            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+            [first.to_string()], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(r.native_tree_root(first).unwrap(),
+                   ObjectId::parse(&first_root).unwrap());
+
+        fs::write(dir.path().join("src/one"), b"changed").unwrap();
+        fs::write(dir.path().join("src/new"), b"new").unwrap();
+        let second = r.commit("tester", "second legacy").unwrap();
+        let second_root: String = r.db.query_row(
+            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+            [second.to_string()], |row| row.get(0),
+        ).unwrap();
+        let root = ObjectId::parse(&second_root).unwrap();
+        assert_eq!(root, crate::tree::write_snapshot(
+            &r.store, &r.state_at(Some(second)).unwrap()
+        ).unwrap());
+        assert_eq!(r.native_tree_file(root, "src/new").unwrap(), Some(b"new".to_vec()));
+        assert_eq!(r.head().unwrap(), Some(second));
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn legacy_commit_cas_failure_does_not_publish_orphan_root_mapping() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("tracked"), b"base").unwrap();
+        let first = r.commit("tester", "base").unwrap();
+        let root = r.native_tree_root(first).unwrap();
+        let nonmatching_parent = ObjectId([31; 32]);
+        let fake_revision = ObjectId([32; 32]);
+        assert!(r.save_ref_cas_with_tree(
+            "main", Some(nonmatching_parent), fake_revision, root
+        ).is_err());
+        assert_eq!(r.head().unwrap(), Some(first));
+        let absent: Option<String> = r.db.query_row(
+            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+            [fake_revision.to_string()], |row| row.get(0),
+        ).optional().unwrap();
+        assert!(absent.is_none());
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn legacy_commits_retain_no_staging_behavior_after_root_publication() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("a"), b"one").unwrap();
+        r.commit("tester", "base").unwrap();
+        fs::write(dir.path().join("a"), b"two").unwrap();
+        r.commit("tester", "second").unwrap();
+        assert!(!r.staging_enabled().unwrap());
+        assert!(r.staged_blobs().unwrap().is_empty());
         assert!(r.fsck().is_ok());
     }
 
