@@ -2,7 +2,7 @@ use loom_core::{Repository, StatusKind};
 use std::{env, path::Path, process};
 
 fn usage() {
-    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path]\n  loom status\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom diff [FROM_BRANCH TO_BRANCH]\n  loom fsck\n");
+    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path]\n  loom status\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom diff [FROM_BRANCH TO_BRANCH]\n  loom cat BRANCH PATH\n  loom fsck\n");
 }
 
 
@@ -102,6 +102,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 _ => return Err("usage: loom diff [FROM_BRANCH TO_BRANCH]".into()),
             };
             for change in &changes { print_diff(change); }
+        }
+        "cat" => {
+            if args.len() != 3 { return Err("usage: loom cat BRANCH PATH".into()); }
+            let data = repo.read_branch_file(&args[1], &args[2])?
+                .ok_or_else(|| format!("path not found in branch {}: {}", args[1], args[2]))?;
+            use std::io::Write;
+            std::io::stdout().lock().write_all(&data)?;
         }
         "fsck" => println!("Verified {} native objects and branch references", repo.fsck()?),
         _ => { usage(); return Err(format!("unknown command: {cmd}").into()); }
