@@ -20,6 +20,7 @@
 | `loom switch NAME` | Switch branches if workspace is clean |
 | `loom merge NAME [-m MESSAGE]` | Conservative merge; unresolved conflicts reject |
 | `loom cat BRANCH PATH` | Stream exact file bytes from a native snapshot |
+| `loom cat @CHANGESET_ID PATH` | Read historical file bytes without checkout, using a rebuildable lookup cache. |
 | `loom files BRANCH [PREFIX] [--null]` | List tracked native files without checkout; prefix matches exact path or directory descendants. Text mode quotes filenames; `--null` emits NUL-separated paths for scripts. |
 | `loom fsck` | Verify native objects, refs, current derived branch indexes, staged blob roots, deletion tombstones and pending-recovery object references; **not** a backup or full filesystem recovery test |
 

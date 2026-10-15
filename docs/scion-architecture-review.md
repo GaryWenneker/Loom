@@ -20,7 +20,7 @@
 
 **Development progress:** selected-file staging and staged status can use the derived SQLite branch path index, and staged commits update only changed paths after the cache is built. Full-worktree status, arbitrary revision reconstruction, scalable derived blame/ancestry, native tree format and server-side commits remain incomplete. No speedup is claimed without reproducible measurements.
 
-**Incremental read improvement:** the current branch path index can now answer direct branch-tip file reads in one snapshot-consistent SQLite query, without replaying the first-parent DAG. When the derived index is absent or its revision marker no longer matches the authoritative ref, Loom falls back to immutable history. Direct native prefix-scoped branch file listings can also use the index without checkout. This still does not implement general revision queries, ancestry, blame, filesystem virtualization or sparse remote retrieval.
+**Incremental read improvement:** the current branch path index can now answer direct branch-tip file reads in one snapshot-consistent SQLite query, without replaying the first-parent DAG. When the derived index is absent or its revision marker no longer matches the authoritative ref, Loom falls back to immutable history. Direct native prefix-scoped branch file listings can also use the index without checkout. Single-file retrieval now also accepts exact historical changeset IDs with a rebuildable lookup cache. Full historical directory views, ancestry, blame, virtualization and sparse remote access remain incomplete.
 
 ## Architectural recommendations
 

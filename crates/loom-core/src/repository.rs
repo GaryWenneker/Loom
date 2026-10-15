@@ -85,6 +85,12 @@ impl Repository {
                  branch TEXT PRIMARY KEY NOT NULL,
                  oid TEXT NOT NULL
              );
+             CREATE TABLE IF NOT EXISTS revision_file_cache (
+                 revision_oid TEXT NOT NULL,
+                 path TEXT NOT NULL,
+                 blob_oid TEXT,
+                 PRIMARY KEY (revision_oid, path)
+             );
              CREATE TABLE IF NOT EXISTS workspace_journal (
                  id INTEGER PRIMARY KEY CHECK(id=1),
                  operation TEXT NOT NULL,
@@ -831,6 +837,63 @@ impl Repository {
         }).collect())
     }
 
+    /// Resolve one file at a historical changeset without constructing the
+    /// complete tree. v1 deltas use the first parent as their state base.
+    /// The cache stores query results only; immutable changesets are the
+    /// authoritative source and allow rebuilding the cache at any time.
+    fn resolve_revision_path(
+        &self, revision: ObjectId, path: &str
+    ) -> Result<Option<ObjectId>> {
+        let mut cursor = Some(revision);
+        let mut visited = HashSet::new();
+        while let Some(id) = cursor {
+            if visited.len() >= 1_000_000 {
+                return Err(Error::Invalid("history depth limit reached".into()));
+            }
+            if !visited.insert(id) {
+                return Err(Error::Invalid("cycle in first-parent history".into()));
+            }
+            let commit = self.get_changeset(id)?;
+            // Canonical changesets always contain sorted, unique path entries.
+            if let Ok(pos) = commit.changes.binary_search_by(|c| c.path.as_str().cmp(path)) {
+                return Ok(commit.changes[pos].blob);
+            }
+            cursor = commit.parents.first().copied();
+        }
+        Ok(None)
+    }
+
+    /// Return a file's bytes at any native changeset ID, without checking out
+    /// the revision. Cache hits require one indexed SQLite lookup and the
+    /// requested immutable blob read; a cache miss walks only change metadata
+    /// along the first-parent chain rather than materializing all paths.
+    pub fn read_revision_file(
+        &self, revision: ObjectId, path: &str
+    ) -> Result<Option<Vec<u8>>> {
+        validate_path(path)?;
+        // A cache hit must not turn a missing/non-changeset revision into a
+        // valid lookup. The requested revision itself is always checked.
+        self.get_changeset(revision)?;
+        let key = revision.to_string();
+        let cached: Option<Option<String>> = self.db.query_row(
+            "SELECT blob_oid FROM revision_file_cache
+             WHERE revision_oid=?1 AND path=?2",
+            params![&key, path], |row| row.get(0),
+        ).optional()?;
+        let blob = if let Some(value) = cached {
+            value.map(|raw| ObjectId::parse(&raw)).transpose()?
+        } else {
+            let resolved = self.resolve_revision_path(revision, path)?;
+            self.db.execute(
+                "INSERT OR IGNORE INTO revision_file_cache(revision_oid,path,blob_oid)
+                 VALUES(?1,?2,?3)",
+                params![&key, path, resolved.map(|id| id.to_string())],
+            )?;
+            resolved
+        };
+        blob.map(|id| self.blob_bytes(id)).transpose()
+    }
+
     /// Read a file from a branch tip using the derived path index when it
     /// represents the same commit as the live ref. The joined lookup uses
     /// one SQLite read snapshot, so a concurrent ref/index transaction cannot
@@ -1232,6 +1295,28 @@ impl Repository {
                         "derived branch path index disagrees with history: {branch}"
                     )));
                 }
+            }
+        }
+        // Cached historical answers are derived data, not new repository
+        // authority. fsck detects stale or tampered path results by replaying
+        // only the requested path along the immutable first-parent chain.
+        let mut statement = self.db.prepare(
+            "SELECT revision_oid,path,blob_oid FROM revision_file_cache"
+        )?;
+        let entries = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?))
+        })?;
+        for entry in entries {
+            let (raw_revision, path, raw_blob) = entry?;
+            validate_path(&path)?;
+            let revision = ObjectId::parse(&raw_revision)?;
+            let cached = raw_blob.map(|v| ObjectId::parse(&v)).transpose()?;
+            if self.resolve_revision_path(revision, &path)? != cached {
+                return Err(Error::Invalid(format!(
+                    "historical path cache differs from immutable changesets: {path}"
+                )));
             }
         }
         Ok(checked)
@@ -1701,6 +1786,69 @@ mod tests {
             StatusEntry { path: "old".into(), kind: StatusKind::Modified }
         ]);
         assert!(r.fsck().is_ok());
+    }
+
+
+    #[test]
+    fn historical_file_queries_follow_first_parent_deltas_and_deletions() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("a"), b"one").unwrap();
+        fs::write(dir.path().join("untouched"), b"stable").unwrap();
+        let first = r.commit("tester", "base").unwrap();
+        fs::write(dir.path().join("a"), b"two").unwrap();
+        let second = r.commit("tester", "update").unwrap();
+        fs::remove_file(dir.path().join("a")).unwrap();
+        let deleted = r.commit("tester", "remove").unwrap();
+
+        for _ in 0..2 {
+            assert_eq!(r.read_revision_file(first, "a").unwrap(),
+                       Some(b"one".to_vec()));
+            assert_eq!(r.read_revision_file(second, "a").unwrap(),
+                       Some(b"two".to_vec()));
+            assert_eq!(r.read_revision_file(deleted, "a").unwrap(), None);
+            assert_eq!(r.read_revision_file(deleted, "untouched").unwrap(),
+                       Some(b"stable".to_vec()));
+            assert_eq!(r.read_revision_file(first, "absent").unwrap(), None);
+        }
+        assert!(r.read_revision_file(ObjectId([9; 32]), "a").is_err());
+        assert!(r.read_revision_file(first, "../unsafe").is_err());
+        let count: i64 = r.db.query_row(
+            "SELECT COUNT(*) FROM revision_file_cache",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, 5, "cache records hits and negative lookups");
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn historical_lookup_cache_is_rebuildable_and_fsck_detects_corruption() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("one"), b"first").unwrap();
+        fs::write(dir.path().join("two"), b"second").unwrap();
+        let revision = r.commit("tester", "base").unwrap();
+        assert_eq!(r.read_revision_file(revision, "one").unwrap(),
+                   Some(b"first".to_vec()));
+        r.db.execute("DELETE FROM revision_file_cache", []).unwrap();
+        assert_eq!(r.read_revision_file(revision, "one").unwrap(),
+                   Some(b"first".to_vec()));
+        assert!(r.fsck().is_ok());
+        let incorrect = r.state_at(Some(revision)).unwrap()["two"];
+        r.db.execute(
+            "UPDATE revision_file_cache SET blob_oid=?1
+             WHERE revision_oid=?2 AND path='one'",
+            params![incorrect.to_string(), revision.to_string()],
+        ).unwrap();
+        assert!(r.fsck().is_err(),
+                "fsck must reject incorrect but otherwise valid cached content");
+    }
+
+    #[test]
+    fn historical_path_queries_preserve_binary_bytes() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("binary"), [0u8, 1, 255, 0, 7]).unwrap();
+        let initial = r.commit("tester", "binary").unwrap();
+        assert_eq!(r.read_revision_file(initial, "binary").unwrap(),
+                   Some(vec![0, 1, 255, 0, 7]));
     }
 
     #[test] fn corrupt_object_detected() {

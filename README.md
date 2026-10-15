@@ -22,6 +22,7 @@ Loom has its own native storage engine and object format. A separate Git interop
 - Read-only `loom diff` for worktree changes and comparisons between branch snapshots; `loom diff --staged` and `loom diff --unstaged` show the two sides of the staging boundary independently.
 - `loom review` displays both prepared commit content and remaining uncommitted workspace edits in one view. Text patches use unified diff output; large/binary changes are reported without textual hunks.
 - `loom cat BRANCH PATH` for binary-safe direct access to native snapshot files without checkout.
+- `loom cat @CHANGESET_ID PATH` reads a single file at a historical revision without checkout, with an optional, rebuildable result cache.
 - `loom files BRANCH [PREFIX] [--null]` to enumerate the tracked files in a branch without checkout. The current branch-tip index avoids replaying history where available; `--null` is safe for automated filename processing.
 - Cross-platform compilation, tests and Rust dependency auditing in GitHub Actions.
 
