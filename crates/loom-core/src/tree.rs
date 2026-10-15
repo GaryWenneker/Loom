@@ -123,6 +123,128 @@ impl NativeTree {
     }
 }
 
+/// Assemble one canonical directory DAG from the immutable file state.
+/// The conversion is optional and has no effect on existing v1 commits.
+pub(crate) fn write_snapshot(
+    store: &crate::store::ObjectStore,
+    state: &std::collections::BTreeMap<String, ObjectId>,
+) -> Result<ObjectId> {
+    use std::collections::BTreeMap;
+
+    #[derive(Default)]
+    struct Folder {
+        files: BTreeMap<String, ObjectId>,
+        dirs: BTreeMap<String, Folder>,
+    }
+    fn save(
+        store: &crate::store::ObjectStore,
+        folder: &Folder,
+        depth: usize,
+    ) -> Result<ObjectId> {
+        if depth > 256 {
+            return Err(Error::Invalid("native tree nesting limit reached".into()));
+        }
+        let mut entries = Vec::new();
+        for (name, blob) in &folder.files {
+            entries.push(TreeEntry {
+                name: name.clone(),
+                kind: TreeEntryKind::File,
+                executable: false,
+                object: *blob,
+            });
+        }
+        for (name, subdir) in &folder.dirs {
+            let child = save(store, subdir, depth + 1)?;
+            entries.push(TreeEntry {
+                name: name.clone(),
+                kind: TreeEntryKind::Directory,
+                executable: false,
+                object: child,
+            });
+        }
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        let envelope = NativeTree { entries }.encode()?;
+        let (_, payload) = decode_object(&envelope)?;
+        store.put(TREE, payload)
+    }
+
+    let mut root = Folder::default();
+    for (path, blob) in state {
+        validate_path(path)?;
+        let components: Vec<&str> = path.split('/').collect();
+        if components.len() > 256 {
+            return Err(Error::Invalid("native tree path nesting limit reached".into()));
+        }
+        let mut folder = &mut root;
+        for name in &components[..components.len() - 1] {
+            if folder.files.contains_key(*name) {
+                return Err(Error::Invalid(format!("file/directory collision: {path}")));
+            }
+            folder = folder.dirs.entry((*name).to_owned()).or_default();
+        }
+        let name = components.last().expect("validated nonempty path");
+        if folder.dirs.contains_key(*name) ||
+            folder.files.insert((*name).to_owned(), *blob).is_some() {
+            return Err(Error::Invalid(format!("file/directory collision: {path}")));
+        }
+    }
+    save(store, &root, 0)
+}
+
+/// Traverse native trees with bounded depth and validate every referenced
+/// blob/child tree. This is used by integrity checks and format conformance.
+pub(crate) fn flatten_snapshot(
+    store: &crate::store::ObjectStore,
+    root: ObjectId,
+) -> Result<std::collections::BTreeMap<String, ObjectId>> {
+    use std::collections::{BTreeMap, HashSet};
+    fn visit(
+        store: &crate::store::ObjectStore,
+        id: ObjectId,
+        prefix: &str,
+        depth: usize,
+        ancestry: &mut HashSet<ObjectId>,
+        state: &mut BTreeMap<String, ObjectId>,
+    ) -> Result<()> {
+        if depth > 256 || !ancestry.insert(id) {
+            return Err(Error::Invalid("native tree depth or cycle limit reached".into()));
+        }
+        let result = (|| -> Result<()> {
+            let node = NativeTree::decode(&store.get(id)?)?;
+            for entry in node.entries {
+                let path = if prefix.is_empty() {
+                    entry.name.clone()
+                } else {
+                    format!("{prefix}/{}", entry.name)
+                };
+                validate_path(&path)?;
+                match entry.kind {
+                    TreeEntryKind::File => {
+                        let data = store.get(entry.object)?;
+                        if decode_object(&data)?.0 != crate::format::BLOB {
+                            return Err(Error::Invalid(format!(
+                                "native tree file does not reference a blob: {path}"
+                            )));
+                        }
+                        if state.insert(path, entry.object).is_some() {
+                            return Err(Error::Invalid("duplicate native tree path".into()));
+                        }
+                    }
+                    TreeEntryKind::Directory => {
+                        visit(store, entry.object, &path, depth + 1, ancestry, state)?;
+                    }
+                }
+            }
+            Ok(())
+        })();
+        ancestry.remove(&id);
+        result
+    }
+    let mut state = BTreeMap::new();
+    visit(store, root, "", 0, &mut HashSet::new(), &mut state)?;
+    Ok(state)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
