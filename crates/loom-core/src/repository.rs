@@ -2927,6 +2927,117 @@ mod tests {
         fs::write(r.store.path_for_test(oid), b"corrupt").unwrap();
         assert!(r.fsck().is_err());
     }
+
+    #[test]
+    fn merge_bases_choose_youngest_shared_ancestor_in_the_full_dag() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("base"), b"base").unwrap();
+        let root = r.commit("tester", "root").unwrap();
+        fs::write(dir.path().join("shared"), b"new").unwrap();
+        let ancestor = r.commit("tester", "shared ancestor").unwrap();
+        r.create_branch("feature").unwrap();
+        r.switch_branch("feature").unwrap();
+        fs::write(dir.path().join("feature"), b"feature").unwrap();
+        let feature = r.commit("tester", "feature side").unwrap();
+        r.switch_branch("main").unwrap();
+        fs::write(dir.path().join("main"), b"main").unwrap();
+        let main = r.commit("tester", "main side").unwrap();
+
+        assert_eq!(r.best_merge_bases(main, feature).unwrap(), vec![ancestor]);
+        assert_eq!(r.branch_merge_bases("main", "feature").unwrap(), vec![ancestor]);
+        assert_eq!(r.best_merge_bases(main, root).unwrap(), vec![root]);
+        assert_eq!(r.best_merge_bases(main, main).unwrap(), vec![main]);
+        assert!(r.branch_merge_bases("main", "nonexistent").is_err());
+
+        let merged = r.merge_branch("feature", "tester", "safe merge").unwrap();
+        // Full-parent ancestry sees the second parent of the merge, not just
+        // the first-parent snapshot reconstruction path.
+        assert_eq!(r.best_merge_bases(merged, feature).unwrap(), vec![feature]);
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn criss_cross_merge_bases_are_all_returned_and_merge_fails_closed() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("base"), b"base").unwrap();
+        let root = r.commit("tester", "root").unwrap();
+        r.create_branch("feature").unwrap();
+        r.switch_branch("feature").unwrap();
+        fs::write(dir.path().join("feature"), b"feature contents").unwrap();
+        let b = r.commit("tester", "branch b").unwrap();
+        r.switch_branch("main").unwrap();
+        fs::write(dir.path().join("main"), b"main contents").unwrap();
+        let a = r.commit("tester", "branch a").unwrap();
+
+        // Two independent two-parent merge commits form the classic
+        // criss-cross DAG. Each first parent defines its file state.
+        // Their best common ancestors are A and B, not the older root.
+        let add_merge = |parents: Vec<ObjectId>, label: &str| {
+            let commit = Changeset {
+                parents,
+                author: "tester".into(),
+                message: label.into(),
+                timestamp_seconds: 1,
+                changes: vec![],
+            };
+            let encoded = commit.encode().unwrap();
+            let (_, payload) = decode_object(&encoded).unwrap();
+            r.store.put(CHANGESET, payload).unwrap()
+        };
+        let left = add_merge(vec![a, b], "merge a <- b");
+        let right = add_merge(vec![b, a], "merge b <- a");
+        let mut expected = vec![a, b];
+        expected.sort();
+        assert_eq!(r.best_merge_bases(left, right).unwrap(), expected);
+        assert_eq!(r.best_merge_bases(right, left).unwrap(), expected);
+        assert_eq!(r.best_merge_bases(left, root).unwrap(), vec![root]);
+
+        // Put the synthetic merge revisions on both branch refs. The
+        // current worktree already matches the left merge's first parent.
+        r.db.execute(
+            "UPDATE refs SET oid=?1 WHERE name='main'",
+            [left.to_string()],
+        ).unwrap();
+        r.db.execute(
+            "UPDATE refs SET oid=?1 WHERE name='feature'",
+            [right.to_string()],
+        ).unwrap();
+        assert!(r.status().unwrap().is_empty());
+        assert_eq!(r.branch_merge_bases("main", "feature").unwrap(), expected);
+        let err = r.merge_branch("feature", "tester", "ambiguous merge").unwrap_err();
+        assert!(format!("{err}").contains("multiple independent merge bases"));
+        assert_eq!(r.head().unwrap(), Some(left));
+        assert!(r.pending_transition().unwrap().is_none());
+        assert_eq!(fs::read(dir.path().join("main")).unwrap(), b"main contents");
+        assert!(!dir.path().join("feature").exists());
+        // No attempted changeset or branch mutation, and all v1 history
+        // remains reconstructable.
+        assert!(r.fsck().is_ok());
+    }
+
+    #[test]
+    fn unrelated_histories_have_no_common_merge_base() {
+        let (dir, r) = repo();
+        fs::write(dir.path().join("file"), b"one").unwrap();
+        let first = r.commit("tester", "first").unwrap();
+        let unrelated_blob = r.store.put(BLOB, b"unrelated").unwrap();
+        let change = Changeset {
+            parents: vec![],
+            author: "tester".into(),
+            message: "unrelated root".into(),
+            timestamp_seconds: 2,
+            changes: vec![Change {
+                kind: ChangeKind::Add,
+                path: "unrelated".into(),
+                blob: Some(unrelated_blob),
+            }],
+        };
+        let raw = change.encode().unwrap();
+        let (_, payload) = decode_object(&raw).unwrap();
+        let other = r.store.put(CHANGESET, payload).unwrap();
+        assert_eq!(r.best_merge_bases(first, other).unwrap(), Vec::<ObjectId>::new());
+    }
+
     #[test] fn non_overlapping_merge_and_conflict_rejection() {
         let (dir, r) = repo();
         fs::write(dir.path().join("a"), b"base-a").unwrap();
