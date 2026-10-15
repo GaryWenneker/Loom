@@ -21,6 +21,7 @@ Loom has its own native storage engine and object format. A separate Git interop
 - Read-only `loom diff` for worktree changes and comparisons between branch snapshots; `loom diff --staged` and `loom diff --unstaged` show the two sides of the staging boundary independently.
 - `loom review` displays both prepared commit content and remaining uncommitted workspace edits in one view. Text patches use unified diff output; large/binary changes are reported without textual hunks.
 - `loom cat BRANCH PATH` for binary-safe direct access to native snapshot files without checkout.
+- `loom files BRANCH [PREFIX] [--null]` to enumerate the tracked files in a branch without checkout. The current branch-tip index avoids replaying history where available; `--null` is safe for automated filename processing.
 - Cross-platform compilation, tests and Rust dependency auditing in GitHub Actions.
 
 Merge supports conservative three-way line merging when text changes do not overlap and refuses ambiguous edits or binary conflicts. **Rename-aware merging, full conflict resolution and rebases are not yet supported. The recovery journal covers many process-crash cases, not abrupt power loss or all filesystem races.** This is **not** ready to replace Git for production.
