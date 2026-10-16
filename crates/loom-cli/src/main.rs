@@ -284,7 +284,7 @@ fn git_bridge(args: &[std::ffi::OsString]) -> Result<i32, Box<dyn std::error::Er
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt;
-        return Ok(128 + status.signal().unwrap_or(1));
+        Ok(128 + status.signal().unwrap_or(1))
     }
     #[cfg(not(unix))]
     Ok(1)

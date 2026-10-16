@@ -106,7 +106,7 @@ fn explicit_separator_and_installed_git_are_required() {
     );
     assert!(!dir.path().join(".loom").exists());
 }
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn non_utf8_git_paths_are_forwarded_losslessly() {
     use std::os::unix::ffi::OsStringExt;
@@ -127,4 +127,30 @@ fn non_utf8_git_paths_are_forwarded_losslessly() {
     );
     let result = bridge(dir.path(), &["git", "--", "ls-files", "-z"]);
     assert_eq!(result.stdout, vec![b'f', 0xff, 0]);
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_arguments_are_forwarded_without_filename_assumptions() {
+    use std::os::unix::ffi::OsStringExt;
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path());
+    let value = std::ffi::OsString::from_vec(vec![b'v', 0xff]);
+    let result = Command::new(env!("CARGO_BIN_EXE_loom"))
+        .current_dir(dir.path())
+        .args(["git", "--", "config", "--local", "test.raw"])
+        .arg(value)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let result = bridge(
+        dir.path(),
+        &["git", "--", "config", "--local", "--get", "test.raw"],
+    );
+    assert!(result.status.success());
+    assert_eq!(result.stdout, vec![b'v', 0xff, b'\n']);
 }
