@@ -21,8 +21,10 @@ repeats cover two full three-engine cycles. Try `--layout nested --directories
 `wait4` records per-process CPU and maximum RSS; Git's two commands have summed
 wall/CPU/I-O and maximum RSS. Raw kernel block-I/O counters are retained in their
 OS units, rather than presented as portable byte counts. Metadata size is logical
-file length, not disk allocation. Samples include p50/p95/p99; few samples are
-insufficient for production tail guarantees. This filesystem-provider benchmark
+file length, not disk allocation. The raw `wait4` RSS high-water can include a
+fork/pre-exec launcher floor; it is not an isolated engine-RAM measurement.
+Samples include p50/p95/p99; few samples are insufficient for production tail
+guarantees. This filesystem-provider benchmark
 does not flush OS caches or measure network, power loss or concurrent agents.
 
 ## Repeated immutable working sets
