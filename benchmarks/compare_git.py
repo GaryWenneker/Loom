@@ -66,13 +66,35 @@ def parse_loom_batch(output, expected):
     assert offset == len(output), 'unconsumed Loom batch output'
 
 
+def parse_loom_multi(output, expected):
+    end = output.index(b'\n'); header = json.loads(output[:end]); offset = end + 1
+    assert header['kind'] == 'blobs' and header['ok'], header
+    assert len(header['entries']) == len(expected), header
+    for entry, wanted in zip(header['entries'], expected):
+        if wanted is None:
+            assert entry is None, entry
+        else:
+            assert entry['size'] == len(wanted), entry
+            assert output[offset:offset+len(wanted)] == wanted
+            offset += len(wanted)
+    assert offset-end-1 == header['size'] and output[offset:] == b'\n'
+
+
 def scenario(args, count):
     timings = {'loom_cat_cli': [], 'git_cat_cli': [], 'loom_files_cli': [],
                'git_files_cli': [], 'loom_status_cli': [], 'git_status_cli': [],
                'git_batch': [], 'loom_batch': []}
+    if args.baseline_loom:
+        for operation in ['cat_cli','files_cli','status_cli','batch']:
+            timings['baseline_'+operation] = []
+    if args.multi: timings['loom_multi'] = []
+    initializer = args.baseline_loom or args.loom
     def relative(index):
         name = f'{index:08d}.bin'
-        return f'files/{name}' if args.layout == 'wide' else f'files/{index % 256:02x}/{name}'
+        bucket = index % args.directories
+        if args.layout == 'wide': return f'files/{name}'
+        if args.layout == 'nested': return f'files/{bucket % 16:02x}/{bucket // 16:02x}/{name}'
+        return f'files/{bucket:02x}/{name}'
     with tempfile.TemporaryDirectory(prefix='loom-git-compare-') as temporary:
         root = Path(temporary)
         command(root, ['git', 'init', '-q'])
@@ -81,21 +103,21 @@ def scenario(args, count):
         command(root, ['git', 'config', 'core.autocrlf', 'false'])
         command(root, ['git', 'config', 'gc.auto', '0'])
         (root/'.git/info/exclude').write_text('.loom/\n')
-        command(root, [args.loom, 'init'])
+        command(root, [initializer, 'init'])
         (root/'files').mkdir()
         for n in range(count):
             path = root/relative(n)
             path.parent.mkdir(parents=True,exist_ok=True)
             path.write_bytes(content(n))
-        _, committed = command(root, [args.loom, 'commit', '-m', 'same tracked fixture'])
+        _, committed = command(root, [initializer, 'commit', '-m', 'same tracked fixture'])
         revision = committed.decode().strip().split()[-1]
         command(root, ['git', 'add', '--', 'files'])
         command(root, ['git', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'same tracked fixture'])
         # Build an explicit history with changes away from the queried files.
         for n in range(args.history):
             (root/'noise').write_text(f'change {n}\n')
-            command(root, [args.loom, 'add', 'noise'])
-            _, committed = command(root, [args.loom, 'commit', '-m', f'noise {n}'])
+            command(root, [initializer, 'add', 'noise'])
+            _, committed = command(root, [initializer, 'commit', '-m', f'noise {n}'])
             revision = committed.decode().strip().split()[-1]
             command(root, ['git', 'add', '--', 'noise'])
             command(root, ['git', '-c', 'commit.gpgsign=false', 'commit', '-qm', f'noise {n}'])
@@ -114,8 +136,12 @@ def scenario(args, count):
                 ('status_cli', [args.loom, 'status'], ['git', 'status', '--porcelain=v1']),
             ]
             for name, loom_command, git_command in pairs:
-                for engine in (['loom','git'] if repeat % 2 == 0 else ['git','loom']):
-                    elapsed, output = command(root, loom_command if engine == 'loom' else git_command)
+                engines = ['loom','git'] + (['baseline'] if args.baseline_loom else [])
+                engines = engines[repeat % len(engines):] + engines[:repeat % len(engines)]
+                for engine in engines:
+                    selected = git_command if engine == 'git' else loom_command
+                    if engine == 'baseline': selected = [args.baseline_loom, *loom_command[1:]]
+                    elapsed, output = command(root, selected)
                     if name == 'cat_cli': assert output == content(count//2)
                     elif name == 'files_cli': assert output == focus.encode()+b'\0'
                     elif engine == 'git': assert not output, output
@@ -127,49 +153,71 @@ def scenario(args, count):
             expected = [content(n) if n is not None else None for n in indices]
             git_input = ''.join(git_revision+':'+path+'\n' for path in paths).encode()
             loom_input = ''.join(json.dumps({'id':i,'op':'cat','path':path})+'\n' for i,path in enumerate(paths)).encode()
-            for engine in (['loom','git'] if repeat % 2 == 0 else ['git','loom']):
-                if engine == 'loom' and not args.batch: continue
-                elapsed, output = command(root, [args.loom, 'query', '--batch', '@'+revision] if engine == 'loom'
-                                          else ['git', 'cat-file', '--batch'], loom_input if engine == 'loom' else git_input)
-                (parse_loom_batch if engine == 'loom' else parse_git_batch)(output, expected)
-                timings[engine+'_batch'].append(elapsed)
+            modes = [('git_batch', ['git','cat-file','--batch'], git_input, parse_git_batch)]
+            if args.batch:
+                modes.append(('loom_batch', [args.loom,'query','--batch','@'+revision], loom_input, parse_loom_batch))
+                if args.baseline_loom:
+                    modes.append(('baseline_batch', [args.baseline_loom,'query','--batch','@'+revision], loom_input, parse_loom_batch))
+            if args.multi:
+                multi_input = (json.dumps({'id':0,'op':'cat_many','paths':paths})+'\n').encode()
+                modes.append(('loom_multi',[args.loom,'query','--batch','@'+revision],multi_input,parse_loom_multi))
+            modes = modes[repeat % len(modes):] + modes[:repeat % len(modes)]
+            for name, argv, data, verify in modes:
+                elapsed, output = command(root, argv, data)
+                verify(output, expected)
+                timings[name].append(elapsed)
         operations = {name:summary(samples) for name,samples in timings.items() if samples}
         ratios = {name:operations['git_'+name]['p50_ms']/operations['loom_'+name]['p50_ms']
                   for name in ['cat_cli','files_cli','status_cli','batch']
                   if 'loom_'+name in operations}
+        if args.multi: ratios['multi'] = operations['git_batch']['p50_ms']/operations['loom_multi']['p50_ms']
+        baseline_ratios = {name:operations['baseline_'+name]['p50_ms']/operations['loom_'+name]['p50_ms']
+                           for name in ['cat_cli','files_cli','status_cli','batch']
+                           if 'baseline_'+name in operations and 'loom_'+name in operations}
+        if args.multi and args.baseline_loom:
+            baseline_ratios['multi'] = operations['baseline_batch']['p50_ms']/operations['loom_multi']['p50_ms']
         return {'tracked_files':count, 'history_commits':args.history+1,
                 'requests_per_batch':args.requests, 'git_layout':args.git_layout,
                 'fixture_layout':args.layout+'; small binary files; 10% batch misses',
+                'directories':args.directories if args.layout!='wide' else 1,
                 'cache_budget_bytes':64*1024*1024,
                 'repository_logical_bytes':{name:sum(p.stat().st_size for p in (root/name).rglob('*') if p.is_file()) for name in ['.git','.loom']},
                 'operations':operations, 'git_over_loom_p50':ratios,
+                'baseline_over_loom_p50':baseline_ratios,
                 'target_100x_met':{key:value >= 100 for key,value in ratios.items()}}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--loom', required=True, type=lambda x:str(Path(x).resolve()))
+    parser.add_argument('--baseline-loom', type=lambda x:str(Path(x).resolve()))
+    parser.add_argument('--multi', action='store_true', help='Also measure native cat_many on the same path sequence')
+    parser.add_argument('--directories', type=int, default=256)
     parser.add_argument('--files', nargs='+', type=int, default=[1000,10000])
     parser.add_argument('--history', type=int, default=10)
     parser.add_argument('--repeat', type=int, default=5)
     parser.add_argument('--requests', type=int, default=1000)
-    parser.add_argument('--layout', choices=['wide','sharded'], default='wide',
+    parser.add_argument('--layout', choices=['wide','sharded','nested'], default='wide',
                         help='one wide directory or files spread over 256 directories')
     parser.add_argument('--git-layout', choices=['loose','packed'], default='packed')
     parser.add_argument('--batch', action='store_true', help='Measure new Loom persistent query mode too')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
-    if min(args.files) < 1 or args.repeat < 1 or args.requests < 1 or args.history < 0:
+    if args.directories < 1 or min(args.files) < 1 or args.repeat < 1 or args.requests < 1 or args.history < 0:
         parser.error('positive sizes/repetitions/requests and nonnegative history are required')
+    if args.multi and (not args.batch or args.requests > 4096):
+        parser.error('--multi requires --batch and at most 4096 logical requests')
     version = subprocess.check_output(['git','--version'],text=True).strip()
-    report = {'schema_version':1, 'git_version':version,
+    report = {'schema_version':2, 'git_version':version,
               'harness_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+              'baseline_loom_sha256':hashlib.sha256(Path(args.baseline_loom).read_bytes()).hexdigest() if args.baseline_loom else None,
               'loom_sha256':hashlib.sha256(Path(args.loom).read_bytes()).hexdigest(),
               'host':{'platform':platform.platform(),'machine':platform.machine(),'cpus':os.cpu_count(),
                       'cpu_model':next((line.split(':',1)[1].strip() for line in Path('/proc/cpuinfo').read_text().splitlines() if line.startswith('model name')),platform.processor()) if Path('/proc/cpuinfo').exists() else platform.processor(),
                       'filesystem':'overlay (container)' if Path('/.dockerenv').exists() else 'not detected'},
               'conditions':['same tracked bytes; both queries pin immutable revision IDs', 'output verified byte for byte',
                             'process startup included; OS caches warm, not a cold-disk experiment',
+                            'cat_many groups the same paths into one native request; existing line mode is reported separately',
                             'Git cat-file batch compared against Loom batch, not repeated Git launches',
                             'packed Git uses gc and a changed-path commit graph',
                             'peak RSS, CPU time, cold disk and multi-client throughput are not measured',

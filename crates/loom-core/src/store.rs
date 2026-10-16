@@ -236,6 +236,31 @@ impl FilesystemObjectBackend {
 // The first real provider implementation of the pluggable object contract.
 // Keep canonical envelope validation at the backend boundary, not at callers.
 impl crate::storage_backend::ObjectBackend for FilesystemObjectBackend {
+    fn open_read_session(
+        &self,
+    ) -> Result<Option<std::sync::Arc<dyn crate::storage_backend::ObjectReadSession>>> {
+        #[cfg(unix)]
+        {
+            Ok(Some(std::sync::Arc::new(
+                crate::filesystem_read::Reader::open(&self.dir)?,
+            )))
+        }
+        #[cfg(not(unix))]
+        {
+            struct Reader(FilesystemObjectBackend);
+            impl crate::storage_backend::ObjectReadSession for Reader {
+                fn get(&self, id: ObjectId) -> Result<Vec<u8>> {
+                    self.0.get(id)
+                }
+                fn max_concurrent_reads(&self) -> usize {
+                    2
+                }
+            }
+            Ok(Some(std::sync::Arc::new(Reader(FilesystemObjectBackend {
+                dir: self.dir.clone(),
+            }))))
+        }
+    }
     fn capabilities(&self) -> crate::storage_backend::StoreCapabilities {
         crate::storage_backend::StoreCapabilities {
             durable_writes: true,
@@ -333,6 +358,9 @@ impl ObjectStore {
         use crate::storage_backend::ObjectReadSession;
         struct VerifiedSession(std::sync::Arc<dyn ObjectReadSession>);
         impl ObjectReadSession for VerifiedSession {
+            fn max_concurrent_reads(&self) -> usize {
+                self.0.max_concurrent_reads()
+            }
             fn get(&self, id: ObjectId) -> Result<Vec<u8>> {
                 let bytes = self.0.get(id)?;
                 if object_id(&bytes) != id {

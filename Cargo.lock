@@ -224,6 +224,7 @@ dependencies = [
  "fs2",
  "globset",
  "rusqlite",
+ "rustix",
  "tempfile",
 ]
 

@@ -28,12 +28,17 @@ jobs:
             --output loom-scale-results.json
       - name: Compare checked immutable queries with packed Git
         run: |
-          python3 benchmarks/compare_git.py --loom target/release/loom --batch \
+          python3 benchmarks/compare_git.py --loom target/release/loom --batch --multi \
             --files 1000 10000 100000 --repeat 5 --requests 1000 \
             --output loom-git-compare.json
-          python3 benchmarks/compare_git.py --loom target/release/loom --batch \
+          python3 benchmarks/compare_git.py --loom target/release/loom --batch --multi \
             --layout sharded --files 10000 --repeat 5 --requests 1000 \
             --output loom-git-sharded.json
+      - name: Compare deeper directory hierarchies
+        run: |
+          python3 benchmarks/compare_git.py --loom target/release/loom --batch --multi \
+            --layout nested --directories 1024 --files 10000 --repeat 5 --requests 1000 \
+            --output loom-git-nested.json
       - name: Upload raw timing evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -43,5 +48,6 @@ jobs:
             loom-scale-results.json
             loom-git-compare.json
             loom-git-sharded.json
+            loom-git-nested.json
           if-no-files-found: warn
           retention-days: 90

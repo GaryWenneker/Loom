@@ -177,7 +177,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             true,
         )?;
         let snapshot = Repository::query_snapshot(env::current_dir()?, revision, backend, budget)?;
-        batch::serve(&snapshot, std::io::stdin().lock(), std::io::stdout().lock())?;
+        batch::serve(
+            &snapshot,
+            std::io::stdin().lock(),
+            std::io::BufWriter::with_capacity(64 * 1024, std::io::stdout().lock()),
+        )?;
         return Ok(());
     }
     let repo = if let Some(backend) = object_backend(

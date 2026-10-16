@@ -225,6 +225,17 @@ fn query_session_checks_requested_bytes_without_certifying_unrelated_history() {
         Repository::query_snapshot(workspace.path(), tip, Some(backend.clone()), 1024).unwrap();
     assert_eq!(&*query.read_file("file").unwrap().unwrap(), b"current");
     assert!(Repository::discover_with_object_backend(workspace.path(), backend.clone()).is_err());
+    let uncached =
+        Repository::query_snapshot(workspace.path(), tip, Some(backend.clone()), 0).unwrap();
+    let files = uncached
+        .read_files(&["file", "missing", "file"], 14)
+        .unwrap();
+    assert_eq!(&**files[0].as_ref().unwrap(), b"current");
+    assert!(files[1].is_none());
+    assert!(Arc::ptr_eq(
+        files[0].as_ref().unwrap(),
+        files[2].as_ref().unwrap()
+    ));
     db.execute(
         "UPDATE loom_storage_objects SET envelope=x'00' WHERE oid=?1",
         [current_blob.to_string()],
@@ -236,4 +247,70 @@ fn query_session_checks_requested_bytes_without_certifying_unrelated_history() {
     assert!(fresh.read_file("file").is_err());
     assert!(backend.get(current_blob).is_err());
     assert!(Repository::discover_with_object_backend(workspace.path(), backend).is_err());
+}
+
+#[test]
+fn bulk_reads_preserve_order_deduplicate_objects_and_count_repeated_bytes() {
+    let (_dir, repo, revision) = fixture();
+    let snapshot = repo.snapshot(revision).unwrap();
+    let paths = ["z", "missing", "a.txt", "a", "a.txt"];
+    let files = snapshot.read_files(&paths, 14).unwrap();
+    assert_eq!(&**files[0].as_ref().unwrap(), b"last");
+    assert!(files[1].is_none() && files[3].is_none());
+    assert_eq!(&**files[2].as_ref().unwrap(), b"first");
+    assert!(Arc::ptr_eq(
+        files[2].as_ref().unwrap(),
+        files[4].as_ref().unwrap()
+    ));
+    assert_eq!(snapshot.stats().unwrap().blob_reads, 2);
+    assert!(snapshot.read_files(&paths, 13).is_err());
+    assert!(snapshot.read_files(&["z", "../unsafe"], 100).is_err());
+    assert!(snapshot.read_files(&vec!["z"; 4097], 100).is_err());
+    assert!(snapshot
+        .read_files(&["z"], loom_core::MAX_BULK_BYTES + 1)
+        .is_err());
+    assert!(snapshot.read_files::<&str>(&[], 0).unwrap().is_empty());
+    assert!(snapshot.read_files(&["missing"], 0).unwrap()[0].is_none());
+    assert!(repo.fsck().is_ok());
+}
+
+#[test]
+fn bulk_reads_handle_many_directories_disabled_cache_and_corruption() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = Repository::init(dir.path()).unwrap();
+    let mut paths = Vec::new();
+    for n in 0..96 {
+        let path = format!("dir{n}/file");
+        fs::create_dir(dir.path().join(format!("dir{n}"))).unwrap();
+        fs::write(dir.path().join(&path), format!("value {n}")).unwrap();
+        paths.push(path);
+    }
+    let revision = repo.commit("test", "many directories").unwrap();
+    let snapshot = repo.snapshot_with_cache_bytes(revision, 0).unwrap();
+    for (n, bytes) in snapshot
+        .read_files(&paths, 4096)
+        .unwrap()
+        .iter()
+        .enumerate()
+    {
+        assert_eq!(&**bytes.as_ref().unwrap(), format!("value {n}").as_bytes());
+    }
+    assert_eq!(snapshot.stats().unwrap().blob_reads, 96);
+    assert_eq!(snapshot.stats().unwrap().cache_bytes, 0);
+    assert!(snapshot.read_files(&paths, 8).is_err());
+    let blob = repo.log(1).unwrap()[0].1.changes[0]
+        .blob
+        .unwrap()
+        .to_string();
+    fs::write(
+        dir.path()
+            .join(".loom/objects")
+            .join(&blob[..2])
+            .join(&blob[2..]),
+        b"corrupt",
+    )
+    .unwrap();
+    assert!(snapshot.read_files(&paths, 4096).is_err());
+    assert!(repo.fsck().is_err());
+    assert_eq!(repo.head().unwrap(), Some(revision));
 }

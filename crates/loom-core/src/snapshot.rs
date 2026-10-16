@@ -2,11 +2,53 @@
 //! Cache entries are never consulted for publication, recovery or fsck.
 use crate::format::{decode_object, validate_path, BLOB};
 use crate::store::ObjectStore;
-use crate::{Error, NativeTree, ObjectId, Result, TreeEntryKind};
+use crate::tree_index::IndexedTree;
+use crate::{Error, ObjectId, Result, TreeEntryKind};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
+fn parallel_map<T: Sync, R: Send>(
+    work: &[T],
+    workers: usize,
+    load: &(impl Fn(&T) -> Result<R> + Sync),
+) -> Result<Vec<R>> {
+    if workers <= 1 || work.len() < 32 {
+        return work.iter().map(load).collect();
+    }
+    std::thread::scope(|scope| {
+        let tasks: Vec<_> = work
+            .chunks(work.len().div_ceil(workers))
+            .map(|chunk| scope.spawn(move || chunk.iter().map(load).collect::<Result<Vec<_>>>()))
+            .collect();
+        let mut values = Vec::with_capacity(work.len());
+        let mut error = None;
+        // Join every worker, including failures; no read survives the call.
+        for task in tasks {
+            match task.join() {
+                Ok(Ok(items)) => values.extend(items),
+                Ok(Err(cause)) => {
+                    if error.is_none() {
+                        error = Some(cause);
+                    }
+                }
+                Err(_) => {
+                    if error.is_none() {
+                        error = Some(Error::Invalid("snapshot read worker panicked".into()));
+                    }
+                }
+            }
+        }
+        match error {
+            Some(error) => Err(error),
+            None => Ok(values),
+        }
+    })
+}
+
 pub const DEFAULT_SNAPSHOT_CACHE_BYTES: usize = 64 * 1024 * 1024;
+pub const DEFAULT_BULK_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_BULK_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_BULK_PATHS: usize = 4096;
 const MAX_CACHE_BYTES: usize = 256 * 1024 * 1024;
 const MAX_PAGE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_FRONTIER_BYTES: usize = 64 * 1024 * 1024;
@@ -27,7 +69,7 @@ pub struct SnapshotFiles {
 }
 
 enum Cached {
-    Tree(Arc<NativeTree>),
+    Tree(Arc<IndexedTree>),
     Blob(Arc<[u8]>),
 }
 impl Clone for Cached {
@@ -116,32 +158,26 @@ impl Snapshot {
         Ok(self.cache()?.stats)
     }
 
-    fn tree(&self, id: ObjectId, depth: usize) -> Result<Arc<NativeTree>> {
+    fn tree(&self, id: ObjectId, depth: usize) -> Result<Arc<IndexedTree>> {
         if depth > 256 {
             return Err(Error::Invalid("snapshot nesting limit reached".into()));
         }
         if let Some(value) = self.cache()?.get(id) {
             return match value {
-                Cached::Tree(tree) if depth == 0 || !tree.entries.is_empty() => Ok(tree),
+                Cached::Tree(tree) if depth == 0 || !tree.is_empty() => Ok(tree),
                 _ => Err(Error::Invalid(
                     "noncanonical snapshot tree reference".into(),
                 )),
             };
         }
         let bytes = self.reader.get(id)?;
-        let tree = Arc::new(NativeTree::decode(&bytes)?);
-        if depth > 0 && tree.entries.is_empty() {
+        let tree = Arc::new(IndexedTree::decode(bytes)?);
+        if depth > 0 && tree.is_empty() {
             return Err(Error::Invalid(
                 "noncanonical empty snapshot directory".into(),
             ));
         }
-        let weight = std::mem::size_of::<NativeTree>()
-            + tree.entries.capacity() * std::mem::size_of::<crate::TreeEntry>()
-            + tree
-                .entries
-                .iter()
-                .map(|entry| entry.name.capacity())
-                .sum::<usize>();
+        let weight = tree.accounted_bytes();
         let mut cache = self.cache()?;
         cache.stats.tree_reads += 1;
         cache.insert(id, Cached::Tree(tree.clone()), weight);
@@ -154,16 +190,19 @@ impl Snapshot {
                 _ => Err(Error::Invalid("snapshot file references a tree".into())),
             };
         }
+        let content = self.load_blob(id)?;
+        let mut cache = self.cache()?;
+        cache.stats.blob_reads += 1;
+        cache.insert(id, Cached::Blob(content.clone()), content.len());
+        Ok(content)
+    }
+    fn load_blob(&self, id: ObjectId) -> Result<Arc<[u8]>> {
         let bytes = self.reader.get(id)?;
         let (kind, payload) = decode_object(&bytes)?;
         if kind != BLOB {
             return Err(Error::Invalid("snapshot file references a non-blob".into()));
         }
-        let content: Arc<[u8]> = Arc::from(payload);
-        let mut cache = self.cache()?;
-        cache.stats.blob_reads += 1;
-        cache.insert(id, Cached::Blob(content.clone()), content.len());
-        Ok(content)
+        Ok(Arc::from(payload))
     }
     fn resolve(&self, path: &str) -> Result<Option<(ObjectId, TreeEntryKind, usize)>> {
         validate_path(path)?;
@@ -179,10 +218,9 @@ impl Snapshot {
         let mut current = self.root;
         for (depth, part) in path.split('/').enumerate() {
             let tree = self.tree(current, depth)?;
-            let Ok(index) = tree.entries.binary_search_by(|e| e.name.as_str().cmp(part)) else {
+            let Some(entry) = tree.lookup(part) else {
                 return Ok(None);
             };
-            let entry = &tree.entries[index];
             if depth + 1 == count {
                 return Ok(Some((entry.object, entry.kind, depth + 1)));
             }
@@ -198,6 +236,130 @@ impl Snapshot {
             Some((id, TreeEntryKind::File, _)) => self.blob(id).map(Some),
             _ => Ok(None),
         }
+    }
+
+    /// Read a bounded group in input order, including missing paths. Equal
+    /// object IDs are fetched once. Independent object loads may run on at
+    /// most eight scoped workers when the read provider opts into parallelism.
+    /// max_bytes counts returned bytes including repeated paths, not RSS:
+    /// per-object read buffers and the separately bounded cache are additional.
+    /// Errors fail the whole group before a CLI response is emitted.
+    pub fn read_files<P: AsRef<str>>(
+        &self,
+        paths: &[P],
+        max_bytes: usize,
+    ) -> Result<Vec<Option<Arc<[u8]>>>> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        if paths.len() > MAX_BULK_PATHS || max_bytes > MAX_BULK_BYTES {
+            return Err(Error::Invalid(
+                "bulk read exceeds 4096 paths or 64 MiB byte limit".into(),
+            ));
+        }
+        let workers = self
+            .reader
+            .max_concurrent_reads()
+            .clamp(1, 8)
+            .min(std::thread::available_parallelism().map_or(1, usize::from));
+        let mut ids = vec![None; paths.len()];
+        let mut groups = BTreeMap::<&str, Vec<(usize, &str)>>::new();
+        for (index, path) in paths.iter().enumerate() {
+            let path = path.as_ref();
+            validate_path(path)?;
+            if path.len() > MAX_PAGE_BYTES || path.split('/').count() > 256 {
+                return Err(Error::Invalid(
+                    "bulk path size or nesting limit reached".into(),
+                ));
+            }
+            let (parent, name) = path.rsplit_once('/').unwrap_or(("", path));
+            groups.entry(parent).or_default().push((index, name));
+        }
+        // Resolve each requested parent once, keeping its compact directory
+        // view for all names in the group, even when the persistent cache is off.
+        for (parent, names) in groups {
+            let directory = if parent.is_empty() {
+                Some((self.root, TreeEntryKind::Directory, 0))
+            } else {
+                self.resolve(parent)?
+            };
+            if let Some((id, TreeEntryKind::Directory, depth)) = directory {
+                let tree = self.tree(id, depth)?;
+                for (index, name) in names {
+                    if let Some(entry) = tree.lookup(name) {
+                        if entry.kind == TreeEntryKind::File {
+                            ids[index] = Some(entry.object);
+                        }
+                    }
+                }
+            }
+        }
+        let mut uses = BTreeMap::<ObjectId, usize>::new();
+        for id in ids.iter().flatten() {
+            *uses.entry(*id).or_default() += 1;
+        }
+        let remaining = AtomicUsize::new(max_bytes);
+        let reserve = |len: usize, count: usize| -> Result<()> {
+            let bytes = len
+                .checked_mul(count)
+                .ok_or_else(|| Error::Invalid("bulk byte count overflow".into()))?;
+            let mut left = remaining.load(Ordering::Relaxed);
+            loop {
+                let next = left.checked_sub(bytes).ok_or_else(|| {
+                    Error::Invalid("bulk file content exceeds byte budget".into())
+                })?;
+                match remaining.compare_exchange_weak(
+                    left,
+                    next,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => return Ok(()),
+                    Err(current) => left = current,
+                }
+            }
+        };
+        let mut values = HashMap::with_capacity(uses.len());
+        let mut work = Vec::with_capacity(uses.len());
+        {
+            let mut cache = self.cache()?;
+            for (id, count) in uses {
+                match cache.get(id) {
+                    Some(Cached::Blob(content)) => {
+                        reserve(content.len(), count)?;
+                        values.insert(id, content);
+                    }
+                    Some(Cached::Tree(_)) => {
+                        return Err(Error::Invalid("bulk file references a tree".into()))
+                    }
+                    None => work.push((id, count)),
+                }
+            }
+        }
+        let load = |&(id, count): &(ObjectId, usize)| -> Result<_> {
+            let content = self.load_blob(id)?;
+            reserve(content.len(), count)?;
+            Ok((id, content))
+        };
+        let loaded: HashMap<_, _> = parallel_map(&work, workers, &load)?.into_iter().collect();
+        {
+            // Publish verified cache entries together, outside all I/O workers.
+            let mut cache = self.cache()?;
+            for (id, content) in &loaded {
+                cache.stats.blob_reads += 1;
+                cache.insert(*id, Cached::Blob(content.clone()), content.len());
+            }
+        }
+        values.extend(loaded);
+        ids.into_iter()
+            .map(|id| {
+                id.map(|id| {
+                    values
+                        .get(&id)
+                        .cloned()
+                        .ok_or_else(|| Error::Invalid("bulk reader omitted an object".into()))
+                })
+                .transpose()
+            })
+            .collect()
     }
     /// Lexically ordered, bounded page. Prefix matches a complete file or
     /// directory component; the cursor is the last emitted full path.
@@ -251,7 +413,7 @@ impl Snapshot {
                 ));
             }
             if kind == TreeEntryKind::Directory {
-                for entry in &self.tree(id, depth)?.entries {
+                for entry in self.tree(id, depth)?.entries() {
                     let child = format!(
                         "{path}{}{}",
                         entry.name,
@@ -298,6 +460,7 @@ impl Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NativeTree;
 
     #[test]
     fn listing_and_reading_enforce_the_same_path_depth_boundary() {

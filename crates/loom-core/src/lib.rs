@@ -1,6 +1,8 @@
 //! Loom: an independent content-addressed version control engine.
 //! Native storage and history have no Git runtime dependency.
 pub mod cloud_storage;
+#[cfg(unix)]
+mod filesystem_read;
 mod format;
 mod ignore;
 pub mod memory_storage;
@@ -13,10 +15,14 @@ pub mod storage_backend;
 mod store;
 mod text_merge;
 mod tree;
+mod tree_index;
 
 pub use format::{Change, ChangeKind, Changeset, ObjectId};
 pub use repository::{FileDiff, Repository, StatusEntry, StatusKind};
-pub use snapshot::{Snapshot, SnapshotFiles, SnapshotStats, DEFAULT_SNAPSHOT_CACHE_BYTES};
+pub use snapshot::{
+    Snapshot, SnapshotFiles, SnapshotStats, DEFAULT_BULK_BYTES, DEFAULT_SNAPSHOT_CACHE_BYTES,
+    MAX_BULK_BYTES, MAX_BULK_PATHS,
+};
 pub use store::FilesystemObjectBackend;
 pub use tree::{NativeTree, TreeEntry, TreeEntryKind};
 

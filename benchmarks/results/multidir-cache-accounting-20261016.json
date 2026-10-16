@@ -1,0 +1,36 @@
+{
+  "tracked_files": 10000,
+  "leaf_directories": 256,
+  "logical_path_requests": 1000,
+  "note": "accounted object-cache bytes, not process RSS; directory handles are separate",
+  "previous": {
+    "binary_sha256": "dcc5d7c1b30c2ac7194ed5c8c63fccab080bb4ebe51bb427290aada4aaccf5f5",
+    "stats": {
+      "blob_reads": 868,
+      "cache_bytes": 1355270,
+      "cache_entries": 1124,
+      "cache_hits": 2677,
+      "id": 1000,
+      "kind": "stats",
+      "ok": true,
+      "protocol": 1,
+      "root": "d1d650688a2dd85115b8abc6d4a60f3b50cf9c772034bf9351be3cfc7760bb59",
+      "tree_reads": 256
+    }
+  },
+  "grouped": {
+    "binary_sha256": "306e683806e89e7880b721b27e5fc0cfee6ebe1f2bba29d7e4a3b6accaeab62b",
+    "stats": {
+      "blob_reads": 868,
+      "cache_bytes": 739118,
+      "cache_entries": 1124,
+      "cache_hits": 509,
+      "id": 1000,
+      "kind": "stats",
+      "ok": true,
+      "protocol": 1,
+      "root": "d1d650688a2dd85115b8abc6d4a60f3b50cf9c772034bf9351be3cfc7760bb59",
+      "tree_reads": 256
+    }
+  }
+}
