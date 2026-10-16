@@ -139,6 +139,7 @@ pub fn serve(
                 "id":id,"ok":true,"kind":"stats","protocol":1,"root":snapshot.root().to_string(),
                 "tree_reads":stats.tree_reads,"blob_reads":stats.blob_reads,"cache_hits":stats.cache_hits,
                 "cache_bytes":stats.cache_bytes,"cache_entries":stats.cache_entries,
+                "path_cache_hits":stats.path_cache_hits,"path_cache_entries":stats.path_cache_entries,
                 "read_pack_index_bytes":stats.read_pack_index_bytes,"read_pack_objects":stats.read_pack_objects,
             }), None)),
         };

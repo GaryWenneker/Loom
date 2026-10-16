@@ -39,6 +39,11 @@ jobs:
           python3 benchmarks/compare_git.py --loom target/release/loom --batch --multi --read-pack \
             --layout nested --directories 1024 --files 10000 --repeat 5 --requests 1000 \
             --output loom-git-nested.json
+      - name: Compare repeated immutable working sets
+        run: |
+          python3 benchmarks/compare_git.py --loom target/release/loom --batch --multi \
+            --layout nested --directories 1024 --files 10000 --rounds 100 --repeat 10 --requests 1000 \
+            --output loom-working-set.json
       - name: Upload raw timing evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -49,5 +54,6 @@ jobs:
             loom-git-compare.json
             loom-git-sharded.json
             loom-git-nested.json
+            loom-working-set.json
           if-no-files-found: warn
           retention-days: 90

@@ -55,12 +55,31 @@ revision-to-root index is trusted for normal queries, as by existing tree reads.
 This feature does not change object IDs or the on-disk schema.
 
 The per-session FIFO cache retains verified immutable tree bytes, compact
-entry-offset indexes, and blob payloads. Names borrow the verified tree buffer;
+entry-offset indexes, blob payloads and exact file-path answers (including
+missing/directory answers). Names borrow the verified tree buffer;
 ordinary owned trees and read views share one canonical validator.
 Default budget is 64 MiB, configurable from zero (disabled) through 256 MiB.
 Accounting includes content capacity and estimated per-entry bookkeeping; it is
 not a process RSS limit and excludes Arc values retained by API consumers.
 Stats expose physical tree/blob reads, cache hits, entries and accounted bytes.
+`path_cache_hits` and `path_cache_entries` identify exact-path reuse. Total
+`cache_entries` and `cache_hits` include both object and path entries.
+
+Path answers are private to this immutable root. Cache misses validate path size,
+syntax and nesting before I/O; exact hits reuse only previously validated keys
+and verified answers. Ref/worktree changes cannot make an old root's missing
+path appear. Scalar and grouped reads share these answers. A group checks its
+returned-byte limit even on cached duplicates, and inserts new path answers only
+after the whole group succeeds. All cache mutations remain mutex protected.
+
+Object and path entries compete in the same FIFO and the same byte budget. Path
+accounting includes both owned path strings and bookkeeping, and conservatively
+counts the payload per path even when Arc content is shared with another entry.
+Zero budget disables both. Retained answers are not live-existence authority;
+fresh views without a selected pack and all publication/fsck paths still use
+live storage. A hot working set can avoid further tree walks. It does not remove
+JSON parsing, response framing, or first-group storage costs. CPU/cgroup worker
+discovery is deferred until enough uncached objects need parallel I/O.
 
 SQLite providers retain one mutex-protected **read-only** connection per session.
 Other providers can opt into the separate `ObjectReadSession` capability, with a

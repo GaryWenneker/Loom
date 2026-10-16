@@ -60,6 +60,8 @@ pub struct SnapshotStats {
     pub cache_hits: u64,
     pub cache_bytes: usize,
     pub cache_entries: usize,
+    pub path_cache_hits: u64,
+    pub path_cache_entries: usize,
     /// Retained read-pack index allocation, separate from cache_bytes/budget.
     pub read_pack_index_bytes: usize,
     pub read_pack_objects: usize,
@@ -83,13 +85,72 @@ impl Clone for Cached {
         }
     }
 }
+enum CacheKey {
+    Object(ObjectId),
+    Path(String),
+}
+struct PathEntry {
+    content: Option<Arc<[u8]>>,
+    weight: usize,
+}
 struct Cache {
     entries: HashMap<ObjectId, (Cached, usize)>,
-    order: VecDeque<ObjectId>,
+    paths: HashMap<String, PathEntry>,
+    order: VecDeque<CacheKey>,
     budget: usize,
     stats: SnapshotStats,
 }
 impl Cache {
+    fn get_path(&mut self, path: &str) -> Option<Option<Arc<[u8]>>> {
+        let value = self.paths.get(path).map(|entry| entry.content.clone());
+        if value.is_some() {
+            self.stats.cache_hits += 1;
+            self.stats.path_cache_hits += 1;
+        }
+        value
+    }
+    fn make_room(&mut self, weight: usize) {
+        while self.stats.cache_bytes.saturating_add(weight) > self.budget {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            let removed = match oldest {
+                CacheKey::Object(id) => self.entries.remove(&id).map(|(_, size)| size),
+                CacheKey::Path(path) => self.paths.remove(&path).map(|entry| entry.weight),
+            };
+            if let Some(size) = removed {
+                self.stats.cache_bytes -= size;
+            }
+        }
+    }
+    fn update_counts(&mut self) {
+        self.stats.path_cache_entries = self.paths.len();
+        self.stats.cache_entries = self.entries.len() + self.paths.len();
+    }
+    fn insert_path(&mut self, path: &str, value: Option<Arc<[u8]>>) {
+        // Count the payload for every retained path conservatively, even when
+        // an object-cache entry or another path shares the same Arc. Account
+        // both owned path strings (map and FIFO), plus bookkeeping.
+        let weight = value
+            .as_ref()
+            .map_or(0, |bytes| bytes.len())
+            .saturating_add(path.len().saturating_mul(2))
+            .saturating_add(256);
+        if weight > self.budget || self.paths.contains_key(path) {
+            return;
+        }
+        self.make_room(weight);
+        self.stats.cache_bytes += weight;
+        self.paths.insert(
+            path.to_owned(),
+            PathEntry {
+                content: value,
+                weight,
+            },
+        );
+        self.order.push_back(CacheKey::Path(path.to_owned()));
+        self.update_counts();
+    }
     fn get(&mut self, id: ObjectId) -> Option<Cached> {
         let value = self.entries.get(&id).map(|(value, _)| value.clone());
         if value.is_some() {
@@ -103,18 +164,11 @@ impl Cache {
         if weight > self.budget || self.entries.contains_key(&id) {
             return;
         }
-        while self.stats.cache_bytes.saturating_add(weight) > self.budget {
-            let Some(oldest) = self.order.pop_front() else {
-                break;
-            };
-            if let Some((_, size)) = self.entries.remove(&oldest) {
-                self.stats.cache_bytes -= size;
-            }
-        }
+        self.make_room(weight);
         self.stats.cache_bytes += weight;
         self.entries.insert(id, (value, weight));
-        self.order.push_back(id);
-        self.stats.cache_entries = self.entries.len();
+        self.order.push_back(CacheKey::Object(id));
+        self.update_counts();
     }
 }
 
@@ -160,6 +214,7 @@ impl Snapshot {
             reader,
             cache: Mutex::new(Cache {
                 entries: HashMap::new(),
+                paths: HashMap::new(),
                 order: VecDeque::new(),
                 budget,
                 stats,
@@ -254,10 +309,22 @@ impl Snapshot {
         Ok(None)
     }
     pub fn read_file(&self, path: &str) -> Result<Option<Arc<[u8]>>> {
-        match self.resolve(path)? {
+        if path.len() > MAX_PAGE_BYTES {
+            return Err(Error::Invalid(
+                "snapshot path exceeds query size limit".into(),
+            ));
+        }
+        // Only fully validated paths are ever inserted. An exact key hit in
+        // this immutable-root view cannot acquire new path semantics.
+        if let Some(value) = self.cache()?.get_path(path) {
+            return Ok(value);
+        }
+        let value = match self.resolve(path)? {
             Some((id, TreeEntryKind::File, _)) => self.blob(id).map(Some),
             _ => Ok(None),
-        }
+        }?;
+        self.cache()?.insert_path(path, value.clone());
+        Ok(value)
     }
 
     /// Read a bounded group in input order, including missing paths. Equal
@@ -277,20 +344,55 @@ impl Snapshot {
                 "bulk read exceeds 4096 paths or 64 MiB byte limit".into(),
             ));
         }
-        let workers = self
-            .reader
-            .max_concurrent_reads()
-            .clamp(1, 8)
-            .min(std::thread::available_parallelism().map_or(1, usize::from));
-        let mut ids = vec![None; paths.len()];
-        let mut groups = BTreeMap::<&str, Vec<(usize, &str)>>::new();
-        for (index, path) in paths.iter().enumerate() {
-            let path = path.as_ref();
-            validate_path(path)?;
-            if path.len() > MAX_PAGE_BYTES || path.split('/').count() > 256 {
+        // AsRef implementations may choose a different view on each call.
+        // Capture once so validation, lookup, I/O and insertion use one key.
+        let paths: Vec<&str> = paths.iter().map(|path| path.as_ref()).collect();
+        for &path in &paths {
+            if path.len() > MAX_PAGE_BYTES {
                 return Err(Error::Invalid(
                     "bulk path size or nesting limit reached".into(),
                 ));
+            }
+        }
+        let mut left = max_bytes;
+        let cached: Vec<_> = {
+            let mut cache = self.cache()?;
+            paths
+                .iter()
+                .map(|&path| {
+                    let value = cache.get_path(path);
+                    if let Some(Some(bytes)) = &value {
+                        left = left.checked_sub(bytes.len()).ok_or_else(|| {
+                            Error::Invalid("bulk file content exceeds byte budget".into())
+                        })?;
+                    }
+                    Ok(value)
+                })
+                .collect::<Result<_>>()?
+        };
+        // Hits are exact, previously validated keys bound to this root. Check
+        // all misses before any tree/object I/O or publishing new path answers.
+        for (&path, hit) in paths.iter().zip(cached.iter()) {
+            if hit.is_none() {
+                validate_path(path)?;
+                if path.split('/').count() > 256 {
+                    return Err(Error::Invalid(
+                        "bulk path size or nesting limit reached".into(),
+                    ));
+                }
+            }
+        }
+        if cached.iter().all(Option::is_some) {
+            return Ok(cached
+                .into_iter()
+                .map(|value| value.expect("all paths cached"))
+                .collect());
+        }
+        let mut ids = vec![None; paths.len()];
+        let mut groups = BTreeMap::<&str, Vec<(usize, &str)>>::new();
+        for (index, &path) in paths.iter().enumerate() {
+            if cached[index].is_some() {
+                continue;
             }
             let (parent, name) = path.rsplit_once('/').unwrap_or(("", path));
             groups.entry(parent).or_default().push((index, name));
@@ -318,7 +420,7 @@ impl Snapshot {
         for id in ids.iter().flatten() {
             *uses.entry(*id).or_default() += 1;
         }
-        let remaining = AtomicUsize::new(max_bytes);
+        let remaining = AtomicUsize::new(left);
         let reserve = |len: usize, count: usize| -> Result<()> {
             let bytes = len
                 .checked_mul(count)
@@ -361,6 +463,16 @@ impl Snapshot {
             reserve(content.len(), count)?;
             Ok((id, content))
         };
+        // CPU/cgroup discovery is unnecessary when all objects are cached or
+        // the serial threshold applies. It can itself involve filesystem I/O.
+        let workers = if work.len() >= 32 {
+            self.reader
+                .max_concurrent_reads()
+                .clamp(1, 8)
+                .min(std::thread::available_parallelism().map_or(1, usize::from))
+        } else {
+            1
+        };
         let loaded: HashMap<_, _> = parallel_map(&work, workers, &load)?.into_iter().collect();
         {
             // Publish verified cache entries together, outside all I/O workers.
@@ -371,8 +483,13 @@ impl Snapshot {
             }
         }
         values.extend(loaded);
-        ids.into_iter()
-            .map(|id| {
+        let result: Vec<_> = ids
+            .into_iter()
+            .zip(cached.iter())
+            .map(|(id, cached)| {
+                if let Some(value) = cached {
+                    return Ok(value.clone());
+                }
                 id.map(|id| {
                     values
                         .get(&id)
@@ -381,7 +498,14 @@ impl Snapshot {
                 })
                 .transpose()
             })
-            .collect()
+            .collect::<Result<_>>()?;
+        let mut cache = self.cache()?;
+        for ((&path, value), cached) in paths.iter().zip(result.iter()).zip(cached.iter()) {
+            if cached.is_none() {
+                cache.insert_path(path, value.clone());
+            }
+        }
+        Ok(result)
     }
     /// Lexically ordered, bounded page. Prefix matches a complete file or
     /// directory component; the cursor is the last emitted full path.
