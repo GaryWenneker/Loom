@@ -79,3 +79,6 @@ flags. Five samples give only a rough tail estimate. Peak RSS, CPU time, cold
 storage, network access and concurrent clients are not measured. Never infer
 an overall speed guarantee from a batch result. In particular, clean status
 still scans file contents and remains an explicit bottleneck.
+
+[Measured 2026-10-16 results](../docs/performance-20261016.md) include raw wide and
+sharded samples and explicitly retain operations that miss the 100× goal.
