@@ -389,32 +389,44 @@ impl Snapshot {
                 .collect());
         }
         let mut ids = vec![None; paths.len()];
-        let mut groups = BTreeMap::<&str, Vec<(usize, &str)>>::new();
-        for (index, &path) in paths.iter().enumerate() {
-            if cached[index].is_some() {
-                continue;
-            }
-            let (parent, name) = path.rsplit_once('/').unwrap_or(("", path));
-            groups.entry(parent).or_default().push((index, name));
-        }
-        // Resolve each requested parent once, keeping its compact directory
-        // view for all names in the group, even when the persistent cache is off.
-        for (parent, names) in groups {
-            let directory = if parent.is_empty() {
-                Some((self.root, TreeEntryKind::Directory, 0))
-            } else {
-                self.resolve(parent)?
-            };
-            if let Some((id, TreeEntryKind::Directory, depth)) = directory {
+        let unresolved: Vec<_> = paths
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| cached[*index].is_none())
+            .map(|(index, _)| (index, 0usize))
+            .collect();
+        let mut frontier = BTreeMap::from([(self.root, unresolved)]);
+        let mut depth = 0;
+        while !frontier.is_empty() {
+            // Share ancestors and directory DAGs at each depth, including
+            // zero-cache reads. Keep only slot/offset records between levels,
+            // dropping each tree before loading the next: no retained stack
+            // or whole layer of potentially large tree buffers.
+            let mut children = BTreeMap::<ObjectId, Vec<(usize, usize)>>::new();
+            for (id, queries) in frontier {
                 let tree = self.tree(id, depth)?;
-                for (index, name) in names {
+                for (index, offset) in queries {
+                    let suffix = &paths[index][offset..];
+                    let (name, rest) = match suffix.split_once('/') {
+                        Some((name, rest)) => (name, Some(rest)),
+                        None => (suffix, None),
+                    };
                     if let Some(entry) = tree.lookup(name) {
-                        if entry.kind == TreeEntryKind::File {
-                            ids[index] = Some(entry.object);
+                        match (rest, entry.kind) {
+                            (None, TreeEntryKind::File) => ids[index] = Some(entry.object),
+                            (Some(_), TreeEntryKind::Directory) => {
+                                children
+                                    .entry(entry.object)
+                                    .or_default()
+                                    .push((index, offset + name.len() + 1));
+                            }
+                            _ => {}
                         }
                     }
                 }
             }
+            frontier = children;
+            depth += 1;
         }
         let mut uses = BTreeMap::<ObjectId, usize>::new();
         for id in ids.iter().flatten() {
@@ -463,13 +475,15 @@ impl Snapshot {
             reserve(content.len(), count)?;
             Ok((id, content))
         };
-        // CPU/cgroup discovery is unnecessary when all objects are cached or
-        // the serial threshold applies. It can itself involve filesystem I/O.
+        // CPU/cgroup discovery is unnecessary when all objects are cached,
+        // the serial threshold applies, or the provider requests serial I/O.
         let workers = if work.len() >= 32 {
-            self.reader
-                .max_concurrent_reads()
-                .clamp(1, 8)
-                .min(std::thread::available_parallelism().map_or(1, usize::from))
+            let hint = self.reader.max_concurrent_reads().clamp(1, 8);
+            if hint > 1 {
+                hint.min(std::thread::available_parallelism().map_or(1, usize::from))
+            } else {
+                1
+            }
         } else {
             1
         };
@@ -609,6 +623,138 @@ mod tests {
     use crate::NativeTree;
 
     #[test]
+    fn bulk_traversal_shares_ancestors_and_directory_dags_without_a_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::Repository::init(dir.path()).unwrap();
+        let store = ObjectStore::new(&dir.path().join(".loom"));
+        let mut state = BTreeMap::new();
+        let mut paths = Vec::new();
+        for alias in ["left", "right"] {
+            for n in 0..96 {
+                let blob = store.put(BLOB, format!("value {n}").as_bytes()).unwrap();
+                let path = format!("{alias}/上/é/dir{n:03}/file");
+                state.insert(path.clone(), blob);
+                paths.push(path);
+            }
+        }
+        let root = crate::tree::write_snapshot(&store, &state).unwrap();
+        paths.extend([
+            "left/上/é/dir000".into(),
+            "left/上/é/dir000/file/child".into(),
+            "left/上/é/dir000/missing".into(),
+            "absent/上/é/dir000/file".into(),
+        ]);
+        for budget in [0, 512, DEFAULT_SNAPSHOT_CACHE_BYTES] {
+            let snapshot = Snapshot::new(root, store.clone(), budget).unwrap();
+            let before = snapshot.stats().unwrap();
+            let values = snapshot.read_files(&paths, 4096).unwrap();
+            for n in 0..96 {
+                assert_eq!(values[n].as_deref(), Some(format!("value {n}").as_bytes()));
+                assert!(Arc::ptr_eq(
+                    values[n].as_ref().unwrap(),
+                    values[n + 96].as_ref().unwrap()
+                ));
+            }
+            assert!(values[192..].iter().all(Option::is_none));
+            let after = snapshot.stats().unwrap();
+            // Root + three shared ancestors + 96 distinct leaves. Both aliases
+            // share the same DAG, even when none of it fits the cache.
+            assert_eq!(
+                after.tree_reads - before.tree_reads,
+                if budget == 0 { 100 } else { 99 }
+            );
+            assert_eq!(after.blob_reads, 96);
+            assert!(after.cache_bytes <= budget);
+            assert!(snapshot.read_files(&paths, 1).is_err());
+        }
+        // Corrupt one leaf of the shared directory layer. Successful siblings
+        // may populate the object cache, but no partial path answers escape.
+        let mut id = root;
+        for component in ["left", "上", "é", "dir000"] {
+            id = NativeTree::decode(&store.get(id).unwrap())
+                .unwrap()
+                .entries
+                .into_iter()
+                .find(|entry| entry.name == component)
+                .unwrap()
+                .object;
+        }
+        let hex = id.to_string();
+        let path = dir
+            .path()
+            .join(".loom/objects")
+            .join(&hex[..2])
+            .join(&hex[2..]);
+        let original = std::fs::read(&path).unwrap();
+        let snapshot = Snapshot::new(root, store, DEFAULT_SNAPSHOT_CACHE_BYTES).unwrap();
+        std::fs::write(&path, b"corrupt tree").unwrap();
+        assert!(snapshot.read_files(&paths, 4096).is_err());
+        assert_eq!(snapshot.stats().unwrap().path_cache_entries, 0);
+        std::fs::write(&path, original).unwrap();
+        assert_eq!(
+            snapshot.read_files(&paths, 4096).unwrap().len(),
+            paths.len()
+        );
+    }
+
+    #[test]
+    fn bulk_traversal_handles_one_tree_at_different_depths_and_invalid_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::Repository::init(dir.path()).unwrap();
+        let store = ObjectStore::new(&dir.path().join(".loom"));
+        let blob = store.put(BLOB, b"shared bytes").unwrap();
+        let write_tree = |entries: &[(&str, ObjectId, TreeEntryKind)]| {
+            let encoded = NativeTree {
+                entries: entries
+                    .iter()
+                    .map(|&(name, object, kind)| crate::TreeEntry {
+                        name: name.into(),
+                        object,
+                        kind,
+                        executable: false,
+                    })
+                    .collect(),
+            }
+            .encode()
+            .unwrap();
+            store
+                .put(crate::format::TREE, decode_object(&encoded).unwrap().1)
+                .unwrap()
+        };
+        let leaf = write_tree(&[("file", blob, TreeEntryKind::File)]);
+        let branch = write_tree(&[("alias", leaf, TreeEntryKind::Directory)]);
+        let empty = write_tree(&[]);
+        let root = write_tree(&[
+            ("deep", branch, TreeEntryKind::Directory),
+            ("empty", empty, TreeEntryKind::Directory),
+            ("shallow", leaf, TreeEntryKind::Directory),
+            ("wrong", blob, TreeEntryKind::Directory),
+        ]);
+        let snapshot = Snapshot::new(root, store, 0).unwrap();
+        let values = snapshot
+            .read_files(
+                &[
+                    "shallow/file",
+                    "deep/alias/file",
+                    "shallow",
+                    "shallow/file/child",
+                    "deep/missing/file",
+                ],
+                24,
+            )
+            .unwrap();
+        assert_eq!(values[0].as_deref(), Some(b"shared bytes".as_slice()));
+        assert!(Arc::ptr_eq(
+            values[0].as_ref().unwrap(),
+            values[1].as_ref().unwrap()
+        ));
+        assert!(values[2..].iter().all(Option::is_none));
+        assert!(snapshot.read_files(&["empty/file"], 100).is_err());
+        assert!(snapshot.read_files(&["wrong/file"], 100).is_err());
+        assert_eq!(snapshot.stats().unwrap().cache_bytes, 0);
+    }
+
+    #[test]
     fn listing_and_reading_enforce_the_same_path_depth_boundary() {
         let dir = tempfile::tempdir().unwrap();
         crate::Repository::init(dir.path()).unwrap();
@@ -640,6 +786,11 @@ mod tests {
                     std::slice::from_ref(&path)
                 );
                 assert_eq!(&*snapshot.read_file(&path).unwrap().unwrap(), b"deep");
+                let uncached = Snapshot::new(root, store.clone(), 0).unwrap();
+                assert_eq!(
+                    uncached.read_files(&[path.as_str()], 4).unwrap()[0].as_deref(),
+                    Some(b"deep".as_slice())
+                );
             }
         }
         let snapshot = Snapshot::new(root, store, DEFAULT_SNAPSHOT_CACHE_BYTES).unwrap();
@@ -650,6 +801,9 @@ mod tests {
             .contains("nesting"));
         assert!(snapshot
             .read_file(&format!("{}z", "a/".repeat(256)))
+            .is_err());
+        assert!(snapshot
+            .read_files(&[format!("{}z", "a/".repeat(256))], 4)
             .is_err());
     }
 }

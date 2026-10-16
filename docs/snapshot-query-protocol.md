@@ -62,6 +62,7 @@ Default budget is 64 MiB, configurable from zero (disabled) through 256 MiB.
 Accounting includes content capacity and estimated per-entry bookkeeping; it is
 not a process RSS limit and excludes Arc values retained by API consumers.
 Stats expose physical tree/blob reads, cache hits, entries and accounted bytes.
+Sharing ancestors can reduce cache lookups/hits without increasing physical I/O.
 `path_cache_hits` and `path_cache_entries` identify exact-path reuse. Total
 `cache_entries` and `cache_hits` include both object and path entries.
 
@@ -79,7 +80,8 @@ Zero budget disables both. Retained answers are not live-existence authority;
 fresh views without a selected pack and all publication/fsck paths still use
 live storage. A hot working set can avoid further tree walks. It does not remove
 JSON parsing, response framing, or first-group storage costs. CPU/cgroup worker
-discovery is deferred until enough uncached objects need parallel I/O.
+discovery is deferred until enough uncached blobs need parallel I/O. Serial
+providers skip CPU discovery.
 
 SQLite providers retain one mutex-protected **read-only** connection per session.
 Other providers can opt into the separate `ObjectReadSession` capability, with a
@@ -173,12 +175,21 @@ error. This extends protocol 1; existing `cat`/`files`/`stats` frames are unchan
 Output is buffered within each reply and always flushed before awaiting another
 request, including interactive clients that keep stdin open.
 
-Grouped reads resolve each parent directory once, deduplicate object IDs and
-load objects in ID order for filesystem locality. Object I/O uses scoped workers,
-at most eight and no more than the provider hint/available CPU count. Filesystem
-read sessions currently request two workers; SQLite and other serial sessions
-retain the default of one. Snapshot object-cache changes happen outside the object-I/O workers. Every
-worker is joined on success, error or panic before the call returns.
+Grouped reads traverse requested components by depth. Each directory object is
+loaded once per depth, sharing ancestors and identical directory DAGs even with
+zero cache. Frontier records contain input-slot indices and byte offsets into
+the already validated input strings; the 4,096-path limit bounds each frontier.
+Directory work is sorted by object ID for filesystem locality and runs serially.
+Each tree is released after routing its queries, so only one active tree, rather
+than a stack or an entire layer of large tree buffers, is needed outside the cache.
+
+Deduplicated blob work is likewise sorted by object ID. Groups of at least 32
+use scoped workers, at most eight and no more than the provider hint/available
+CPU count. Filesystem read sessions currently request two workers; SQLite and
+other serial sessions retain the default of one. Blob cache entries are
+published after all blob workers succeed. Path answers are published only after
+the entire request succeeds. Every worker is joined on success, error or panic
+before the call returns.
 
 `max_bytes` limits returned content, not peak RSS. The separate snapshot cache,
 indexes, reply metadata and temporary object-read buffers are additional. Each
