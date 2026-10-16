@@ -3,47 +3,10 @@
 use crate::format::{decode_object, validate_path, BLOB};
 use crate::store::ObjectStore;
 use crate::tree_index::IndexedTree;
+use crate::workers::parallel_map;
 use crate::{Error, ObjectId, Result, TreeEntryKind};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
-
-fn parallel_map<T: Sync, R: Send>(
-    work: &[T],
-    workers: usize,
-    load: &(impl Fn(&T) -> Result<R> + Sync),
-) -> Result<Vec<R>> {
-    if workers <= 1 || work.len() < 32 {
-        return work.iter().map(load).collect();
-    }
-    std::thread::scope(|scope| {
-        let tasks: Vec<_> = work
-            .chunks(work.len().div_ceil(workers))
-            .map(|chunk| scope.spawn(move || chunk.iter().map(load).collect::<Result<Vec<_>>>()))
-            .collect();
-        let mut values = Vec::with_capacity(work.len());
-        let mut error = None;
-        // Join every worker, including failures; no read survives the call.
-        for task in tasks {
-            match task.join() {
-                Ok(Ok(items)) => values.extend(items),
-                Ok(Err(cause)) => {
-                    if error.is_none() {
-                        error = Some(cause);
-                    }
-                }
-                Err(_) => {
-                    if error.is_none() {
-                        error = Some(Error::Invalid("snapshot read worker panicked".into()));
-                    }
-                }
-            }
-        }
-        match error {
-            Some(error) => Err(error),
-            None => Ok(values),
-        }
-    })
-}
 
 pub const DEFAULT_SNAPSHOT_CACHE_BYTES: usize = 64 * 1024 * 1024;
 pub const DEFAULT_BULK_BYTES: usize = 16 * 1024 * 1024;

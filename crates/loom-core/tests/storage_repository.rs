@@ -232,3 +232,91 @@ fn filesystem_and_sqlite_replicas_preserve_identical_native_history() {
     );
     assert!(repo.fsck().unwrap() > 0);
 }
+
+#[test]
+fn failed_parallel_publication_leaves_refs_unchanged_and_retry_is_lossless() {
+    struct Failing {
+        inner: FilesystemObjectBackend,
+        calls: AtomicUsize,
+        fail_after: AtomicUsize,
+        active: AtomicUsize,
+    }
+    struct Active<'a>(&'a AtomicUsize);
+    impl Drop for Active<'_> {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+    impl ObjectBackend for Failing {
+        fn capabilities(&self) -> StoreCapabilities {
+            self.inner.capabilities()
+        }
+        fn get(&self, id: ObjectId) -> Result<Vec<u8>> {
+            self.inner.get(id)
+        }
+        fn exists(&self, id: ObjectId) -> Result<bool> {
+            self.inner.exists(id)
+        }
+        fn list_ids(&self) -> Result<Vec<ObjectId>> {
+            self.inner.list_ids()
+        }
+        fn max_concurrent_writes(&self) -> usize {
+            4
+        }
+        fn put_if_absent(&self, id: ObjectId, bytes: &[u8]) -> Result<()> {
+            self.active.fetch_add(1, Ordering::SeqCst);
+            let _active = Active(&self.active);
+            if self.calls.fetch_add(1, Ordering::SeqCst) >= self.fail_after.load(Ordering::SeqCst) {
+                return Err(Error::Io(std::io::Error::other("injected window failure")));
+            }
+            self.inner.put_if_absent(id, bytes)
+        }
+    }
+    let workspace = tempfile::tempdir().unwrap();
+    let objects = tempfile::tempdir().unwrap();
+    let backend = Arc::new(Failing {
+        inner: FilesystemObjectBackend::open(objects.path()).unwrap(),
+        calls: AtomicUsize::new(0),
+        fail_after: AtomicUsize::new(usize::MAX),
+        active: AtomicUsize::new(0),
+    });
+    let repo = Repository::init_with_object_backend(workspace.path(), backend.clone()).unwrap();
+    fs::write(workspace.path().join("seed"), b"baseline").unwrap();
+    let base = repo.commit("test", "base").unwrap();
+    for n in 0..300 {
+        let folder = workspace.path().join(format!("dir{:02}", n % 32));
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join(format!("file{n:03}")), format!("value {n}")).unwrap();
+    }
+    backend
+        .fail_after
+        .store(backend.calls.load(Ordering::SeqCst) + 130, Ordering::SeqCst);
+    assert!(repo.commit("test", "must not publish").is_err());
+    assert_eq!(backend.active.load(Ordering::SeqCst), 0);
+    assert_eq!(repo.head().unwrap(), Some(base));
+    let db = rusqlite::Connection::open(workspace.path().join(".loom/index.sqlite")).unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM revision_native_tree", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        repo.read_revision_file(base, "seed").unwrap().unwrap(),
+        b"baseline"
+    );
+    backend.fail_after.store(usize::MAX, Ordering::SeqCst);
+    let tip = repo.commit("test", "retry").unwrap();
+    assert_eq!(repo.head().unwrap(), Some(tip));
+    let snapshot = repo.snapshot(tip).unwrap();
+    for n in 0..300 {
+        let path = format!("dir{:02}/file{n:03}", n % 32);
+        assert_eq!(
+            snapshot.read_file(&path).unwrap().unwrap().as_ref(),
+            format!("value {n}").as_bytes()
+        );
+    }
+    assert_eq!(repo.log(10).unwrap().len(), 2);
+    assert!(repo.fsck().is_ok());
+    assert_eq!(backend.active.load(Ordering::SeqCst), 0);
+}
