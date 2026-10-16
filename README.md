@@ -11,7 +11,7 @@ Loom has its own native storage engine and object format. A separate Git interop
 ## Implemented today
 
 - Native v1 blob/changeset envelopes and optional hierarchical v2 tree objects addressed by BLAKE3-256. Existing v1 commit IDs remain unchanged. Historical tree roots use batched, copy-on-write first-parent deltas and reuse cached ancestor roots; unmodified subtrees retain their object IDs. Both explicit-staging commits and legacy commit-all commits now publish their native tree-root mappings atomically with their branch refs. Staged commits also update their staging and path indexes in the same transaction.
-- Local immutable object storage with on-read integrity verification.
+- Local immutable object storage with on-read integrity verification. The repository can also use caller-supplied durable `ObjectBackend` implementations; the CLI supports a separate object directory through `loom init --object-dir DIRECTORY` and `LOOM_OBJECT_DIR`. See [storage backends](docs/storage-backends.md) for binding, integrity and enumeration semantics.
 - SQLite branch refs with compare-and-swap protection.
 - Cross-process advisory worktree write lock around local commits, merges, branch creation and switching.
 - Durable SQLite intent journal for switch/merge transitions: Loom validates the worktree, stages replacement files, replays incomplete operations upon reopening, and updates HEAD/refs only after materialization. Merge recovery also publishes its validated immutable tree-root mapping in the same SQLite transaction as the branchref and journal deletion.

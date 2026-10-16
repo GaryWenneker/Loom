@@ -33,6 +33,22 @@ struct PendingTransition {
 pub struct Repository { root: PathBuf, db: Connection, store: ObjectStore }
 
 impl Repository {
+    /// Initialize using a caller-managed durable object provider. Metadata,
+    /// staging, refs and the workspace journal retain their SQLite transaction
+    /// boundary. Reopening requires discover_with_object_backend explicitly.
+    pub fn init_with_object_backend(
+        path: impl AsRef<Path>,
+        backend: std::sync::Arc<dyn crate::storage_backend::ObjectBackend>,
+    ) -> Result<Self> {
+        let store = ObjectStore::with_backend(backend)?;
+        let mut repo = Self::init(path)?;
+        repo.db.execute(
+            "INSERT INTO meta(key,value) VALUES('object_backend','external-v1')", [],
+        )?;
+        repo.store = store;
+        Ok(repo)
+    }
+
     pub fn init(path: impl AsRef<Path>) -> Result<Self> {
         let root = fs::canonicalize(path)?;
         let meta = root.join(".loom");
@@ -50,13 +66,55 @@ impl Repository {
     }
 
     pub fn discover(path: impl AsRef<Path>) -> Result<Self> {
+        Self::discover_with_store(path.as_ref(), None)
+    }
+
+    /// Reopen a repository initialized with an external object provider.
+    /// The caller supplies provider configuration and credentials; neither is
+    /// persisted in repository metadata. Existing local repositories require
+    /// a separate verified migration instead of silently changing providers.
+    pub fn discover_with_object_backend(
+        path: impl AsRef<Path>,
+        backend: std::sync::Arc<dyn crate::storage_backend::ObjectBackend>,
+    ) -> Result<Self> {
+        Self::discover_with_store(path.as_ref(), Some(ObjectStore::with_backend(backend)?))
+    }
+
+    fn discover_with_store(path: &Path, external: Option<ObjectStore>) -> Result<Self> {
         let start = fs::canonicalize(path)?;
         for dir in start.ancestors() {
             let meta = dir.join(".loom");
             if meta.join("index.sqlite").exists() {
-                let repo = Self { root: dir.to_path_buf(), db: Self::connect(&meta)?, store: ObjectStore::new(&meta) };
+                let db = Self::connect(&meta)?;
+                let configured: Option<String> = db.query_row(
+                    "SELECT value FROM meta WHERE key='object_backend'", [], |r| r.get(0),
+                ).optional()?;
+                let store = match (configured.as_deref(), external) {
+                    (None, None) => ObjectStore::new(&meta),
+                    (Some("external-v1"), Some(store)) => store,
+                    (Some("external-v1"), None) => return Err(Error::Invalid(
+                        "external object backend required; set LOOM_OBJECT_DIR or use discover_with_object_backend".into(),
+                    )),
+                    (None, Some(_)) => return Err(Error::Invalid(
+                        "repository uses local objects; changing providers requires verified migration".into(),
+                    )),
+                    (Some(_), _) => return Err(Error::Invalid("unsupported object backend binding".into())),
+                };
+                let repo = Self { root: dir.to_path_buf(), db, store };
                 {
                     let _guard = repo.lock_worktree()?;
+                    // Reject an empty/wrong provider before recovery can touch
+                    // user files or publish a transition. Validate all parents,
+                    // historical blobs (including deleted files) and staged blobs.
+                    if configured.is_some() {
+                        let mut roots: Vec<_> = repo.branches()?.into_iter()
+                            .filter_map(|(_, tip)| tip).map(|id| (id, CHANGESET)).collect();
+                        roots.extend(repo.staged_blobs()?.into_values().flatten().map(|id| (id, BLOB)));
+                        if let Some(pending) = repo.pending_transition()? {
+                            roots.extend([pending.before, pending.after].into_iter().flatten().map(|id| (id, CHANGESET)));
+                        }
+                        repo.store.verify_external_closure(&roots)?;
+                    }
                     repo.recover_locked()?;
                 }
                 return Ok(repo);
@@ -234,6 +292,9 @@ impl Repository {
         } else {
             None
         };
+        let mut roots: Vec<_> = [p.before, p.after].into_iter().flatten().map(|id| (id, CHANGESET)).collect();
+        if let Some((_, root)) = merge_tree { roots.push((root, crate::format::TREE)); }
+        self.store.verify_external_closure(&roots)?;
         self.materialize(&after, &before)?;
         // The only commit point: HEAD/ref update, optional merge tree mapping
         // and journal deletion share one SQLite transaction.
@@ -300,6 +361,7 @@ impl Repository {
         &self, name: &str, expected: Option<ObjectId>, next: ObjectId,
         root: ObjectId,
     ) -> Result<()> {
+        self.store.verify_external_closure(&[(next, CHANGESET), (root, crate::format::TREE)])?;
         let tx = self.db.unchecked_transaction()?;
         let changed = tx.execute(
             "UPDATE refs SET oid=?1 WHERE name=?2 AND oid IS ?3",
@@ -323,8 +385,10 @@ impl Repository {
            name.starts_with('/') || name.ends_with('/') || name.contains("..") || name.contains("//") {
             return Err(Error::Invalid("invalid branch name".into()));
         }
+        let head = self.head()?;
+        self.store.verify_external_closure(&head.into_iter().map(|id| (id, CHANGESET)).collect::<Vec<_>>())?;
         self.db.execute("INSERT INTO refs(name,oid) VALUES(?1,?2)",
-            params![name, self.head()?.map(|id| id.to_string())])?;
+            params![name, head.map(|id| id.to_string())])?;
         Ok(())
     }
 
@@ -692,6 +756,7 @@ impl Repository {
         &self, branch: &str, previous: Option<ObjectId>, next: ObjectId,
         changes: &[Change], native_tree: ObjectId
     ) -> Result<()> {
+        self.store.verify_external_closure(&[(next, CHANGESET), (native_tree, crate::format::TREE)])?;
         let tx = self.db.unchecked_transaction()?;
         let moved = tx.execute(
             "UPDATE refs SET oid=?1 WHERE name=?2 AND oid IS ?3",
