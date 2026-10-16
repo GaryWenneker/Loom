@@ -2,7 +2,7 @@ use loom_core::{FilesystemObjectBackend, ObjectId, Repository, StatusKind};
 use std::{env, path::Path, process};
 
 fn usage() {
-    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path] [--object-dir DIRECTORY]\n  loom status\n  loom add PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom merge-bases LEFT_BRANCH RIGHT_BRANCH\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom cat @CHANGESET_ID PATH\n  loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]\n  loom tree @CHANGESET_ID\n  loom tree ls @TREE_ID [DIR]\n  loom tree cat @TREE_ID PATH\n  loom fsck\n  loom git -- GIT_ARGS...\n\nExternal object storage: set LOOM_OBJECT_DIR for every command.\n");
+    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path] [--object-dir DIRECTORY | --object-db FILE]\n  loom status\n  loom add PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom merge-bases LEFT_BRANCH RIGHT_BRANCH\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom cat @CHANGESET_ID PATH\n  loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]\n  loom tree @CHANGESET_ID\n  loom tree ls @TREE_ID [DIR]\n  loom tree cat @TREE_ID PATH\n  loom fsck\n  loom git -- GIT_ARGS...\n\nExternal object storage: set LOOM_OBJECT_DIR or LOOM_OBJECT_DB for every command.\n");
 }
 
 
@@ -26,6 +26,19 @@ fn print_diff(change: &loom_core::FileDiff) {
     }
 }
 
+type ObjectProvider = std::sync::Arc<dyn loom_core::storage_backend::ObjectBackend>;
+
+fn object_backend(
+    directory: Option<std::ffi::OsString>, database: Option<std::ffi::OsString>,
+) -> Result<Option<ObjectProvider>, Box<dyn std::error::Error>> {
+    match (directory, database) {
+        (Some(_), Some(_)) => Err("choose one object provider: LOOM_OBJECT_DIR or LOOM_OBJECT_DB".into()),
+        (Some(path), None) => Ok(Some(std::sync::Arc::new(FilesystemObjectBackend::open(path)?))),
+        (None, Some(path)) => Ok(Some(std::sync::Arc::new(loom_core::sqlite_object_storage::SqliteObjectBackend::open(path)?))),
+        (None, None) => Ok(None),
+    }
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
     let Some(cmd) = args.first().map(String::as_str) else { usage(); return Err("missing command".into()); };
@@ -33,32 +46,35 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if cmd == "init" {
         let mut path = None;
         let mut object_dir = env::var_os("LOOM_OBJECT_DIR");
+        let mut object_db = env::var_os("LOOM_OBJECT_DB");
+        let mut selected = false;
         let mut rest = args[1..].iter();
         while let Some(arg) = rest.next() {
-            if arg == "--object-dir" {
-                object_dir = Some(rest.next().ok_or("--object-dir requires a directory")?.into());
+            if arg == "--object-dir" || arg == "--object-db" {
+                if selected { return Err("choose exactly one object storage option".into()); }
+                selected = true;
+                let value = rest.next().ok_or("object storage option requires a path")?;
+                object_dir = if arg == "--object-dir" { Some(value.into()) } else { None };
+                object_db = if arg == "--object-db" { Some(value.into()) } else { None };
             } else if arg.starts_with('-') || path.is_some() {
-                return Err("usage: loom init [path] [--object-dir DIRECTORY]".into());
+                return Err("usage: loom init [path] [--object-dir DIRECTORY | --object-db FILE]".into());
             } else {
                 path = Some(arg.as_str());
             }
         }
         let path = path.unwrap_or(".");
+        let backend = object_backend(object_dir, object_db)?;
         if !Path::new(path).exists() { std::fs::create_dir_all(path)?; }
-        let repo = if let Some(dir) = object_dir {
-            Repository::init_with_object_backend(
-                path, std::sync::Arc::new(FilesystemObjectBackend::open(dir)?),
-            )?
+        let repo = if let Some(backend) = backend {
+            Repository::init_with_object_backend(path, backend)?
         } else {
             Repository::init(path)?
         };
         println!("Initialized native Loom repository at {}", repo.root().display());
         return Ok(());
     }
-    let repo = if let Some(dir) = env::var_os("LOOM_OBJECT_DIR") {
-        Repository::discover_with_object_backend(
-            env::current_dir()?, std::sync::Arc::new(FilesystemObjectBackend::open(dir)?),
-        )?
+    let repo = if let Some(backend) = object_backend(env::var_os("LOOM_OBJECT_DIR"), env::var_os("LOOM_OBJECT_DB"))? {
+        Repository::discover_with_object_backend(env::current_dir()?, backend)?
     } else {
         Repository::discover(env::current_dir()?)?
     };

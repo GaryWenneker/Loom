@@ -4,6 +4,7 @@ fn bridge(root: &Path, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_loom"))
         .current_dir(root)
         .env_remove("LOOM_OBJECT_DIR")
+        .env_remove("LOOM_OBJECT_DB")
         .args(args)
         .output()
         .unwrap()

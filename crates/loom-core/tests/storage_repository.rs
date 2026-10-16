@@ -200,3 +200,35 @@ fn replicated_repository_requires_history_on_every_replica() {
     drop(repo);
     assert!(Repository::discover_with_object_backend(workspace.path(), provider).is_err());
 }
+
+#[test]
+fn filesystem_and_sqlite_replicas_preserve_identical_native_history() {
+    use loom_core::replicated_storage::ReplicatedObjectBackend;
+    use loom_core::sqlite_object_storage::SqliteObjectBackend;
+    let workspace = tempfile::tempdir().unwrap();
+    let files = tempfile::tempdir().unwrap();
+    let database = tempfile::tempdir().unwrap();
+    let sqlite =
+        Arc::new(SqliteObjectBackend::open(database.path().join("objects.sqlite")).unwrap());
+    let filesystem = Arc::new(FilesystemObjectBackend::open(files.path()).unwrap());
+    let replicas =
+        Arc::new(ReplicatedObjectBackend::new(vec![filesystem.clone(), sqlite.clone()]).unwrap());
+    let repo = Repository::init_with_object_backend(workspace.path(), replicas).unwrap();
+    fs::write(workspace.path().join("file"), b"cross provider").unwrap();
+    let tip = repo.commit("test", "one identity").unwrap();
+    let ids = filesystem.list_ids().unwrap();
+    assert!(!ids.is_empty());
+    assert_eq!(ids.len(), sqlite.list_ids().unwrap().len());
+    for id in ids {
+        assert_eq!(filesystem.get(id).unwrap(), sqlite.get(id).unwrap());
+    }
+    drop(repo);
+    // Either complete provider independently reconstructs the same repository.
+    let repo = Repository::discover_with_object_backend(workspace.path(), sqlite).unwrap();
+    assert_eq!(repo.head().unwrap(), Some(tip));
+    assert_eq!(
+        repo.read_branch_file("main", "file").unwrap().unwrap(),
+        b"cross provider"
+    );
+    assert!(repo.fsck().unwrap() > 0);
+}
