@@ -67,6 +67,7 @@ P4 and P5 may be developed independently after the native state/metadata contrac
 - [x] SQLite WAL metadata, conditional branch refs and cross-process advisory lock.
 - [x] Initial persistent journal/replay around branch switch and merge.
 - [x] Immutable staged blob snapshots.
+- [x] Repository object-provider integration, explicit external binding, CLI external filesystem directories and complete external object closure checks before ref publication. Local SQLite retains refs/journal transactions; cloud drivers and configurable remote refs remain pending.
 
 **To complete**
 - [ ] Make `init` rollback-safe; validate `.loom` and object paths against symlink/hardlink races, TOCTOU and permission surprises.

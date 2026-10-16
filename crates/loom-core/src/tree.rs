@@ -239,6 +239,80 @@ pub(crate) fn lookup_file(
     Ok(None)
 }
 
+/// List tracked files beneath a directory prefix without opening sibling
+/// subtrees outside the prefix. The result is ordered by canonical path.
+pub(crate) fn list_prefix(
+    store: &crate::store::ObjectStore,
+    root: ObjectId,
+    prefix: &str,
+) -> Result<std::collections::BTreeMap<String, ObjectId>> {
+    use std::collections::BTreeMap;
+
+    fn visit(
+        store: &crate::store::ObjectStore,
+        id: ObjectId,
+        base: &str,
+        depth: usize,
+        result: &mut BTreeMap<String, ObjectId>,
+    ) -> Result<()> {
+        if depth > 256 {
+            return Err(Error::Invalid("native tree nesting limit reached".into()));
+        }
+        let tree = NativeTree::decode(&store.get(id)?)?;
+        if depth > 0 && tree.entries.is_empty() {
+            return Err(Error::Invalid("noncanonical empty native tree directory".into()));
+        }
+        for entry in tree.entries {
+            let path = if base.is_empty() {
+                entry.name
+            } else {
+                format!("{base}/{}", entry.name)
+            };
+            match entry.kind {
+                TreeEntryKind::File => {
+                    result.insert(path, entry.object);
+                }
+                TreeEntryKind::Directory => {
+                    visit(store, entry.object, &path, depth + 1, result)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    let mut current = root;
+    let mut base = String::new();
+    if !prefix.is_empty() {
+        validate_path(prefix)?;
+        let parts: Vec<&str> = prefix.split('/').collect();
+        if parts.len() > 256 {
+            return Err(Error::Invalid("native tree path nesting limit reached".into()));
+        }
+        for (index, part) in parts.iter().enumerate() {
+            let tree = NativeTree::decode(&store.get(current)?)?;
+            if index > 0 && tree.entries.is_empty() {
+                return Err(Error::Invalid("noncanonical empty native tree directory".into()));
+            }
+            let Ok(position) = tree.entries.binary_search_by(|e| e.name.as_str().cmp(part)) else {
+                return Ok(BTreeMap::new());
+            };
+            let entry = &tree.entries[position];
+            base = if base.is_empty() { (*part).to_owned() } else { format!("{base}/{part}") };
+            if entry.kind == TreeEntryKind::File {
+                let mut result = BTreeMap::new();
+                if index + 1 == parts.len() {
+                    result.insert(base, entry.object);
+                }
+                return Ok(result);
+            }
+            current = entry.object;
+        }
+    }
+    let mut result = BTreeMap::new();
+    visit(store, current, &base, prefix.split('/').filter(|p| !p.is_empty()).count(), &mut result)?;
+    Ok(result)
+}
+
 /// Apply a changeset to a canonical immutable directory DAG. Only
 /// directories on paths touched by the changeset are opened and re-encoded.
 /// Unchanged sibling objects retain their IDs, including across revisions.
@@ -308,6 +382,11 @@ pub(crate) fn apply_changes(
                         )));
                     }
                     if let Some(previous) = &existing {
+                        if previous.kind == TreeEntryKind::File && !child.children.is_empty() {
+                            return Err(Error::Invalid(format!(
+                                "native tree deletion beneath a file: {name}"
+                            )));
+                        }
                         if previous.kind == TreeEntryKind::Directory &&
                             apply_dir(store, Some(previous.object), child, depth + 1)?.is_some() {
                             return Err(Error::Invalid(format!(
@@ -486,6 +565,41 @@ mod tests {
 
     // Ten portable serialization edge cases, kept in one CI-reviewed change.
     #[test]
+    fn deleting_descendant_of_existing_file_is_rejected() {
+        use crate::format::{BLOB, Change, ChangeKind};
+        use std::{collections::BTreeMap, fs};
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join(".loom");
+        fs::create_dir(&meta).unwrap();
+        fs::create_dir(meta.join("objects")).unwrap();
+        let store = crate::store::ObjectStore::new(&meta);
+        let blob = store.put(BLOB, b"content").unwrap();
+        let root = write_snapshot(&store, &BTreeMap::from([
+            ("parent".to_owned(), blob),
+        ])).unwrap();
+        let changes = [Change {
+            path: "parent/child".to_owned(),
+            kind: ChangeKind::Delete,
+            blob: None,
+        }];
+        assert!(apply_changes(&store, root, &changes).is_err());
+        // A replacement at the parent must not shadow a malformed deletion.
+        let mut shadowed = changes.to_vec();
+        shadowed.push(Change {
+            path: "parent".to_owned(), kind: ChangeKind::Modify, blob: Some(blob),
+        });
+        assert!(apply_changes(&store, root, &shadowed).is_err());
+        // Explicit removal of the parent permits a valid file-to-directory transition.
+        let transition = [
+            Change { path: "parent".to_owned(), kind: ChangeKind::Delete, blob: None },
+            Change { path: "parent/child".to_owned(), kind: ChangeKind::Add, blob: Some(blob) },
+        ];
+        let next = apply_changes(&store, root, &transition).unwrap();
+        assert_eq!(lookup_file(&store, next, "parent/child").unwrap(), Some(blob));
+        assert_eq!(lookup_file(&store, root, "parent").unwrap(), Some(blob));
+    }
+
+    #[test]
     fn conformance_01_empty_root_roundtrip() {
         let node = NativeTree { entries: vec![] };
         assert_eq!(NativeTree::decode(&node.encode().unwrap()).unwrap(), node);
@@ -582,6 +696,41 @@ mod tests {
         let (_, payload) = decode_object(&bytes).unwrap();
         let sparse_root = store.put(TREE, payload).unwrap();
         assert_eq!(lookup_file(&store, sparse_root, "src/nested/target.rs").unwrap(), Some(blob));
+    }
+
+    #[test]
+    fn prefix_listing_skips_unrelated_corrupt_subtrees() {
+        use crate::format::BLOB;
+        use std::collections::BTreeMap;
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join(".loom");
+        fs::create_dir(&meta).unwrap();
+        fs::create_dir(meta.join("objects")).unwrap();
+        let store = crate::store::ObjectStore::new(&meta);
+        let blob = store.put(BLOB, b"source").unwrap();
+        let root = write_snapshot(&store, &BTreeMap::from([
+            ("src/a.rs".to_string(), blob),
+            ("src/deep/b.rs".to_string(), blob),
+            ("vendor/unused.rs".to_string(), blob),
+        ])).unwrap();
+        let expected = BTreeMap::from([
+            ("src/a.rs".to_string(), blob),
+            ("src/deep/b.rs".to_string(), blob),
+        ]);
+        assert_eq!(list_prefix(&store, root, "src").unwrap(), expected);
+        assert_eq!(list_prefix(&store, root, "src/a.rs").unwrap(),
+                   BTreeMap::from([("src/a.rs".to_string(), blob)]));
+        assert!(list_prefix(&store, root, "absent").unwrap().is_empty());
+        assert!(list_prefix(&store, root, "../escape").is_err());
+
+        let mut entries = NativeTree::decode(&store.get(root).unwrap()).unwrap().entries;
+        entries.iter_mut().find(|e| e.name == "vendor").unwrap().object = ObjectId([0xFD; 32]);
+        let envelope = NativeTree { entries }.encode().unwrap();
+        let (_, payload) = decode_object(&envelope).unwrap();
+        let sparse_root = store.put(TREE, payload).unwrap();
+        assert_eq!(list_prefix(&store, sparse_root, "src").unwrap(), expected);
+        assert!(list_prefix(&store, sparse_root, "").is_err());
     }
 
     #[test]

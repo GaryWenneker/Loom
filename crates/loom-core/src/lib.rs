@@ -1,12 +1,18 @@
 //! Loom: an independent content-addressed version control engine.
 //! Native storage and history have no Git runtime dependency.
 mod format;
+pub mod sqlite_ref_storage;
+pub mod memory_storage;
+pub mod replicated_storage;
+pub mod cloud_storage;
 mod ignore;
 mod repository;
 mod store;
+pub mod storage_backend;
 mod text_merge;
 mod tree;
 
+pub use store::FilesystemObjectBackend;
 pub use format::{Change, ChangeKind, Changeset, ObjectId};
 pub use repository::{FileDiff, Repository, StatusEntry, StatusKind};
 pub use tree::{NativeTree, TreeEntry, TreeEntryKind};

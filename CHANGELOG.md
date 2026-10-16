@@ -4,6 +4,11 @@ Loom is an experimental project; neither its CLI nor its storage format has reac
 
 ## Unreleased
 
+- Explicit Git fallback: `loom git -- GIT_ARGS...` runs installed Git in Git-only repositories, preserves exit codes and OS arguments, and keeps native history conversion separate.
+
+- Repository object-provider integration: external filesystem directories in the CLI, injectable durable object backends in the Rust API, verified publication and complete external history/blob/tree closure checks before ref publication.
+- Explicit backend binding prevents silent fallback to a different object store. Volatile providers are rejected; full-store `fsck` reports unsupported enumeration explicitly.
+
 - Continued engineering review, onboarding documentation and platform architecture work.
 - Open PRs and planned features must not be treated as shipped.
 

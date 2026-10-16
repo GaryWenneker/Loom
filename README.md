@@ -2,7 +2,7 @@
 
 Loom is an experimental, standalone **native version control system**, implemented in Rust.
 
-Loom has its own native storage engine and object format. A separate Git interoperability bridge is planned.
+Loom has its own native storage engine and object format. An explicit `loom git -- GIT_ARGS...` bridge invokes installed Git for Git workflows; native/Git history import and export remain planned.
 
 **Product direction:** Git is the **functional baseline**, not a syntax or architecture template. Loom may offer fewer steps, reversible operations and agent-safe workflows, but must eventually preserve equivalent user capabilities. See the [Git capability inventory](docs/git-capability-parity.md).
 
@@ -11,14 +11,14 @@ Loom has its own native storage engine and object format. A separate Git interop
 ## Implemented today
 
 - Native v1 blob/changeset envelopes and optional hierarchical v2 tree objects addressed by BLAKE3-256. Existing v1 commit IDs remain unchanged. Historical tree roots use batched, copy-on-write first-parent deltas and reuse cached ancestor roots; unmodified subtrees retain their object IDs. Both explicit-staging commits and legacy commit-all commits now publish their native tree-root mappings atomically with their branch refs. Staged commits also update their staging and path indexes in the same transaction.
-- Local immutable object storage with on-read integrity verification.
+- Local immutable object storage with on-read integrity verification. The repository can also use caller-supplied durable `ObjectBackend` implementations; the CLI supports a separate object directory through `loom init --object-dir DIRECTORY` and `LOOM_OBJECT_DIR`. See [storage backends](docs/storage-backends.md) for binding, integrity and enumeration semantics.
 - SQLite branch refs with compare-and-swap protection.
 - Cross-process advisory worktree write lock around local commits, merges, branch creation and switching.
 - Durable SQLite intent journal for switch/merge transitions: Loom validates the worktree, stages replacement files, replays incomplete operations upon reopening, and updates HEAD/refs only after materialization. Merge recovery also publishes its validated immutable tree-root mapping in the same SQLite transaction as the branchref and journal deletion.
 - Local full-worktree status, commits, log, branch creation/switching, basic conservative merges and `fsck`, including checks for staged blob references and pending-recovery changesets.
 - Opt-in persistent native staging index: `loom add PATH...`, `loom unstage PATH...`, frozen content snapshots and staged-only commits. Once enabled, every later commit requires explicit staging; existing repositories retain legacy commit-all behavior until their first `loom add`.
 - Targeted `loom add` and staged status use the native derived branch path index when current; the index can be rebuilt from authoritative history if missing or stale. General worktree scans and indexed ancestry/blame remain separate performance work.
-- A CLI named `loom`.
+- A CLI named `loom`, including an explicit [Git fallback](docs/git-compatibility-bridge.md) that works in Git-only repositories and preserves Git exit codes.
 - Read-only `loom diff` for worktree changes and comparisons between branch snapshots; `loom diff --staged` and `loom diff --unstaged` show the two sides of the staging boundary independently.
 - `loom review` displays both prepared commit content and remaining uncommitted workspace edits in one view. Text patches use unified diff output; large/binary changes are reported without textual hunks.
 - `loom cat BRANCH PATH` for binary-safe direct access to native snapshot files without checkout.
