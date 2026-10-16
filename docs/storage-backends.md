@@ -8,6 +8,8 @@ Implemented providers are filesystem and SQLite objects, ephemeral memory object
 
 ## Use a separate object directory
 
+External object files must live outside the workspace, or a legacy full-worktree snapshot could track its own store. CLI initialization rejects storage inside the worktree, including existing symlink aliases, before opening the provider. A new storage location requires an existing parent directory. Embedding callers must also keep their provider files outside the worktree.
+
 ```sh
 # Use an absolute path, also when invoking Loom from a subdirectory.
 export LOOM_OBJECT_DIR=/absolute/path/loom-objects

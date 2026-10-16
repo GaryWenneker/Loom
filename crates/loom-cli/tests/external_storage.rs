@@ -119,3 +119,44 @@ fn sqlite_objects_work_through_cli_across_processes() {
     assert!(!rejected.status.success());
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("choose one object provider"));
 }
+
+#[test]
+fn provider_files_cannot_be_tracked_inside_their_own_worktree() {
+    for (option, name) in [
+        ("--object-dir", "objects"),
+        ("--object-db", "objects.sqlite"),
+    ] {
+        let workspace = tempfile::tempdir().unwrap();
+        let target = workspace.path().join(name);
+        let result = run(
+            workspace.path(),
+            None,
+            &["init", option, target.to_str().unwrap()],
+        );
+        assert!(!result.status.success());
+        assert!(String::from_utf8_lossy(&result.stderr).contains("outside the worktree"));
+        assert!(!workspace.path().join(".loom").exists());
+        assert!(!target.exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_alias_cannot_hide_a_provider_inside_the_worktree() {
+    use std::os::unix::fs::symlink;
+    let workspace = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let inside = workspace.path().join("objects");
+    fs::create_dir(&inside).unwrap();
+    let alias = outside.path().join("external-alias");
+    symlink(&inside, &alias).unwrap();
+    let result = run(
+        workspace.path(),
+        None,
+        &["init", "--object-dir", alias.to_str().unwrap()],
+    );
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("outside the worktree"));
+    assert!(!workspace.path().join(".loom").exists());
+    assert_eq!(fs::read_dir(inside).unwrap().count(), 0);
+}

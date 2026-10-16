@@ -38,6 +38,8 @@ Commands exit nonzero on error and diagnostics go to stderr. Typed exit codes an
 
 ## External filesystem objects
 
+Place external storage outside the workspace and use an existing parent directory. Initialization rejects a provider inside its own worktree, including symlink aliases, to prevent the store from being tracked in snapshots.
+
 Initialize with `loom init [path] --object-dir DIRECTORY`, or set `LOOM_OBJECT_DIR` before initialization. Set `LOOM_OBJECT_DIR` to that same object directory for every subsequent command. Prefer an absolute directory path so invocation from nested workspace directories resolves consistently. The workspace's refs, staging and journal remain under `.loom`; only immutable objects move. Missing explicit binding is an error. Setting the environment variable on an existing default-storage repository does not perform a migration. See [storage backends](storage-backends.md).
 
 ## Explicit Git fallback
