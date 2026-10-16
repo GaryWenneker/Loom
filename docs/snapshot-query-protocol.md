@@ -54,7 +54,9 @@ revision-to-root index is trusted for normal queries, as by existing tree reads.
 `fsck` independently reconstructs canonical history to check those mappings.
 This feature does not change object IDs or the on-disk schema.
 
-The per-session FIFO cache retains verified decoded trees and blob payloads.
+The per-session FIFO cache retains verified immutable tree bytes, compact
+entry-offset indexes, and blob payloads. Names borrow the verified tree buffer;
+ordinary owned trees and read views share one canonical validator.
 Default budget is 64 MiB, configurable from zero (disabled) through 256 MiB.
 Accounting includes content capacity and estimated per-entry bookkeeping; it is
 not a process RSS limit and excludes Arc values retained by API consumers.
@@ -82,3 +84,47 @@ symlink race limits, 64 MiB object limits and experimental release status apply.
 
 See [benchmark reproduction](../benchmarks/README.md) for operation-specific
 comparisons, raw samples, and the limits of the 100× performance target.
+
+
+## Native grouped file reads
+
+```json
+{"id":7,"op":"cat_many","paths":["src/main.rs","missing","src/lib.rs"],"max_bytes":16777216}
+```
+
+Core callers use `Snapshot::read_files(paths, max_bytes)`. Results preserve input
+order, including duplicates. Missing files and directory paths occupy null slots.
+The maximum is 4,096 paths, also subject to the 64 KiB JSON request limit. Default
+returned-content budget is 16 MiB, configurable from zero through 64 MiB. Repeated
+paths count their bytes repeatedly toward this budget. Zero allows only empty
+files/misses. Unsafe paths, corruption and byte-budget failures fail the entire
+group before any successful header/payload is emitted; later requests still work.
+
+Success has `kind:"blobs"`, `entries:[{"size":N},null,...]` and aggregate `size`.
+After the JSON header LF come exactly `size` raw bytes, concatenated in slot order,
+then one LF. There are no per-file separators; null slots consume no bytes.
+An empty file is `{"size":0}`, distinct from null. A failed group is a JSON-only
+error. This extends protocol 1; existing `cat`/`files`/`stats` frames are unchanged.
+Output is buffered within each reply and always flushed before awaiting another
+request, including interactive clients that keep stdin open.
+
+Grouped reads resolve each parent directory once, deduplicate object IDs and
+load objects in ID order for filesystem locality. Object I/O uses scoped workers,
+at most eight and no more than the provider hint/available CPU count. Filesystem
+read sessions currently request two workers; SQLite and other serial sessions
+retain the default of one. Snapshot object-cache changes happen outside the object-I/O workers. Every
+worker is joined on success, error or panic before the call returns.
+
+`max_bytes` limits returned content, not peak RSS. The separate snapshot cache,
+indexes, reply metadata and temporary object-read buffers are additional. Each
+active object worker can temporarily hold an envelope and a copied payload under
+the existing 64 MiB object limit. This API is not a streaming large-file reader.
+
+Unix filesystem sessions pin a base-directory handle and at most 64 cached
+fanout-directory handles, with additional temporary handles for active reads.
+Object opens are relative to these handles and reject leaf/fanout symlinks;
+nonblocking opens allow rejection of FIFOs before they can block. Eviction closes
+unused handles. A pinned directory may outlive its old pathname, consistent with
+the immutable read-session contract. Initial ancestor-path race limits remain;
+this does not change the live provider used for publication or fsck. Windows uses
+its existing verified filesystem reads. No storage files or formats are changed.

@@ -58,3 +58,8 @@ existing storage read-only without acquiring the workspace lock. See the
 [protocol and integrity contract](snapshot-query-protocol.md) before implementing
 a client. For a legacy revision without a native root, prepare it explicitly
 with `loom tree @CHANGESET_ID`.
+
+For grouped native file access, send `{"id":1,"op":"cat_many","paths":["src/main.rs","src/lib.rs"]}`
+to that session. The reply has indexed lengths followed by one binary payload.
+The [grouped-read contract](snapshot-query-protocol.md#native-grouped-file-reads)
+describes framing, budgets, missing paths and whole-group errors.

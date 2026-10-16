@@ -11,6 +11,11 @@ use std::sync::Arc;
 /// Consumers must verify the canonical envelope and hash on each cache miss.
 pub trait ObjectReadSession: Send + Sync {
     fn get(&self, id: ObjectId) -> Result<Vec<u8>>;
+    /// Hint for independent immutable reads; callers still impose their own
+    /// thread and memory bounds. Serial providers need not opt into parallelism.
+    fn max_concurrent_reads(&self) -> usize {
+        1
+    }
 }
 
 /// Capability declaration, not a guarantee inferred from a provider name.

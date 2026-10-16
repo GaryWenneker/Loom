@@ -113,3 +113,16 @@ python3 benchmarks/shared_object_stress.py --binary target/debug/loom --backend 
 ```
 
 The script starts isolated workspace/ref databases concurrently, all using one object provider. It verifies each acknowledged first-parent history, final snapshot and full `fsck`, then prints JSON counts and elapsed time. It does not exercise shared branch contention, a remote server, injected crashes or cloud latency. SQLite bootstrap retries journal-mode lock upgrades within a bounded deadline; this path has a synchronized twelve-initializer regression test.
+
+
+## Grouped immutable reads
+
+`Snapshot::read_files` and `query`'s `cat_many` operation use the same configured
+provider, without requiring an object migration or an optimization command.
+`ObjectReadSession::max_concurrent_reads` defaults to one; a provider can advertise
+a larger hint while the core still caps concurrency at eight and available CPUs.
+SQLite keeps its single query-only connection. Filesystem sessions suggest two.
+On Unix they retain a bounded directory-handle cache and use no-follow relative
+opens; Windows retains the verified filesystem path. All returned envelopes are
+hash/type checked. Retained handles/cached bytes never establish live durability.
+See [framing and resource limits](snapshot-query-protocol.md#native-grouped-file-reads).

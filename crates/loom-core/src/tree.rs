@@ -5,8 +5,8 @@
 use crate::format::{decode_object, encode_object, validate_path, ObjectId, TREE};
 use crate::{Error, Result};
 
-const MAX_ENTRIES: usize = 1_000_000;
-const MAX_NAME: usize = 1_000_000;
+pub(crate) const MAX_ENTRIES: usize = 1_000_000;
+pub(crate) const MAX_NAME: usize = 1_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TreeEntryKind {
@@ -30,14 +30,18 @@ pub struct NativeTree {
     pub entries: Vec<TreeEntry>,
 }
 
-fn validate_entry(entry: &TreeEntry) -> Result<()> {
-    validate_path(&entry.name)?;
-    if entry.name.contains('/') || entry.name.len() > MAX_NAME {
+pub(crate) fn validate_entry_parts(
+    name: &str,
+    kind: TreeEntryKind,
+    executable: bool,
+) -> Result<()> {
+    validate_path(name)?;
+    if name.contains('/') || name.len() > MAX_NAME {
         return Err(Error::Invalid(
             "tree name must be one bounded path component".into(),
         ));
     }
-    if entry.kind == TreeEntryKind::Directory && entry.executable {
+    if kind == TreeEntryKind::Directory && executable {
         return Err(Error::Invalid(
             "directory cannot have executable-file flag".into(),
         ));
@@ -54,7 +58,7 @@ impl NativeTree {
         data.extend_from_slice(&(self.entries.len() as u32).to_le_bytes());
         let mut previous: Option<&str> = None;
         for entry in &self.entries {
-            validate_entry(entry)?;
+            validate_entry_parts(&entry.name, entry.kind, entry.executable)?;
             if previous.is_some_and(|name| name >= entry.name.as_str()) {
                 return Err(Error::Invalid("unsorted or repeated tree entry".into()));
             }
@@ -69,70 +73,18 @@ impl NativeTree {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        let (kind, payload) = decode_object(bytes)?;
-        if kind != TREE {
-            return Err(Error::Invalid("expected native tree object".into()));
-        }
-        let mut cursor = 0usize;
-        fn take<'a>(data: &'a [u8], pos: &mut usize, size: usize) -> Result<&'a [u8]> {
-            if size > data.len().saturating_sub(*pos) {
-                return Err(Error::Invalid("truncated native tree".into()));
-            }
-            let start = *pos;
-            *pos += size;
-            Ok(&data[start..*pos])
-        }
-        let count = u32::from_le_bytes(
-            take(payload, &mut cursor, 4)?
-                .try_into()
-                .expect("four bytes"),
-        ) as usize;
-        if count > MAX_ENTRIES {
-            return Err(Error::Invalid("too many tree entries".into()));
-        }
-        let mut entries = Vec::new();
-        let mut previous = String::new();
-        for i in 0..count {
-            let kind = match take(payload, &mut cursor, 1)?[0] {
-                1 => TreeEntryKind::File,
-                2 => TreeEntryKind::Directory,
-                _ => return Err(Error::Invalid("unknown native tree entry kind".into())),
-            };
-            let executable = match take(payload, &mut cursor, 1)?[0] {
-                0 => false,
-                1 => true,
-                _ => return Err(Error::Invalid("invalid executable flag".into())),
-            };
-            let len = u32::from_le_bytes(
-                take(payload, &mut cursor, 4)?
-                    .try_into()
-                    .expect("four bytes"),
-            ) as usize;
-            if len > MAX_NAME {
-                return Err(Error::Invalid("oversized native tree entry name".into()));
-            }
-            let name = std::str::from_utf8(take(payload, &mut cursor, len)?)
-                .map_err(|_| Error::Invalid("tree name is not UTF-8".into()))?
-                .to_owned();
-            let mut object = [0; 32];
-            object.copy_from_slice(take(payload, &mut cursor, 32)?);
-            let entry = TreeEntry {
-                name,
-                kind,
-                executable,
-                object: ObjectId(object),
-            };
-            validate_entry(&entry)?;
-            if i != 0 && entry.name <= previous {
-                return Err(Error::Invalid("unsorted or duplicate tree entry".into()));
-            }
-            previous = entry.name.clone();
-            entries.push(entry);
-        }
-        if cursor != payload.len() {
-            return Err(Error::Invalid("trailing native tree bytes".into()));
-        }
-        Ok(Self { entries })
+        let parsed = crate::tree_index::TreeData::decode(bytes)?;
+        Ok(Self {
+            entries: parsed
+                .entries()
+                .map(|entry| TreeEntry {
+                    name: entry.name.to_owned(),
+                    kind: entry.kind,
+                    executable: entry.executable,
+                    object: entry.object,
+                })
+                .collect(),
+        })
     }
 }
 

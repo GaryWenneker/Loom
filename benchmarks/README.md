@@ -82,3 +82,26 @@ still scans file contents and remains an explicit bottleneck.
 
 [Measured 2026-10-16 results](../docs/performance-20261016.md) include raw wide and
 sharded samples and explicitly retain operations that miss the 100× goal.
+
+
+## Multi-directory before/after comparison
+
+```sh
+python3 benchmarks/compare_git.py --loom /absolute/new-loom \
+  --baseline-loom /absolute/previous-loom --batch --multi \
+  --layout sharded --directories 256 --files 1000 10000 100000 \
+  --repeat 7 --requests 1000 --output multidirectory.json
+```
+
+Both binaries must be built in release mode with the same compiler; keep immutable
+copies. The baseline initializes the shared fixture. Each repeat uses identical
+paths/bytes for previous Loom, new line-oriented Loom, new native `cat_many` and
+Git's persistent batch. Engine order rotates. Native grouping changes request
+framing, so it is reported separately from the unchanged line interface.
+`baseline_over_loom_p50` reports improvement over previous Loom, not Git.
+
+Use `--layout nested --directories 1024 --files 10000` to exercise two directory
+levels beneath `files/`. Single-command and status results remain in the report.
+`--multi` accepts at most 4,096 logical paths and the encoded request must fit the
+protocol's 64 KiB line cap. The existing 100× target flags apply per operation;
+all unfavorable results are retained. No performance gate relies on noisy CI timing.
