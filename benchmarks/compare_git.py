@@ -146,6 +146,9 @@ def scenario(args, count):
             preparation = {'build_ms':elapsed, 'pack_bytes':(root/'.loom/reads.pack').stat().st_size,
                            'query_timing_excludes_build':True, 'live_objects_retained':True}
         focus = relative(count//2)
+        def query(binary):
+            return [binary, 'query', '--batch', '@'+revision,
+                    '--cache-bytes', str(args.cache_bytes)]
         for repeat in range(args.repeat):
             # Alternate order to reduce systematic warmup/host-load bias.
             pairs = [
@@ -179,17 +182,17 @@ def scenario(args, count):
             loom_input = ''.join(json.dumps({'id':i,'op':'cat','path':path})+'\n' for i,path in enumerate(paths)).encode()
             modes = [('git_batch', ['git','cat-file','--batch'], git_input, parse_git_batch)]
             if args.batch:
-                modes.append(('loom_batch', [args.loom,'query','--batch','@'+revision], loom_input, parse_loom_batch))
+                modes.append(('loom_batch', query(args.loom), loom_input, parse_loom_batch))
                 if args.baseline_loom:
-                    modes.append(('baseline_batch', [args.baseline_loom,'query','--batch','@'+revision], loom_input, parse_loom_batch))
+                    modes.append(('baseline_batch', query(args.baseline_loom), loom_input, parse_loom_batch))
             if args.multi:
                 multi_input = ''.join(json.dumps({'id':n,'op':'cat_many','paths':paths[n*args.requests:(n+1)*args.requests]})+'\n' for n in range(args.rounds)).encode()
                 verify_multi = lambda output, expected: parse_loom_multi(output, expected, args.rounds)
-                modes.append(('loom_multi',[args.loom,'query','--batch','@'+revision],multi_input,verify_multi))
+                modes.append(('loom_multi',query(args.loom),multi_input,verify_multi))
                 if args.baseline_multi:
-                    modes.append(('baseline_multi',[args.baseline_loom,'query','--batch','@'+revision],multi_input,verify_multi))
+                    modes.append(('baseline_multi',query(args.baseline_loom),multi_input,verify_multi))
                 if args.read_pack:
-                    base_command = [args.loom,'query','--batch','@'+revision,'--read-pack','.loom/reads.pack']
+                    base_command = query(args.loom) + ['--read-pack','.loom/reads.pack']
                     modes.append(('loom_pack_batch',base_command,loom_input,parse_loom_batch))
                     modes.append(('loom_pack_multi',base_command,multi_input,verify_multi))
                 if args.rounds > 1:
@@ -198,10 +201,10 @@ def scenario(args, count):
                     first_multi_input = (json.dumps({'id':0,'op':'cat_many','paths':first_paths})+'\n').encode()
                     modes.append(('git_first_group',['git','cat-file','--batch'],first_git_input,
                                   lambda output, _: parse_git_batch(output, first_expected)))
-                    modes.append(('loom_first_group',[args.loom,'query','--batch','@'+revision],first_multi_input,
+                    modes.append(('loom_first_group',query(args.loom),first_multi_input,
                                   lambda output, _: parse_loom_multi(output, first_expected)))
                     if args.baseline_multi:
-                        modes.append(('baseline_first_group',[args.baseline_loom,'query','--batch','@'+revision],first_multi_input,
+                        modes.append(('baseline_first_group',query(args.baseline_loom),first_multi_input,
                                       lambda output, _: parse_loom_multi(output, first_expected)))
             modes = modes[repeat % len(modes):] + modes[:repeat % len(modes)]
             for name, argv, data, verify in modes:
@@ -234,7 +237,7 @@ def scenario(args, count):
                 'rounds_per_process':args.rounds, 'requests_per_process':args.requests*args.rounds,
                 'fixture_layout':args.layout+'; small binary files; 10% batch misses',
                 'directories':args.directories if args.layout!='wide' else 1,
-                'cache_budget_bytes':64*1024*1024,
+                'cache_budget_bytes':args.cache_bytes,
                 'repository_logical_bytes':{name:sum(p.stat().st_size for p in (root/name).rglob('*') if p.is_file()) for name in ['.git','.loom']},
                 'operations':operations, 'git_over_loom_p50':ratios,
                 'baseline_over_loom_p50':baseline_ratios,
@@ -258,6 +261,8 @@ def main():
     parser.add_argument('--repeat', type=int, default=5)
     parser.add_argument('--requests', type=int, default=1000)
     parser.add_argument('--rounds', type=int, default=1, help='Repeat one rotating working set within each persistent process')
+    parser.add_argument('--cache-bytes', type=int, default=64*1024*1024,
+                        help='Snapshot cache budget for both Loom query binaries; zero disables it')
     parser.add_argument('--layout', choices=['wide','sharded','nested'], default='wide',
                         help='one wide directory or files spread over 256 directories')
     parser.add_argument('--git-layout', choices=['loose','packed'], default='packed')
@@ -268,6 +273,8 @@ def main():
         parser.error('positive sizes/repetitions/requests and nonnegative history are required')
     if not 1 <= args.rounds <= 100 or args.requests*args.rounds > 100000:
         parser.error('--rounds must be 1..100, with at most 100000 total logical requests per process')
+    if not 0 <= args.cache_bytes <= 256*1024*1024:
+        parser.error('--cache-bytes must be between zero and 256 MiB')
     if args.multi and (not args.batch or args.requests > 4096):
         parser.error('--multi requires --batch and at most 4096 logical requests')
     if (args.baseline_multi and not args.baseline_loom) or ((args.read_pack or args.baseline_multi) and not args.multi):

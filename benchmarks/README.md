@@ -30,6 +30,36 @@ Eight modes with the previous binary/no pack use eight rotated runs for a full
 order cycle. With different flags, choose repetitions appropriately. Avoid a
 general speed claim based on a cache-hot operation.
 
+Use `--cache-bytes 0` to disable both Loom query caches, or specify a budget
+through 256 MiB. The same value is passed to old/new Loom and retained in
+`cache_budget_bytes`; Git keeps its normal process cache. This flag affects
+query modes, including fresh-session controls, rather than the independent
+cat/files/status CLI controls. For a first-read comparison without cache reuse:
+
+```sh
+python3 benchmarks/compare_git.py --loom /absolute/new-loom \
+  --baseline-loom /absolute/previous-loom --baseline-multi --batch --multi \
+  --layout nested --directories 1024 --files 10000 --cache-bytes 0 \
+  --rounds 1 --repeat 5 --requests 1000 --output directory-zero-cache.json
+```
+
+Five modes with these flags use five rotated repeats for one complete order
+cycle. OS caches remain warm; zero Loom cache does not imply cold storage.
+
+For a higher-sample native confirmation without repeatedly timing CLI status:
+
+```sh
+python3 benchmarks/compare_native_group.py --loom /absolute/new-loom \
+  --baseline-loom /absolute/previous-loom --files 100000 --directories 256 \
+  --repeat 50 --requests 1000 --output native-pairs.json
+```
+
+This creates one fixture with 11 commits, then alternates engine order for
+paired seeds in fresh zero-cache query processes. Every returned byte/slot is
+checked. Raw samples, ratios, host metadata and binary/harness hashes are saved.
+It has no Git comparison and should supplement, rather than replace, the
+equivalent Git controls and their unfavorable results.
+
 ## Explicit read-pack comparison
 
 ```sh
