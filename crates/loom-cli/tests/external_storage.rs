@@ -6,6 +6,7 @@ fn run(root: &Path, objects: Option<&Path>, args: &[&str]) -> std::process::Outp
         .current_dir(root)
         .env("LOOM_AUTHOR", "external-test")
         .env_remove("LOOM_OBJECT_DIR")
+        .env_remove("LOOM_OBJECT_DB")
         .args(args);
     if let Some(objects) = objects {
         command.env("LOOM_OBJECT_DIR", objects);
@@ -66,4 +67,55 @@ fn malformed_init_arguments_do_not_create_repository_metadata() {
         assert!(!run(workspace.path(), None, &args).status.success());
         assert!(!workspace.path().join(".loom").exists());
     }
+}
+
+#[test]
+fn sqlite_objects_work_through_cli_across_processes() {
+    let workspace = tempfile::tempdir().unwrap();
+    let objects = tempfile::tempdir().unwrap();
+    let db = objects.path().join("objects.sqlite");
+    ok(
+        workspace.path(),
+        None,
+        &["init", "--object-db", db.to_str().unwrap()],
+    );
+    fs::write(workspace.path().join("file"), b"SQLite bytes").unwrap();
+    let run_db = |args: &[&str]| {
+        let result = Command::new(env!("CARGO_BIN_EXE_loom"))
+            .current_dir(workspace.path())
+            .env_remove("LOOM_OBJECT_DIR")
+            .env("LOOM_OBJECT_DB", &db)
+            .env("LOOM_AUTHOR", "sqlite-test")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        result.stdout
+    };
+    run_db(&["add", "file"]);
+    run_db(&["commit", "-m", "SQLite object provider"]);
+    assert_eq!(run_db(&["cat", "main", "file"]), b"SQLite bytes");
+    run_db(&["branch", "create", "feature"]);
+    run_db(&["switch", "feature"]);
+    run_db(&["fsck"]);
+    assert_eq!(
+        fs::read_dir(workspace.path().join(".loom/objects"))
+            .unwrap()
+            .count(),
+        0
+    );
+    assert!(!run(workspace.path(), None, &["status"]).status.success());
+    let rejected = Command::new(env!("CARGO_BIN_EXE_loom"))
+        .current_dir(workspace.path())
+        .env("LOOM_OBJECT_DIR", objects.path())
+        .env("LOOM_OBJECT_DB", &db)
+        .arg("status")
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("choose one object provider"));
 }

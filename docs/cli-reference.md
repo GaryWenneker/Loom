@@ -43,3 +43,7 @@ Initialize with `loom init [path] --object-dir DIRECTORY`, or set `LOOM_OBJECT_D
 ## Explicit Git fallback
 
 `loom git -- GIT_ARGS...` invokes installed Git with the current directory, terminal streams and unmodified OS arguments. It preserves Git's exit code and works without a Loom repository. No shell is inserted. Native commands never silently fall back. This is explicit Git execution, not native history import/export; Git commands retain their normal filesystem/network side effects. See [Git compatibility bridge](git-compatibility-bridge.md).
+
+## SQLite objects
+
+`loom init [path] --object-db FILE` initializes with SQLite object storage. Set `LOOM_OBJECT_DB` to the same database for subsequent commands. Use an absolute path and an existing parent directory. Choose one of `LOOM_OBJECT_DIR` and `LOOM_OBJECT_DB`; setting both is an error. The native format and IDs are identical to filesystem objects. Refs and the workspace journal retain their local SQLite transaction boundary.

@@ -4,7 +4,7 @@
 
 Loom's repository engine routes canonical objects through `ObjectBackend`. The default remains filesystem fanout directories under `.loom/objects`. Callers can instead supply a durable provider through `Repository::init_with_object_backend` and `Repository::discover_with_object_backend`; native trees, blobs, history, staging and transitions all use that provider. SQLite WAL continues to own local refs, staging, indexes and the workspace journal in their existing transactions.
 
-Implemented providers are filesystem objects, ephemeral memory objects/refs, independent SQLite ref CAS, and verified all-ack immutable object replication. The independent ref-provider API does not replace the repository's SQLite journal transaction. Cloud locations are validated configuration contracts; AWS, Azure and GCP network drivers remain unimplemented.
+Implemented providers are filesystem and SQLite objects, ephemeral memory objects/refs, independent SQLite ref CAS, and verified all-ack immutable object replication. The independent ref-provider API does not replace the repository's SQLite journal transaction. Cloud locations are validated configuration contracts; AWS, Azure and GCP network drivers remain unimplemented.
 
 ## Use a separate object directory
 
@@ -22,9 +22,26 @@ Alternatively initialize with `loom init [path] --object-dir /absolute/path/loom
 
 Repositories initialized with an external provider persist only the binding `external-v1`, never provider credentials or paths. Reopening without an explicit provider fails clearly. An existing local repository cannot be switched by setting the environment variable: verified object migration is separate work. An empty or incomplete replacement provider is rejected before workspace recovery.
 
+## SQLite object storage
+
+```sh
+export LOOM_OBJECT_DB=/absolute/path/objects.sqlite
+loom init /absolute/path/workspace
+cd /absolute/path/workspace
+loom add file.txt
+loom commit -m "SQLite objects"
+loom fsck
+```
+
+Alternatively use `loom init [path] --object-db FILE`, then set `LOOM_OBJECT_DB` for later commands. The database parent directory must exist. An explicit init storage option overrides environment selection; passing both init options or setting both provider environment variables is an error. Ordinary repositories keep their default filesystem storage.
+
+The object database uses WAL and `synchronous=FULL`, immutable conditional insertion in an immediate transaction, on-read hash/envelope verification and complete ID enumeration for `fsck`. Reopening a provider never recreates a database that disappeared after initialization. Relative database paths are resolved to an absolute path when the provider opens. In-memory SQLite and database symlinks are rejected. This provider does not claim protection from all concurrent filesystem substitution attacks or hardware-specific power loss.
+
+SQLite can be composed with filesystem providers in `ReplicatedObjectBackend`; all object IDs and canonical bytes stay identical across both. Tests reconstruct one repository from either complete copy. SQLite refs and the repository journal remain independent roles. Live databases may have WAL/SHM sidecars; copying only the main database file while active is not a verified backup procedure.
+
 ## Provider API and publication checks
 
-`FilesystemObjectBackend::open(path)` exposes the real filesystem implementation for embedding and composition. Supply an `Arc<dyn ObjectBackend>` to initialize/reopen with another implementation, including `ReplicatedObjectBackend`. Providers must advertise durable writes and conditional creation; volatile memory is rejected before initialization modifies the workspace.
+`FilesystemObjectBackend::open(path)` and `sqlite_object_storage::SqliteObjectBackend::open(path)` expose the filesystem and SQLite implementations for embedding and composition. Supply an `Arc<dyn ObjectBackend>` to initialize/reopen with another implementation, including `ReplicatedObjectBackend`. Providers must advertise durable writes and conditional creation; volatile memory is rejected before initialization modifies the workspace.
 
 The repository verifies every returned object hash/envelope and reads back each publication. Before publishing an external-provider branch ref or replaying a workspace transition, it verifies the full typed history/blob/tree closure, including historical blobs no longer in the current snapshot. Replicated providers must report each object present on every replica. Traversal is iterative and capped at one million typed objects; exceeding the cap fails before publication. This conservative check scans history and is not an agent-scale performance claim. Providers remain responsible for the accuracy of their durability/consistency declarations and retention; integrity checks cannot prevent out-of-band deletion after verification.
 
@@ -84,3 +101,13 @@ This is **target configuration syntax**, not an implemented parser. Future profi
 - Never publish a ref until its complete immutable object closure is durable in the selected authoritative object store.
 
 See issue #26. Git fallback is a separate interoperability layer, not a storage backend.
+
+## Reproduce shared-provider validation
+
+```sh
+cargo build -p loom-cli
+python3 benchmarks/shared_object_stress.py --binary target/debug/loom --backend sqlite --agents 10 --commits 10
+python3 benchmarks/shared_object_stress.py --binary target/debug/loom --backend filesystem --agents 10 --commits 10
+```
+
+The script starts isolated workspace/ref databases concurrently, all using one object provider. It verifies each acknowledged first-parent history, final snapshot and full `fsck`, then prints JSON counts and elapsed time. It does not exercise shared branch contention, a remote server, injected crashes or cloud latency. SQLite bootstrap retries journal-mode lock upgrades within a bounded deadline; this path has a synchronized twelve-initializer regression test.

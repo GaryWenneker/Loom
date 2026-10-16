@@ -4,6 +4,8 @@ Loom is an experimental project; neither its CLI nor its storage format has reac
 
 ## Unreleased
 
+- Durable SQLite object provider with conditional immutable publication, verified reads, enumeration and mixed filesystem/SQLite replication. The CLI selects it with `--object-db FILE` / `LOOM_OBJECT_DB`.
+
 - Explicit Git fallback: `loom git -- GIT_ARGS...` runs installed Git in Git-only repositories, preserves exit codes and OS arguments, and keeps native history conversion separate.
 
 - Repository object-provider integration: external filesystem directories in the CLI, injectable durable object backends in the Rust API, verified publication and complete external history/blob/tree closure checks before ref publication.

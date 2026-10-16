@@ -48,3 +48,7 @@ The [Scion architecture assessment](../docs/scion-architecture-review.md) still 
 5. Cross-platform crash and fault injections during those workloads.
 
 Performance without lossless results and fault tolerance does **not** satisfy a release gate.
+
+## Shared immutable provider stress
+
+`python3 benchmarks/shared_object_stress.py --binary target/debug/loom --backend sqlite --agents 10 --commits 10` runs concurrent independent workspaces against one object database. Choose `--backend filesystem` for shared loose objects. It fails on any command error, missing acknowledged history, snapshot mismatch or `fsck` failure. Output is JSON; this is a local correctness workload, not distributed ref or failure-injection evidence.

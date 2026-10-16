@@ -93,7 +93,7 @@ impl Repository {
                     (None, None) => ObjectStore::new(&meta),
                     (Some("external-v1"), Some(store)) => store,
                     (Some("external-v1"), None) => return Err(Error::Invalid(
-                        "external object backend required; set LOOM_OBJECT_DIR or use discover_with_object_backend".into(),
+                        "external object backend required; set LOOM_OBJECT_DIR/LOOM_OBJECT_DB or use discover_with_object_backend".into(),
                     )),
                     (None, Some(_)) => return Err(Error::Invalid(
                         "repository uses local objects; changing providers requires verified migration".into(),
