@@ -10,7 +10,7 @@
 
 ## What is implemented now
 
-`cloud_storage::CloudObjectLocation` validates provider, namespace, key prefix and optional HTTPS S3-compatible origin. It produces the same canonical relative object key across providers. **No AWS, Azure, Google Cloud or S3 network adapter is implemented yet.** No credentials are accepted or transmitted by this module. The current repository engine still persists locally.
+`cloud_storage::CloudObjectLocation` validates provider, namespace, key prefix and optional HTTPS S3-compatible origin. It produces the same canonical relative object key across providers. **No AWS, Azure, Google Cloud or S3 network adapter is implemented yet.** No credentials are accepted or transmitted by this module. The repository engine now accepts explicit durable `ObjectBackend` providers and the CLI can use a separate filesystem object directory. Refs, staging and the workspace journal remain in local SQLite; cloud transport is still pending.
 
 ## Adapter acceptance requirements
 

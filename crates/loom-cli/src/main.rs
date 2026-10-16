@@ -1,8 +1,8 @@
-use loom_core::{ObjectId, Repository, StatusKind};
+use loom_core::{FilesystemObjectBackend, ObjectId, Repository, StatusKind};
 use std::{env, path::Path, process};
 
 fn usage() {
-    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path]\n  loom status\n  loom add PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom merge-bases LEFT_BRANCH RIGHT_BRANCH\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom cat @CHANGESET_ID PATH\n  loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]\n  loom tree @CHANGESET_ID\n  loom tree ls @TREE_ID [DIR]\n  loom tree cat @TREE_ID PATH\n  loom fsck\n");
+    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path] [--object-dir DIRECTORY]\n  loom status\n  loom add PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom merge-bases LEFT_BRANCH RIGHT_BRANCH\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom cat @CHANGESET_ID PATH\n  loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]\n  loom tree @CHANGESET_ID\n  loom tree ls @TREE_ID [DIR]\n  loom tree cat @TREE_ID PATH\n  loom fsck\n\nExternal object storage: set LOOM_OBJECT_DIR for every command.\n");
 }
 
 
@@ -31,13 +31,37 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let Some(cmd) = args.first().map(String::as_str) else { usage(); return Err("missing command".into()); };
     if matches!(cmd, "--help" | "-h" | "help") { usage(); return Ok(()); }
     if cmd == "init" {
-        let path = args.get(1).map_or(".", String::as_str);
+        let mut path = None;
+        let mut object_dir = env::var_os("LOOM_OBJECT_DIR");
+        let mut rest = args[1..].iter();
+        while let Some(arg) = rest.next() {
+            if arg == "--object-dir" {
+                object_dir = Some(rest.next().ok_or("--object-dir requires a directory")?.into());
+            } else if arg.starts_with('-') || path.is_some() {
+                return Err("usage: loom init [path] [--object-dir DIRECTORY]".into());
+            } else {
+                path = Some(arg.as_str());
+            }
+        }
+        let path = path.unwrap_or(".");
         if !Path::new(path).exists() { std::fs::create_dir_all(path)?; }
-        let repo = Repository::init(path)?;
+        let repo = if let Some(dir) = object_dir {
+            Repository::init_with_object_backend(
+                path, std::sync::Arc::new(FilesystemObjectBackend::open(dir)?),
+            )?
+        } else {
+            Repository::init(path)?
+        };
         println!("Initialized native Loom repository at {}", repo.root().display());
         return Ok(());
     }
-    let repo = Repository::discover(env::current_dir()?)?;
+    let repo = if let Some(dir) = env::var_os("LOOM_OBJECT_DIR") {
+        Repository::discover_with_object_backend(
+            env::current_dir()?, std::sync::Arc::new(FilesystemObjectBackend::open(dir)?),
+        )?
+    } else {
+        Repository::discover(env::current_dir()?)?
+    };
     match cmd {
         "status" => {
             println!("On branch {}", repo.current_branch()?);

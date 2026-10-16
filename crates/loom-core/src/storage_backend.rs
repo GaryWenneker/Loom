@@ -22,6 +22,11 @@ pub trait ObjectBackend: Send + Sync {
     fn get(&self, id: ObjectId) -> Result<Vec<u8>>;
     fn put_if_absent(&self, id: ObjectId, canonical_envelope: &[u8]) -> Result<()>;
     fn exists(&self, id: ObjectId) -> Result<bool>;
+    /// Optional complete enumeration for offline integrity checks. Backends
+    /// without authoritative listing must report list_objects=false.
+    fn list_ids(&self) -> Result<Vec<ObjectId>> {
+        Err(crate::Error::Invalid("object backend enumeration is unsupported".into()))
+    }
 }
 
 /// Optional streaming extension for large blobs and remote object stores.

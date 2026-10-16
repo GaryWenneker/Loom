@@ -12,6 +12,7 @@ pub mod storage_backend;
 mod text_merge;
 mod tree;
 
+pub use store::FilesystemObjectBackend;
 pub use format::{Change, ChangeKind, Changeset, ObjectId};
 pub use repository::{FileDiff, Repository, StatusEntry, StatusKind};
 pub use tree::{NativeTree, TreeEntry, TreeEntryKind};
