@@ -33,10 +33,14 @@ pub struct NativeTree {
 fn validate_entry(entry: &TreeEntry) -> Result<()> {
     validate_path(&entry.name)?;
     if entry.name.contains('/') || entry.name.len() > MAX_NAME {
-        return Err(Error::Invalid("tree name must be one bounded path component".into()));
+        return Err(Error::Invalid(
+            "tree name must be one bounded path component".into(),
+        ));
     }
     if entry.kind == TreeEntryKind::Directory && entry.executable {
-        return Err(Error::Invalid("directory cannot have executable-file flag".into()));
+        return Err(Error::Invalid(
+            "directory cannot have executable-file flag".into(),
+        ));
     }
     Ok(())
 }
@@ -79,7 +83,9 @@ impl NativeTree {
             Ok(&data[start..*pos])
         }
         let count = u32::from_le_bytes(
-            take(payload, &mut cursor, 4)?.try_into().expect("four bytes")
+            take(payload, &mut cursor, 4)?
+                .try_into()
+                .expect("four bytes"),
         ) as usize;
         if count > MAX_ENTRIES {
             return Err(Error::Invalid("too many tree entries".into()));
@@ -98,7 +104,9 @@ impl NativeTree {
                 _ => return Err(Error::Invalid("invalid executable flag".into())),
             };
             let len = u32::from_le_bytes(
-                take(payload, &mut cursor, 4)?.try_into().expect("four bytes")
+                take(payload, &mut cursor, 4)?
+                    .try_into()
+                    .expect("four bytes"),
             ) as usize;
             if len > MAX_NAME {
                 return Err(Error::Invalid("oversized native tree entry name".into()));
@@ -108,7 +116,12 @@ impl NativeTree {
                 .to_owned();
             let mut object = [0; 32];
             object.copy_from_slice(take(payload, &mut cursor, 32)?);
-            let entry = TreeEntry { name, kind, executable, object: ObjectId(object) };
+            let entry = TreeEntry {
+                name,
+                kind,
+                executable,
+                object: ObjectId(object),
+            };
             validate_entry(&entry)?;
             if i != 0 && entry.name <= previous {
                 return Err(Error::Invalid("unsorted or duplicate tree entry".into()));
@@ -136,11 +149,7 @@ pub(crate) fn write_snapshot(
         files: BTreeMap<String, ObjectId>,
         dirs: BTreeMap<String, Folder>,
     }
-    fn save(
-        store: &crate::store::ObjectStore,
-        folder: &Folder,
-        depth: usize,
-    ) -> Result<ObjectId> {
+    fn save(store: &crate::store::ObjectStore, folder: &Folder, depth: usize) -> Result<ObjectId> {
         if depth > 256 {
             return Err(Error::Invalid("native tree nesting limit reached".into()));
         }
@@ -174,7 +183,9 @@ pub(crate) fn write_snapshot(
         validate_path(path)?;
         let object = store.get(*blob)?;
         if decode_object(&object)?.0 != crate::format::BLOB {
-            return Err(Error::Invalid(format!("native tree file does not reference a blob: {path}")));
+            return Err(Error::Invalid(format!(
+                "native tree file does not reference a blob: {path}"
+            )));
         }
     }
 
@@ -183,7 +194,9 @@ pub(crate) fn write_snapshot(
         validate_path(path)?;
         let components: Vec<&str> = path.split('/').collect();
         if components.len() > 256 {
-            return Err(Error::Invalid("native tree path nesting limit reached".into()));
+            return Err(Error::Invalid(
+                "native tree path nesting limit reached".into(),
+            ));
         }
         let mut folder = &mut root;
         for name in &components[..components.len() - 1] {
@@ -193,8 +206,9 @@ pub(crate) fn write_snapshot(
             folder = folder.dirs.entry((*name).to_owned()).or_default();
         }
         let name = components.last().expect("validated nonempty path");
-        if folder.dirs.contains_key(*name) ||
-            folder.files.insert((*name).to_owned(), *blob).is_some() {
+        if folder.dirs.contains_key(*name)
+            || folder.files.insert((*name).to_owned(), *blob).is_some()
+        {
             return Err(Error::Invalid(format!("file/directory collision: {path}")));
         }
     }
@@ -215,15 +229,21 @@ pub(crate) fn lookup_file(
     validate_path(path)?;
     let components: Vec<&str> = path.split('/').collect();
     if components.len() > 256 {
-        return Err(Error::Invalid("native tree path nesting limit reached".into()));
+        return Err(Error::Invalid(
+            "native tree path nesting limit reached".into(),
+        ));
     }
     let mut current = root;
     for (index, name) in components.iter().enumerate() {
         let node = NativeTree::decode(&store.get(current)?)?;
         if index > 0 && node.entries.is_empty() {
-            return Err(Error::Invalid("noncanonical empty native tree directory".into()));
+            return Err(Error::Invalid(
+                "noncanonical empty native tree directory".into(),
+            ));
         }
-        let Ok(position) = node.entries.binary_search_by(|entry| entry.name.as_str().cmp(name))
+        let Ok(position) = node
+            .entries
+            .binary_search_by(|entry| entry.name.as_str().cmp(name))
         else {
             return Ok(None);
         };
@@ -260,7 +280,9 @@ pub(crate) fn list_prefix(
         }
         let tree = NativeTree::decode(&store.get(id)?)?;
         if depth > 0 && tree.entries.is_empty() {
-            return Err(Error::Invalid("noncanonical empty native tree directory".into()));
+            return Err(Error::Invalid(
+                "noncanonical empty native tree directory".into(),
+            ));
         }
         for entry in tree.entries {
             let path = if base.is_empty() {
@@ -286,18 +308,26 @@ pub(crate) fn list_prefix(
         validate_path(prefix)?;
         let parts: Vec<&str> = prefix.split('/').collect();
         if parts.len() > 256 {
-            return Err(Error::Invalid("native tree path nesting limit reached".into()));
+            return Err(Error::Invalid(
+                "native tree path nesting limit reached".into(),
+            ));
         }
         for (index, part) in parts.iter().enumerate() {
             let tree = NativeTree::decode(&store.get(current)?)?;
             if index > 0 && tree.entries.is_empty() {
-                return Err(Error::Invalid("noncanonical empty native tree directory".into()));
+                return Err(Error::Invalid(
+                    "noncanonical empty native tree directory".into(),
+                ));
             }
             let Ok(position) = tree.entries.binary_search_by(|e| e.name.as_str().cmp(part)) else {
                 return Ok(BTreeMap::new());
             };
             let entry = &tree.entries[position];
-            base = if base.is_empty() { (*part).to_owned() } else { format!("{base}/{part}") };
+            base = if base.is_empty() {
+                (*part).to_owned()
+            } else {
+                format!("{base}/{part}")
+            };
             if entry.kind == TreeEntryKind::File {
                 let mut result = BTreeMap::new();
                 if index + 1 == parts.len() {
@@ -309,7 +339,13 @@ pub(crate) fn list_prefix(
         }
     }
     let mut result = BTreeMap::new();
-    visit(store, current, &base, prefix.split('/').filter(|p| !p.is_empty()).count(), &mut result)?;
+    visit(
+        store,
+        current,
+        &base,
+        prefix.split('/').filter(|p| !p.is_empty()).count(),
+        &mut result,
+    )?;
     Ok(result)
 }
 
@@ -324,7 +360,7 @@ pub(crate) fn apply_changes(
     root: ObjectId,
     changes: &[crate::format::Change],
 ) -> Result<ObjectId> {
-    use crate::format::{ChangeKind, Change};
+    use crate::format::{Change, ChangeKind};
     use std::collections::BTreeMap;
 
     #[derive(Default)]
@@ -335,15 +371,12 @@ pub(crate) fn apply_changes(
 
     impl Edits {
         fn has_additions(&self) -> bool {
-            self.value.is_some_and(|v| v.is_some()) ||
-                self.children.values().any(Edits::has_additions)
+            self.value.is_some_and(|v| v.is_some())
+                || self.children.values().any(Edits::has_additions)
         }
     }
 
-    fn persist(
-        store: &crate::store::ObjectStore,
-        entries: Vec<TreeEntry>,
-    ) -> Result<ObjectId> {
+    fn persist(store: &crate::store::ObjectStore, entries: Vec<TreeEntry>) -> Result<ObjectId> {
         let envelope = NativeTree { entries }.encode()?;
         let (_, payload) = decode_object(&envelope)?;
         store.put(TREE, payload)
@@ -361,10 +394,14 @@ pub(crate) fn apply_changes(
         let mut entries: BTreeMap<String, TreeEntry> = if let Some(id) = previous {
             let tree = NativeTree::decode(&store.get(id)?)?;
             if depth > 0 && tree.entries.is_empty() {
-                return Err(Error::Invalid("noncanonical empty native tree directory".into()));
+                return Err(Error::Invalid(
+                    "noncanonical empty native tree directory".into(),
+                ));
             }
-            tree.entries.into_iter()
-                .map(|entry| (entry.name.clone(), entry)).collect()
+            tree.entries
+                .into_iter()
+                .map(|entry| (entry.name.clone(), entry))
+                .collect()
         } else {
             BTreeMap::new()
         };
@@ -387,8 +424,9 @@ pub(crate) fn apply_changes(
                                 "native tree deletion beneath a file: {name}"
                             )));
                         }
-                        if previous.kind == TreeEntryKind::Directory &&
-                            apply_dir(store, Some(previous.object), child, depth + 1)?.is_some() {
+                        if previous.kind == TreeEntryKind::Directory
+                            && apply_dir(store, Some(previous.object), child, depth + 1)?.is_some()
+                        {
                             return Err(Error::Invalid(format!(
                                 "native tree directory has undeleted descendants: {name}"
                             )));
@@ -405,9 +443,10 @@ pub(crate) fn apply_changes(
                     // A directory cannot be deleted as if it were a file
                     // in the v1 changeset model. A removed file can instead
                     // be replaced with a directory in the same batch.
-                    if existing.as_ref().is_some_and(|e|
-                        e.kind == TreeEntryKind::Directory
-                    ) {
+                    if existing
+                        .as_ref()
+                        .is_some_and(|e| e.kind == TreeEntryKind::Directory)
+                    {
                         return Err(Error::Invalid(format!(
                             "native tree deletion targets a directory: {name}"
                         )));
@@ -422,11 +461,12 @@ pub(crate) fn apply_changes(
                 }
                 None => {
                     let prior = match existing {
-                        Some(entry) if entry.kind == TreeEntryKind::Directory =>
-                            Some(entry.object),
-                        Some(_) => return Err(Error::Invalid(format!(
-                            "cannot add path beneath a native tree file: {name}"
-                        ))),
+                        Some(entry) if entry.kind == TreeEntryKind::Directory => Some(entry.object),
+                        Some(_) => {
+                            return Err(Error::Invalid(format!(
+                                "cannot add path beneath a native tree file: {name}"
+                            )))
+                        }
                         None => None,
                     };
                     apply_dir(store, prior, child, depth + 1)?.map(|id| TreeEntry {
@@ -452,7 +492,9 @@ pub(crate) fn apply_changes(
         validate_path(path)?;
         let components: Vec<&str> = path.split('/').collect();
         if components.len() > 256 {
-            return Err(Error::Invalid("native tree path nesting limit reached".into()));
+            return Err(Error::Invalid(
+                "native tree path nesting limit reached".into(),
+            ));
         }
         let value = match kind {
             ChangeKind::Delete if blob.is_none() => None,
@@ -466,9 +508,11 @@ pub(crate) fn apply_changes(
                 }
                 Some(oid)
             }
-            _ => return Err(Error::Invalid(format!(
-                "invalid native tree change: {path}"
-            ))),
+            _ => {
+                return Err(Error::Invalid(format!(
+                    "invalid native tree change: {path}"
+                )))
+            }
         };
         let mut node = &mut edits;
         for component in components {
@@ -509,12 +553,16 @@ pub(crate) fn flatten_snapshot(
         state: &mut BTreeMap<String, ObjectId>,
     ) -> Result<()> {
         if depth > 256 || !ancestry.insert(id) {
-            return Err(Error::Invalid("native tree depth or cycle limit reached".into()));
+            return Err(Error::Invalid(
+                "native tree depth or cycle limit reached".into(),
+            ));
         }
         let result = (|| -> Result<()> {
             let node = NativeTree::decode(&store.get(id)?)?;
             if depth > 0 && node.entries.is_empty() {
-                return Err(Error::Invalid("noncanonical empty native tree directory".into()));
+                return Err(Error::Invalid(
+                    "noncanonical empty native tree directory".into(),
+                ));
             }
             for entry in node.entries {
                 let path = if prefix.is_empty() {
@@ -555,18 +603,28 @@ mod tests {
     use super::*;
 
     fn tree() -> NativeTree {
-        NativeTree { entries: vec![
-            TreeEntry { name: "README.md".into(), kind: TreeEntryKind::File,
-                        executable: false, object: ObjectId([1; 32]) },
-            TreeEntry { name: "src".into(), kind: TreeEntryKind::Directory,
-                        executable: false, object: ObjectId([2; 32]) },
-        ] }
+        NativeTree {
+            entries: vec![
+                TreeEntry {
+                    name: "README.md".into(),
+                    kind: TreeEntryKind::File,
+                    executable: false,
+                    object: ObjectId([1; 32]),
+                },
+                TreeEntry {
+                    name: "src".into(),
+                    kind: TreeEntryKind::Directory,
+                    executable: false,
+                    object: ObjectId([2; 32]),
+                },
+            ],
+        }
     }
 
     // Ten portable serialization edge cases, kept in one CI-reviewed change.
     #[test]
     fn deleting_descendant_of_existing_file_is_rejected() {
-        use crate::format::{BLOB, Change, ChangeKind};
+        use crate::format::{Change, ChangeKind, BLOB};
         use std::{collections::BTreeMap, fs};
         let dir = tempfile::tempdir().unwrap();
         let meta = dir.path().join(".loom");
@@ -574,9 +632,7 @@ mod tests {
         fs::create_dir(meta.join("objects")).unwrap();
         let store = crate::store::ObjectStore::new(&meta);
         let blob = store.put(BLOB, b"content").unwrap();
-        let root = write_snapshot(&store, &BTreeMap::from([
-            ("parent".to_owned(), blob),
-        ])).unwrap();
+        let root = write_snapshot(&store, &BTreeMap::from([("parent".to_owned(), blob)])).unwrap();
         let changes = [Change {
             path: "parent/child".to_owned(),
             kind: ChangeKind::Delete,
@@ -586,16 +642,29 @@ mod tests {
         // A replacement at the parent must not shadow a malformed deletion.
         let mut shadowed = changes.to_vec();
         shadowed.push(Change {
-            path: "parent".to_owned(), kind: ChangeKind::Modify, blob: Some(blob),
+            path: "parent".to_owned(),
+            kind: ChangeKind::Modify,
+            blob: Some(blob),
         });
         assert!(apply_changes(&store, root, &shadowed).is_err());
         // Explicit removal of the parent permits a valid file-to-directory transition.
         let transition = [
-            Change { path: "parent".to_owned(), kind: ChangeKind::Delete, blob: None },
-            Change { path: "parent/child".to_owned(), kind: ChangeKind::Add, blob: Some(blob) },
+            Change {
+                path: "parent".to_owned(),
+                kind: ChangeKind::Delete,
+                blob: None,
+            },
+            Change {
+                path: "parent/child".to_owned(),
+                kind: ChangeKind::Add,
+                blob: Some(blob),
+            },
         ];
         let next = apply_changes(&store, root, &transition).unwrap();
-        assert_eq!(lookup_file(&store, next, "parent/child").unwrap(), Some(blob));
+        assert_eq!(
+            lookup_file(&store, next, "parent/child").unwrap(),
+            Some(blob)
+        );
         assert_eq!(lookup_file(&store, root, "parent").unwrap(), Some(blob));
     }
 
@@ -607,7 +676,9 @@ mod tests {
 
     #[test]
     fn conformance_02_single_file_roundtrip() {
-        let node = NativeTree { entries: vec![tree().entries[0].clone()] };
+        let node = NativeTree {
+            entries: vec![tree().entries[0].clone()],
+        };
         assert_eq!(NativeTree::decode(&node.encode().unwrap()).unwrap(), node);
     }
 
@@ -679,23 +750,41 @@ mod tests {
         let store = crate::store::ObjectStore::new(&meta);
         let blob = store.put(BLOB, b"target").unwrap();
         let other = store.put(BLOB, b"other").unwrap();
-        let root = write_snapshot(&store, &BTreeMap::from([
-            ("src/nested/target.rs".to_string(), blob),
-            ("unrelated/other.rs".to_string(), other),
-        ])).unwrap();
-        assert_eq!(lookup_file(&store, root, "src/nested/target.rs").unwrap(), Some(blob));
-        assert_eq!(lookup_file(&store, root, "src/nested/missing.rs").unwrap(), None);
+        let root = write_snapshot(
+            &store,
+            &BTreeMap::from([
+                ("src/nested/target.rs".to_string(), blob),
+                ("unrelated/other.rs".to_string(), other),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(
+            lookup_file(&store, root, "src/nested/target.rs").unwrap(),
+            Some(blob)
+        );
+        assert_eq!(
+            lookup_file(&store, root, "src/nested/missing.rs").unwrap(),
+            None
+        );
         assert_eq!(lookup_file(&store, root, "src/nested").unwrap(), None);
-        assert_eq!(lookup_file(&store, root, "src/nested/target.rs/child").unwrap(), None);
+        assert_eq!(
+            lookup_file(&store, root, "src/nested/target.rs/child").unwrap(),
+            None
+        );
         assert!(lookup_file(&store, root, "../escape").is_err());
         // A missing unrelated subtree must not break lookup of another path.
-        let mut entries = NativeTree::decode(&store.get(root).unwrap()).unwrap().entries;
+        let mut entries = NativeTree::decode(&store.get(root).unwrap())
+            .unwrap()
+            .entries;
         let sibling = entries.iter_mut().find(|e| e.name == "unrelated").unwrap();
         sibling.object = ObjectId([0xEE; 32]);
         let bytes = NativeTree { entries }.encode().unwrap();
         let (_, payload) = decode_object(&bytes).unwrap();
         let sparse_root = store.put(TREE, payload).unwrap();
-        assert_eq!(lookup_file(&store, sparse_root, "src/nested/target.rs").unwrap(), Some(blob));
+        assert_eq!(
+            lookup_file(&store, sparse_root, "src/nested/target.rs").unwrap(),
+            Some(blob)
+        );
     }
 
     #[test]
@@ -709,23 +798,35 @@ mod tests {
         fs::create_dir(meta.join("objects")).unwrap();
         let store = crate::store::ObjectStore::new(&meta);
         let blob = store.put(BLOB, b"source").unwrap();
-        let root = write_snapshot(&store, &BTreeMap::from([
-            ("src/a.rs".to_string(), blob),
-            ("src/deep/b.rs".to_string(), blob),
-            ("vendor/unused.rs".to_string(), blob),
-        ])).unwrap();
+        let root = write_snapshot(
+            &store,
+            &BTreeMap::from([
+                ("src/a.rs".to_string(), blob),
+                ("src/deep/b.rs".to_string(), blob),
+                ("vendor/unused.rs".to_string(), blob),
+            ]),
+        )
+        .unwrap();
         let expected = BTreeMap::from([
             ("src/a.rs".to_string(), blob),
             ("src/deep/b.rs".to_string(), blob),
         ]);
         assert_eq!(list_prefix(&store, root, "src").unwrap(), expected);
-        assert_eq!(list_prefix(&store, root, "src/a.rs").unwrap(),
-                   BTreeMap::from([("src/a.rs".to_string(), blob)]));
+        assert_eq!(
+            list_prefix(&store, root, "src/a.rs").unwrap(),
+            BTreeMap::from([("src/a.rs".to_string(), blob)])
+        );
         assert!(list_prefix(&store, root, "absent").unwrap().is_empty());
         assert!(list_prefix(&store, root, "../escape").is_err());
 
-        let mut entries = NativeTree::decode(&store.get(root).unwrap()).unwrap().entries;
-        entries.iter_mut().find(|e| e.name == "vendor").unwrap().object = ObjectId([0xFD; 32]);
+        let mut entries = NativeTree::decode(&store.get(root).unwrap())
+            .unwrap()
+            .entries;
+        entries
+            .iter_mut()
+            .find(|e| e.name == "vendor")
+            .unwrap()
+            .object = ObjectId([0xFD; 32]);
         let envelope = NativeTree { entries }.encode().unwrap();
         let (_, payload) = decode_object(&envelope).unwrap();
         let sparse_root = store.put(TREE, payload).unwrap();
@@ -762,10 +863,16 @@ mod tests {
         let empty = NativeTree { entries: vec![] }.encode().unwrap();
         let (_, payload) = decode_object(&empty).unwrap();
         let child = store.put(TREE, payload).unwrap();
-        let root = NativeTree { entries: vec![TreeEntry {
-            name: "empty".into(), kind: TreeEntryKind::Directory,
-            executable: false, object: child,
-        }] }.encode().unwrap();
+        let root = NativeTree {
+            entries: vec![TreeEntry {
+                name: "empty".into(),
+                kind: TreeEntryKind::Directory,
+                executable: false,
+                object: child,
+            }],
+        }
+        .encode()
+        .unwrap();
         let (_, payload) = decode_object(&root).unwrap();
         let root_id = store.put(TREE, payload).unwrap();
         assert!(flatten_snapshot(&store, root_id).is_err());
@@ -783,10 +890,16 @@ mod tests {
         let empty = NativeTree { entries: vec![] }.encode().unwrap();
         let (_, payload) = decode_object(&empty).unwrap();
         let child = store.put(TREE, payload).unwrap();
-        let root = NativeTree { entries: vec![TreeEntry {
-            name: "dir".into(), kind: TreeEntryKind::Directory,
-            executable: false, object: child,
-        }] }.encode().unwrap();
+        let root = NativeTree {
+            entries: vec![TreeEntry {
+                name: "dir".into(),
+                kind: TreeEntryKind::Directory,
+                executable: false,
+                object: child,
+            }],
+        }
+        .encode()
+        .unwrap();
         let (_, payload) = decode_object(&root).unwrap();
         let root_id = store.put(TREE, payload).unwrap();
         let blob = store.put(BLOB, b"data").unwrap();
@@ -810,7 +923,11 @@ mod tests {
         let root = write_snapshot(&store, &std::collections::BTreeMap::new()).unwrap();
         let blob = store.put(BLOB, b"safe").unwrap();
         for path in ["../escape", "dir/../escape", "/absolute"] {
-            let change = Change { path: path.into(), kind: ChangeKind::Add, blob: Some(blob) };
+            let change = Change {
+                path: path.into(),
+                kind: ChangeKind::Add,
+                blob: Some(blob),
+            };
             assert!(apply_changes(&store, root, &[change]).is_err());
         }
     }
@@ -822,8 +939,10 @@ mod tests {
         assert_eq!(bytes[5], crate::format::TREE_VERSION);
         assert_eq!(bytes[6], TREE);
         assert_eq!(NativeTree::decode(&bytes).unwrap(), source);
-        assert_eq!(crate::format::object_id(&bytes),
-                   crate::format::object_id(&source.encode().unwrap()));
+        assert_eq!(
+            crate::format::object_id(&bytes),
+            crate::format::object_id(&source.encode().unwrap())
+        );
         assert_eq!(NativeTree { entries: vec![] }.encode().unwrap().len(), 19);
     }
 
@@ -832,11 +951,13 @@ mod tests {
         // Golden serialization vector: LOOM-NUL, v2, TREE, 4-byte
         // payload length, then a zero u32 entry count.
         let bytes = NativeTree { entries: vec![] }.encode().unwrap();
-        assert_eq!(bytes, vec![
-            0x4c, 0x4f, 0x4f, 0x4d, 0x00, 0x02, 0x03,
-            0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-        ]);
+        assert_eq!(
+            bytes,
+            vec![
+                0x4c, 0x4f, 0x4f, 0x4d, 0x00, 0x02, 0x03, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00,
+            ]
+        );
         assert_eq!(NativeTree::decode(&bytes).unwrap().entries.len(), 0);
     }
 
@@ -855,7 +976,7 @@ mod tests {
 
     #[test]
     fn delta_roots_match_canonical_rebuild_across_directory_transitions() {
-        use crate::format::{BLOB, Change, ChangeKind};
+        use crate::format::{Change, ChangeKind, BLOB};
         use std::collections::BTreeMap;
         use std::fs;
         let dir = tempfile::tempdir().unwrap();
@@ -874,26 +995,71 @@ mod tests {
             ("config".to_string(), c),
         ]);
         let original = write_snapshot(&store, &state).unwrap();
-        let original_src = NativeTree::decode(&store.get(original).unwrap()).unwrap()
-            .entries.into_iter().find(|e| e.name == "src").unwrap().object;
+        let original_src = NativeTree::decode(&store.get(original).unwrap())
+            .unwrap()
+            .entries
+            .into_iter()
+            .find(|e| e.name == "src")
+            .unwrap()
+            .object;
         let steps = [
             vec![
-                Change { kind: ChangeKind::Modify, path: "src/a".into(), blob: Some(d) },
-                Change { kind: ChangeKind::Delete, path: "src/sub/b".into(), blob: None },
-                Change { kind: ChangeKind::Add, path: "new".into(), blob: Some(b) },
+                Change {
+                    kind: ChangeKind::Modify,
+                    path: "src/a".into(),
+                    blob: Some(d),
+                },
+                Change {
+                    kind: ChangeKind::Delete,
+                    path: "src/sub/b".into(),
+                    blob: None,
+                },
+                Change {
+                    kind: ChangeKind::Add,
+                    path: "new".into(),
+                    blob: Some(b),
+                },
             ],
             vec![
-                Change { kind: ChangeKind::Delete, path: "config".into(), blob: None },
-                Change { kind: ChangeKind::Add, path: "config/nested".into(), blob: Some(c) },
+                Change {
+                    kind: ChangeKind::Delete,
+                    path: "config".into(),
+                    blob: None,
+                },
+                Change {
+                    kind: ChangeKind::Add,
+                    path: "config/nested".into(),
+                    blob: Some(c),
+                },
             ],
             vec![
-                Change { kind: ChangeKind::Delete, path: "config/nested".into(), blob: None },
-                Change { kind: ChangeKind::Add, path: "config".into(), blob: Some(a) },
+                Change {
+                    kind: ChangeKind::Delete,
+                    path: "config/nested".into(),
+                    blob: None,
+                },
+                Change {
+                    kind: ChangeKind::Add,
+                    path: "config".into(),
+                    blob: Some(a),
+                },
             ],
             vec![
-                Change { kind: ChangeKind::Delete, path: "src/a".into(), blob: None },
-                Change { kind: ChangeKind::Delete, path: "new".into(), blob: None },
-                Change { kind: ChangeKind::Delete, path: "config".into(), blob: None },
+                Change {
+                    kind: ChangeKind::Delete,
+                    path: "src/a".into(),
+                    blob: None,
+                },
+                Change {
+                    kind: ChangeKind::Delete,
+                    path: "new".into(),
+                    blob: None,
+                },
+                Change {
+                    kind: ChangeKind::Delete,
+                    path: "config".into(),
+                    blob: None,
+                },
             ],
         ];
         let mut expected = state;
@@ -913,13 +1079,20 @@ mod tests {
         assert!(expected.is_empty());
         // Original root is immutable and its source directory still exists.
         let retained = NativeTree::decode(&store.get(original).unwrap()).unwrap();
-        assert_eq!(retained.entries.into_iter().find(|e| e.name == "src").unwrap().object,
-                   original_src);
+        assert_eq!(
+            retained
+                .entries
+                .into_iter()
+                .find(|e| e.name == "src")
+                .unwrap()
+                .object,
+            original_src
+        );
     }
 
     #[test]
     fn unchanged_sibling_trees_keep_their_original_ids() {
-        use crate::format::{BLOB, Change, ChangeKind};
+        use crate::format::{Change, ChangeKind, BLOB};
         use std::collections::BTreeMap;
         use std::fs;
         let dir = tempfile::tempdir().unwrap();
@@ -930,15 +1103,30 @@ mod tests {
         let a = store.put(BLOB, b"a").unwrap();
         let b = store.put(BLOB, b"b").unwrap();
         let c = store.put(BLOB, b"c").unwrap();
-        let old = write_snapshot(&store, &BTreeMap::from([
-            ("left/a".to_string(), a),
-            ("right/b".to_string(), b),
-        ])).unwrap();
-        let next = apply_changes(&store, old, &[
-            Change { kind: ChangeKind::Modify, path: "left/a".into(), blob: Some(c) }
-        ]).unwrap();
-        let child = |root| NativeTree::decode(&store.get(root).unwrap()).unwrap()
-            .entries.into_iter().find(|e| e.name == "right").unwrap().object;
+        let old = write_snapshot(
+            &store,
+            &BTreeMap::from([("left/a".to_string(), a), ("right/b".to_string(), b)]),
+        )
+        .unwrap();
+        let next = apply_changes(
+            &store,
+            old,
+            &[Change {
+                kind: ChangeKind::Modify,
+                path: "left/a".into(),
+                blob: Some(c),
+            }],
+        )
+        .unwrap();
+        let child = |root| {
+            NativeTree::decode(&store.get(root).unwrap())
+                .unwrap()
+                .entries
+                .into_iter()
+                .find(|e| e.name == "right")
+                .unwrap()
+                .object
+        };
         assert_eq!(child(old), child(next));
         assert_ne!(old, next);
         assert_eq!(apply_changes(&store, old, &[]).unwrap(), old);
@@ -946,7 +1134,7 @@ mod tests {
 
     #[test]
     fn invalid_edits_fail_without_publishing_a_new_root() {
-        use crate::format::{BLOB, Change, ChangeKind};
+        use crate::format::{Change, ChangeKind, BLOB};
         use std::collections::BTreeMap;
         use std::fs;
         let dir = tempfile::tempdir().unwrap();
@@ -955,39 +1143,72 @@ mod tests {
         fs::create_dir(meta.join("objects")).unwrap();
         let store = crate::store::ObjectStore::new(&meta);
         let a = store.put(BLOB, b"a").unwrap();
-        let root = write_snapshot(&store, &BTreeMap::from([
-            ("file".to_string(), a),
-        ])).unwrap();
+        let root = write_snapshot(&store, &BTreeMap::from([("file".to_string(), a)])).unwrap();
         let add = |path: &str| Change {
             kind: ChangeKind::Add,
             path: path.into(),
             blob: Some(a),
         };
         assert!(apply_changes(&store, root, &[add("file/nested")]).is_err());
-        let nested = write_snapshot(&store, &BTreeMap::from([
-            ("dir/a".to_string(), a),
-            ("dir/b".to_string(), a),
-        ])).unwrap();
+        let nested = write_snapshot(
+            &store,
+            &BTreeMap::from([("dir/a".to_string(), a), ("dir/b".to_string(), a)]),
+        )
+        .unwrap();
         assert!(apply_changes(&store, nested, &[add("dir")]).is_err());
-        assert!(apply_changes(&store, nested, &[Change {
-            kind: ChangeKind::Delete, path: "dir".into(), blob: None
-        }]).is_err());
-        assert!(apply_changes(&store, nested, &[
-            add("dir"), Change { kind: ChangeKind::Delete,
-                                  path: "dir/a".into(), blob: None }
-        ]).is_err(), "other directory descendants must not disappear silently");
+        assert!(apply_changes(
+            &store,
+            nested,
+            &[Change {
+                kind: ChangeKind::Delete,
+                path: "dir".into(),
+                blob: None
+            }]
+        )
+        .is_err());
+        assert!(
+            apply_changes(
+                &store,
+                nested,
+                &[
+                    add("dir"),
+                    Change {
+                        kind: ChangeKind::Delete,
+                        path: "dir/a".into(),
+                        blob: None
+                    }
+                ]
+            )
+            .is_err(),
+            "other directory descendants must not disappear silently"
+        );
         assert!(apply_changes(&store, root, &[add("x"), add("x/y")]).is_err());
         assert!(apply_changes(&store, root, &[add("../escape")]).is_err());
-        assert!(apply_changes(&store, root, &[
-            Change { kind: ChangeKind::Delete, path: "file".into(), blob: Some(a) }
-        ]).is_err());
-        assert!(apply_changes(&store, root, &[
-            add("x"), add("x")
-        ]).is_err());
-        assert!(apply_changes(&store, root, &[Change {
-            kind: ChangeKind::Add, path: "blob".into(), blob: Some(root)
-        }]).is_err());
-        assert_eq!(flatten_snapshot(&store, root).unwrap().get("file"), Some(&a));
+        assert!(apply_changes(
+            &store,
+            root,
+            &[Change {
+                kind: ChangeKind::Delete,
+                path: "file".into(),
+                blob: Some(a)
+            }]
+        )
+        .is_err());
+        assert!(apply_changes(&store, root, &[add("x"), add("x")]).is_err());
+        assert!(apply_changes(
+            &store,
+            root,
+            &[Change {
+                kind: ChangeKind::Add,
+                path: "blob".into(),
+                blob: Some(root)
+            }]
+        )
+        .is_err());
+        assert_eq!(
+            flatten_snapshot(&store, root).unwrap().get("file"),
+            Some(&a)
+        );
     }
 
     #[test]

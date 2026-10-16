@@ -1,4 +1,7 @@
-use crate::format::{decode_object, encode_object, object_id, validate_path, Change, ChangeKind, Changeset, ObjectId, BLOB, CHANGESET, MAX_OBJECT_SIZE};
+use crate::format::{
+    decode_object, encode_object, object_id, validate_path, Change, ChangeKind, Changeset,
+    ObjectId, BLOB, CHANGESET, MAX_OBJECT_SIZE,
+};
 use crate::store::ObjectStore;
 use crate::{Error, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -9,13 +12,24 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StatusKind { Added, Modified, Deleted }
+pub enum StatusKind {
+    Added,
+    Modified,
+    Deleted,
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StatusEntry { pub path: String, pub kind: StatusKind }
+pub struct StatusEntry {
+    pub path: String,
+    pub kind: StatusKind,
+}
 
 /// File contents before and after a change. None means the file is absent.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FileDiff { pub path: String, pub before: Option<Vec<u8>>, pub after: Option<Vec<u8>> }
+pub struct FileDiff {
+    pub path: String,
+    pub before: Option<Vec<u8>>,
+    pub after: Option<Vec<u8>>,
+}
 
 static STAGE_NONCE: AtomicU64 = AtomicU64::new(0);
 
@@ -30,7 +44,11 @@ struct PendingTransition {
     after: Option<ObjectId>,
 }
 
-pub struct Repository { root: PathBuf, db: Connection, store: ObjectStore }
+pub struct Repository {
+    root: PathBuf,
+    db: Connection,
+    store: ObjectStore,
+}
 
 impl Repository {
     /// Initialize using a caller-managed durable object provider. Metadata,
@@ -43,7 +61,8 @@ impl Repository {
         let store = ObjectStore::with_backend(backend)?;
         let mut repo = Self::init(path)?;
         repo.db.execute(
-            "INSERT INTO meta(key,value) VALUES('object_backend','external-v1')", [],
+            "INSERT INTO meta(key,value) VALUES('object_backend','external-v1')",
+            [],
         )?;
         repo.store = store;
         Ok(repo)
@@ -52,7 +71,9 @@ impl Repository {
     pub fn init(path: impl AsRef<Path>) -> Result<Self> {
         let root = fs::canonicalize(path)?;
         let meta = root.join(".loom");
-        if meta.exists() { return Err(Error::Invalid("already initialized".into())); }
+        if meta.exists() {
+            return Err(Error::Invalid("already initialized".into()));
+        }
         fs::create_dir(&meta)?;
         fs::create_dir(meta.join("objects"))?;
         let db = Self::connect(&meta)?;
@@ -60,9 +81,13 @@ impl Repository {
             "CREATE TABLE refs (name TEXT PRIMARY KEY NOT NULL, oid TEXT);
              CREATE TABLE meta (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
              INSERT INTO refs(name,oid) VALUES ('main',NULL);
-             INSERT INTO meta(key,value) VALUES ('head','main');"
+             INSERT INTO meta(key,value) VALUES ('head','main');",
         )?;
-        Ok(Self { root, db, store: ObjectStore::new(&meta) })
+        Ok(Self {
+            root,
+            db,
+            store: ObjectStore::new(&meta),
+        })
     }
 
     pub fn discover(path: impl AsRef<Path>) -> Result<Self> {
@@ -86,32 +111,37 @@ impl Repository {
             let meta = dir.join(".loom");
             if meta.join("index.sqlite").exists() {
                 let db = Self::connect(&meta)?;
-                let configured: Option<String> = db.query_row(
-                    "SELECT value FROM meta WHERE key='object_backend'", [], |r| r.get(0),
-                ).optional()?;
-                let store = match (configured.as_deref(), external) {
-                    (None, None) => ObjectStore::new(&meta),
-                    (Some("external-v1"), Some(store)) => store,
-                    (Some("external-v1"), None) => return Err(Error::Invalid(
-                        "external object backend required; set LOOM_OBJECT_DIR/LOOM_OBJECT_DB or use discover_with_object_backend".into(),
-                    )),
-                    (None, Some(_)) => return Err(Error::Invalid(
-                        "repository uses local objects; changing providers requires verified migration".into(),
-                    )),
-                    (Some(_), _) => return Err(Error::Invalid("unsupported object backend binding".into())),
+                let (store, external_binding) = Self::bound_store(&db, &meta, external)?;
+                let repo = Self {
+                    root: dir.to_path_buf(),
+                    db,
+                    store,
                 };
-                let repo = Self { root: dir.to_path_buf(), db, store };
                 {
                     let _guard = repo.lock_worktree()?;
                     // Reject an empty/wrong provider before recovery can touch
                     // user files or publish a transition. Validate all parents,
                     // historical blobs (including deleted files) and staged blobs.
-                    if configured.is_some() {
-                        let mut roots: Vec<_> = repo.branches()?.into_iter()
-                            .filter_map(|(_, tip)| tip).map(|id| (id, CHANGESET)).collect();
-                        roots.extend(repo.staged_blobs()?.into_values().flatten().map(|id| (id, BLOB)));
+                    if external_binding {
+                        let mut roots: Vec<_> = repo
+                            .branches()?
+                            .into_iter()
+                            .filter_map(|(_, tip)| tip)
+                            .map(|id| (id, CHANGESET))
+                            .collect();
+                        roots.extend(
+                            repo.staged_blobs()?
+                                .into_values()
+                                .flatten()
+                                .map(|id| (id, BLOB)),
+                        );
                         if let Some(pending) = repo.pending_transition()? {
-                            roots.extend([pending.before, pending.after].into_iter().flatten().map(|id| (id, CHANGESET)));
+                            roots.extend(
+                                [pending.before, pending.after]
+                                    .into_iter()
+                                    .flatten()
+                                    .map(|id| (id, CHANGESET)),
+                            );
                         }
                         repo.store.verify_external_closure(&roots)?;
                     }
@@ -119,6 +149,80 @@ impl Repository {
                 }
                 return Ok(repo);
             }
+        }
+        Err(Error::Invalid("not in a Loom repository".into()))
+    }
+
+    fn bound_store(
+        db: &Connection,
+        meta: &Path,
+        external: Option<ObjectStore>,
+    ) -> Result<(ObjectStore, bool)> {
+        let configured: Option<String> = db
+            .query_row(
+                "SELECT value FROM meta WHERE key='object_backend'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let is_external = configured.is_some();
+        let store = match (configured.as_deref(), external) {
+            (None, None) => ObjectStore::new(meta),
+            (Some("external-v1"), Some(store)) => store,
+            (Some("external-v1"), None) => return Err(Error::Invalid(
+                "external object backend required; set LOOM_OBJECT_DIR/LOOM_OBJECT_DB or use discover_with_object_backend".into(),
+            )),
+            (None, Some(_)) => return Err(Error::Invalid(
+                "repository uses local objects; changing providers requires verified migration".into(),
+            )),
+            (Some(_), _) => return Err(Error::Invalid("unsupported object backend binding".into())),
+        };
+        Ok((store, is_external))
+    }
+
+    /// Open only an already materialized immutable revision. This capability
+    /// performs no schema migration, worktree recovery or ref publication and
+    /// takes no workspace lock. Requested object bytes are hash/type checked;
+    /// it does not certify unrelated history or live replica completeness.
+    /// Run `loom tree @REVISION` first for legacy revisions without a tree index.
+    /// Derived root mappings are trusted as indexes, as in native_tree_root;
+    /// fsck independently checks them against canonical changeset history.
+    pub fn query_snapshot(
+        path: impl AsRef<Path>,
+        revision: ObjectId,
+        backend: Option<std::sync::Arc<dyn crate::storage_backend::ObjectBackend>>,
+        cache_bytes: usize,
+    ) -> Result<crate::Snapshot> {
+        let external = backend.map(ObjectStore::with_backend).transpose()?;
+        let start = fs::canonicalize(path)?;
+        for dir in start.ancestors() {
+            let meta = dir.join(".loom");
+            if !meta.join("index.sqlite").exists() {
+                continue;
+            }
+            let db = Connection::open_with_flags(
+                meta.join("index.sqlite"),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                    | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )?;
+            db.busy_timeout(std::time::Duration::from_secs(5))?;
+            db.execute_batch("PRAGMA query_only=ON;")?;
+            let tx = db.unchecked_transaction()?;
+            let (store, _) = Self::bound_store(&tx, &meta, external)?;
+            Changeset::decode(&store.get(revision)?)?;
+            let root: Option<String> = tx
+                .query_row(
+                    "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+                    [revision.to_string()],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let root = root.ok_or_else(|| {
+                Error::Invalid(format!(
+                    "revision has no materialized tree; run loom tree @{revision} first"
+                ))
+            })?;
+            return crate::Snapshot::new(ObjectId::parse(&root)?, store, cache_bytes);
         }
         Err(Error::Invalid("not in a Loom repository".into()))
     }
@@ -170,7 +274,7 @@ impl Repository {
                  to_branch TEXT NOT NULL,
                  before_oid TEXT,
                  after_oid TEXT
-             );"
+             );",
         )?;
         Ok(db)
     }
@@ -184,26 +288,33 @@ impl Repository {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(lock_path)?;
         file.lock_exclusive()?;
         Ok(file)
     }
 
-
     fn pending_transition(&self) -> Result<Option<PendingTransition>> {
         type JournalRow = (String, String, String, Option<String>, Option<String>);
-        let row: Option<JournalRow> = self.db.query_row(
-            "SELECT operation,from_branch,to_branch,before_oid,after_oid
+        let row: Option<JournalRow> = self
+            .db
+            .query_row(
+                "SELECT operation,from_branch,to_branch,before_oid,after_oid
              FROM workspace_journal WHERE id=1",
-            [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))
-        ).optional()?;
-        row.map(|(operation,from_branch,to_branch,before,after)| {
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .optional()?;
+        row.map(|(operation, from_branch, to_branch, before, after)| {
             Ok(PendingTransition {
-                operation, from_branch, to_branch,
+                operation,
+                from_branch,
+                to_branch,
                 before: before.map(|s| ObjectId::parse(&s)).transpose()?,
                 after: after.map(|s| ObjectId::parse(&s)).transpose()?,
             })
-        }).transpose()
+        })
+        .transpose()
     }
 
     fn begin_transition(&self, p: &PendingTransition) -> Result<()> {
@@ -212,8 +323,13 @@ impl Repository {
             "INSERT INTO workspace_journal
              (id,operation,from_branch,to_branch,before_oid,after_oid)
              VALUES (1,?1,?2,?3,?4,?5)",
-            params![p.operation,p.from_branch,p.to_branch,
-                p.before.map(|id| id.to_string()),p.after.map(|id| id.to_string())]
+            params![
+                p.operation,
+                p.from_branch,
+                p.to_branch,
+                p.before.map(|id| id.to_string()),
+                p.after.map(|id| id.to_string())
+            ],
         )?;
         Ok(())
     }
@@ -221,17 +337,25 @@ impl Repository {
     /// Replay an interrupted transition while holding the cross-process lock.
     /// Refuse to overwrite unexpected user edits or unexpected branch movement.
     fn recover_locked(&self) -> Result<()> {
-        let Some(p) = self.pending_transition()? else { return Ok(()); };
+        let Some(p) = self.pending_transition()? else {
+            return Ok(());
+        };
         if self.current_branch()? != p.from_branch {
-            return Err(Error::Conflict("workspace recovery requires the original HEAD branch".into()));
+            return Err(Error::Conflict(
+                "workspace recovery requires the original HEAD branch".into(),
+            ));
         }
         if self.branch_tip(&p.from_branch)? != p.before {
-            return Err(Error::Conflict("workspace recovery halted: original ref changed".into()));
+            return Err(Error::Conflict(
+                "workspace recovery halted: original ref changed".into(),
+            ));
         }
         match p.operation.as_str() {
             "switch" => {
                 if self.branch_tip(&p.to_branch)? != p.after {
-                    return Err(Error::Conflict("workspace recovery halted: destination ref changed".into()));
+                    return Err(Error::Conflict(
+                        "workspace recovery halted: destination ref changed".into(),
+                    ));
                 }
             }
             "merge" => {
@@ -245,14 +369,19 @@ impl Repository {
             }
             "fast-forward" => {
                 if p.to_branch != p.from_branch {
-                    return Err(Error::Invalid("malformed fast-forward recovery journal".into()));
+                    return Err(Error::Invalid(
+                        "malformed fast-forward recovery journal".into(),
+                    ));
                 }
                 let (Some(before), Some(after)) = (p.before, p.after) else {
-                    return Err(Error::Invalid("fast-forward requires two committed revisions".into()));
+                    return Err(Error::Invalid(
+                        "fast-forward requires two committed revisions".into(),
+                    ));
                 };
                 if before == after || !self.ancestor_ids(after)?.contains(&before) {
                     return Err(Error::Conflict(
-                        "fast-forward recovery halted: destination does not descend from HEAD".into()
+                        "fast-forward recovery halted: destination does not descend from HEAD"
+                            .into(),
                     ));
                 }
             }
@@ -264,17 +393,16 @@ impl Repository {
         // BEFORE the first worktree mutation. Failure leaves the durable
         // journal intact and never publishes a new ref or root mapping.
         let merge_tree = if matches!(p.operation.as_str(), "merge" | "fast-forward") {
-            let after_id = p.after.ok_or_else(||
+            let after_id = p.after.ok_or_else(|| {
                 Error::Invalid("merge journal is missing target changeset".into())
-            )?;
+            })?;
             let root = if p.operation == "merge" {
                 let target = self.get_changeset(after_id)?;
-                let base_root = self.native_tree_root(p.before.ok_or_else(||
-                    Error::Invalid("merge journal is missing parent".into())
-                )?)?;
-                crate::tree::apply_changes(
-                    &self.store, base_root, &target.changes
-                )?
+                let base_root = self
+                    .native_tree_root(p.before.ok_or_else(|| {
+                        Error::Invalid("merge journal is missing parent".into())
+                    })?)?;
+                crate::tree::apply_changes(&self.store, base_root, &target.changes)?
             } else {
                 // Fast-forward reuses the already published immutable target
                 // revision and tree, potentially through multiple commits.
@@ -285,15 +413,21 @@ impl Repository {
             // complete states, so verify closure before modifying user files.
             if crate::tree::flatten_snapshot(&self.store, root)? != after {
                 return Err(Error::Invalid(
-                    "transition native tree differs from immutable history".into()
+                    "transition native tree differs from immutable history".into(),
                 ));
             }
             Some((after_id, root))
         } else {
             None
         };
-        let mut roots: Vec<_> = [p.before, p.after].into_iter().flatten().map(|id| (id, CHANGESET)).collect();
-        if let Some((_, root)) = merge_tree { roots.push((root, crate::format::TREE)); }
+        let mut roots: Vec<_> = [p.before, p.after]
+            .into_iter()
+            .flatten()
+            .map(|id| (id, CHANGESET))
+            .collect();
+        if let Some((_, root)) = merge_tree {
+            roots.push((root, crate::format::TREE));
+        }
         self.store.verify_external_closure(&roots)?;
         self.materialize(&after, &before)?;
         // The only commit point: HEAD/ref update, optional merge tree mapping
@@ -302,16 +436,23 @@ impl Repository {
         if p.operation == "switch" {
             let changed = tx.execute(
                 "UPDATE meta SET value=?1 WHERE key='head' AND value=?2",
-                params![p.to_branch,p.from_branch]
+                params![p.to_branch, p.from_branch],
             )?;
-            if changed != 1 { return Err(Error::Conflict("HEAD changed during recovery".into())); }
+            if changed != 1 {
+                return Err(Error::Conflict("HEAD changed during recovery".into()));
+            }
         } else {
             let changed = tx.execute(
                 "UPDATE refs SET oid=?1 WHERE name=?2 AND oid IS ?3",
-                params![p.after.map(|id| id.to_string()),p.from_branch,
-                    p.before.map(|id| id.to_string())]
+                params![
+                    p.after.map(|id| id.to_string()),
+                    p.from_branch,
+                    p.before.map(|id| id.to_string())
+                ],
             )?;
-            if changed != 1 { return Err(Error::Conflict("merge ref moved during recovery".into())); }
+            if changed != 1 {
+                return Err(Error::Conflict("merge ref moved during recovery".into()));
+            }
             if let Some((revision, root)) = merge_tree {
                 tx.execute(
                     "INSERT OR IGNORE INTO revision_native_tree(revision_oid,root_oid)
@@ -327,16 +468,22 @@ impl Repository {
         Ok(())
     }
 
-    pub fn root(&self) -> &Path { &self.root }
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
     pub fn current_branch(&self) -> Result<String> {
-        self.db.query_row("SELECT value FROM meta WHERE key='head'", [], |r| r.get(0)).map_err(Into::into)
+        self.db
+            .query_row("SELECT value FROM meta WHERE key='head'", [], |r| r.get(0))
+            .map_err(Into::into)
     }
     pub fn head(&self) -> Result<Option<ObjectId>> {
         self.branch_tip(&self.current_branch()?)
     }
     pub fn branch_tip(&self, name: &str) -> Result<Option<ObjectId>> {
-        let oid: Option<Option<String>> = self.db.query_row(
-            "SELECT oid FROM refs WHERE name=?1", [name], |r| r.get(0)).optional()?;
+        let oid: Option<Option<String>> = self
+            .db
+            .query_row("SELECT oid FROM refs WHERE name=?1", [name], |r| r.get(0))
+            .optional()?;
         match oid {
             None => Err(Error::Invalid(format!("unknown branch {name}"))),
             Some(None) => Ok(None),
@@ -358,17 +505,23 @@ impl Repository {
     /// one SQLite transaction. Object publication happens before this call.
     /// Failed compare-and-swap leaves neither the ref nor the root mapping.
     fn save_ref_cas_with_tree(
-        &self, name: &str, expected: Option<ObjectId>, next: ObjectId,
+        &self,
+        name: &str,
+        expected: Option<ObjectId>,
+        next: ObjectId,
         root: ObjectId,
     ) -> Result<()> {
-        self.store.verify_external_closure(&[(next, CHANGESET), (root, crate::format::TREE)])?;
+        self.store
+            .verify_external_closure(&[(next, CHANGESET), (root, crate::format::TREE)])?;
         let tx = self.db.unchecked_transaction()?;
         let changed = tx.execute(
             "UPDATE refs SET oid=?1 WHERE name=?2 AND oid IS ?3",
             params![next.to_string(), name, expected.map(|id| id.to_string())],
         )?;
         if changed != 1 {
-            return Err(Error::Conflict(format!("branch {name} moved; retry after inspecting current head")));
+            return Err(Error::Conflict(format!(
+                "branch {name} moved; retry after inspecting current head"
+            )));
         }
         tx.execute(
             "INSERT INTO revision_native_tree(revision_oid,root_oid) VALUES(?1,?2)",
@@ -380,15 +533,29 @@ impl Repository {
     pub fn create_branch(&self, name: &str) -> Result<()> {
         let _worktree_guard = self.lock_worktree()?;
         self.recover_locked()?;
-        if name.is_empty() || name.len() > 128 ||
-           !name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.')) ||
-           name.starts_with('/') || name.ends_with('/') || name.contains("..") || name.contains("//") {
+        if name.is_empty()
+            || name.len() > 128
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.'))
+            || name.starts_with('/')
+            || name.ends_with('/')
+            || name.contains("..")
+            || name.contains("//")
+        {
             return Err(Error::Invalid("invalid branch name".into()));
         }
         let head = self.head()?;
-        self.store.verify_external_closure(&head.into_iter().map(|id| (id, CHANGESET)).collect::<Vec<_>>())?;
-        self.db.execute("INSERT INTO refs(name,oid) VALUES(?1,?2)",
-            params![name, head.map(|id| id.to_string())])?;
+        self.store.verify_external_closure(
+            &head
+                .into_iter()
+                .map(|id| (id, CHANGESET))
+                .collect::<Vec<_>>(),
+        )?;
+        self.db.execute(
+            "INSERT INTO refs(name,oid) VALUES(?1,?2)",
+            params![name, head.map(|id| id.to_string())],
+        )?;
         Ok(())
     }
 
@@ -396,13 +563,17 @@ impl Repository {
         let raw = self.store.get(id)?;
         Changeset::decode(&raw)
     }
-    fn state_at(&self, tip: Option<ObjectId>) -> Result<BTreeMap<String,ObjectId>> {
+    fn state_at(&self, tip: Option<ObjectId>) -> Result<BTreeMap<String, ObjectId>> {
         let mut commits = Vec::new();
         let mut visited = HashSet::new();
         let mut next = tip;
         while let Some(id) = next {
-            if !visited.insert(id) { return Err(Error::Invalid("cycle in first-parent history".into())); }
-            if commits.len() > 1_000_000 { return Err(Error::Invalid("history depth limit reached".into())); }
+            if !visited.insert(id) {
+                return Err(Error::Invalid("cycle in first-parent history".into()));
+            }
+            if commits.len() > 1_000_000 {
+                return Err(Error::Invalid("history depth limit reached".into()));
+            }
             let c = self.get_changeset(id)?;
             next = c.parents.first().copied();
             commits.push(c);
@@ -410,8 +581,15 @@ impl Repository {
         let mut state = BTreeMap::new();
         for c in commits.iter().rev() {
             for ch in &c.changes {
-                if ch.kind == ChangeKind::Delete { state.remove(&ch.path); }
-                else { state.insert(ch.path.clone(), ch.blob.ok_or_else(|| Error::Invalid("missing blob in history".into()))?); }
+                if ch.kind == ChangeKind::Delete {
+                    state.remove(&ch.path);
+                } else {
+                    state.insert(
+                        ch.path.clone(),
+                        ch.blob
+                            .ok_or_else(|| Error::Invalid("missing blob in history".into()))?,
+                    );
+                }
             }
         }
         Ok(state)
@@ -421,14 +599,22 @@ impl Repository {
         self.scan_files_with_tracked(None)
     }
 
-    fn scan_files_tracked(&self, tracked: &BTreeMap<String, ObjectId>) -> Result<BTreeMap<String, Vec<u8>>> {
+    fn scan_files_tracked(
+        &self,
+        tracked: &BTreeMap<String, ObjectId>,
+    ) -> Result<BTreeMap<String, Vec<u8>>> {
         self.scan_files_with_tracked(Some(tracked))
     }
 
-    fn scan_files_with_tracked(&self, tracked: Option<&BTreeMap<String, ObjectId>>) -> Result<BTreeMap<String, Vec<u8>>> {
+    fn scan_files_with_tracked(
+        &self,
+        tracked: Option<&BTreeMap<String, ObjectId>>,
+    ) -> Result<BTreeMap<String, Vec<u8>>> {
         let ignores = if tracked.is_some() {
             Some(crate::ignore::IgnoreRules::load(&self.root)?)
-        } else { None };
+        } else {
+            None
+        };
         let mut result = BTreeMap::new();
         let mut stack = vec![self.root.clone()];
         while let Some(dir) = stack.pop() {
@@ -436,17 +622,48 @@ impl Repository {
                 let item = item?;
                 let kind = item.file_type()?;
                 let name = item.file_name();
-                if name == ".loom" || name == ".git" { continue; }
-                let relative = item.path().strip_prefix(&self.root).map_err(|_| Error::Invalid("path escaped worktree".into()))?.to_path_buf();
-                let s = relative.to_str().ok_or_else(|| Error::Invalid("non-UTF-8 path not supported in v1".into()))?;
-                let key = if cfg!(windows) { s.replace('\\', "/") } else { s.to_string() };
+                if name == ".loom" || name == ".git" {
+                    continue;
+                }
+                let relative = item
+                    .path()
+                    .strip_prefix(&self.root)
+                    .map_err(|_| Error::Invalid("path escaped worktree".into()))?
+                    .to_path_buf();
+                let s = relative
+                    .to_str()
+                    .ok_or_else(|| Error::Invalid("non-UTF-8 path not supported in v1".into()))?;
+                let key = if cfg!(windows) {
+                    s.replace('\\', "/")
+                } else {
+                    s.to_string()
+                };
                 validate_path(&key)?;
-                if kind.is_dir() { stack.push(item.path()); continue; }
-                if ignores.as_ref().is_some_and(|rules| !tracked.is_some_and(|files| files.contains_key(&key)) && rules.ignores(&key)) { continue; }
-                if kind.is_symlink() { return Err(Error::Invalid(format!("symlinks unsupported in v1: {:?}", item.path()))); }
-                if !kind.is_file() { return Err(Error::Invalid(format!("unsupported file type: {:?}", item.path()))); }
+                if kind.is_dir() {
+                    stack.push(item.path());
+                    continue;
+                }
+                if ignores.as_ref().is_some_and(|rules| {
+                    !tracked.is_some_and(|files| files.contains_key(&key)) && rules.ignores(&key)
+                }) {
+                    continue;
+                }
+                if kind.is_symlink() {
+                    return Err(Error::Invalid(format!(
+                        "symlinks unsupported in v1: {:?}",
+                        item.path()
+                    )));
+                }
+                if !kind.is_file() {
+                    return Err(Error::Invalid(format!(
+                        "unsupported file type: {:?}",
+                        item.path()
+                    )));
+                }
                 let metadata = item.metadata()?;
-                if metadata.len() > MAX_OBJECT_SIZE as u64 { return Err(Error::Invalid(format!("file exceeds 64 MiB: {key}"))); }
+                if metadata.len() > MAX_OBJECT_SIZE as u64 {
+                    return Err(Error::Invalid(format!("file exceeds 64 MiB: {key}")));
+                }
                 result.insert(key, fs::read(item.path())?);
             }
         }
@@ -478,9 +695,13 @@ impl Repository {
                 }
                 continue;
             }
-            if metadata.is_dir() { return Ok(None); }
+            if metadata.is_dir() {
+                return Ok(None);
+            }
             if !metadata.is_file() {
-                return Err(Error::Invalid(format!("unsupported staged file type: {path}")));
+                return Err(Error::Invalid(format!(
+                    "unsupported staged file type: {path}"
+                )));
             }
             if metadata.len() > MAX_OBJECT_SIZE as u64 {
                 return Err(Error::Invalid(format!("file exceeds 64 MiB: {path}")));
@@ -491,7 +712,8 @@ impl Repository {
                 return Err(Error::Invalid(format!("staged path changed type: {path}")));
             }
             let mut bytes = Vec::new();
-            file.take((MAX_OBJECT_SIZE + 1) as u64).read_to_end(&mut bytes)?;
+            file.take((MAX_OBJECT_SIZE + 1) as u64)
+                .read_to_end(&mut bytes)?;
             if bytes.len() > MAX_OBJECT_SIZE {
                 return Err(Error::Invalid(format!("file exceeds 64 MiB: {path}")));
             }
@@ -500,37 +722,61 @@ impl Repository {
         Ok(None)
     }
 
-    fn make_delta(&self, old: &BTreeMap<String,ObjectId>, files: &BTreeMap<String, Vec<u8>>, persist: bool) -> Result<Vec<Change>> {
+    fn make_delta(
+        &self,
+        old: &BTreeMap<String, ObjectId>,
+        files: &BTreeMap<String, Vec<u8>>,
+        persist: bool,
+    ) -> Result<Vec<Change>> {
         let mut changes = Vec::new();
         for (path, bytes) in files {
             let data = encode_object(BLOB, bytes)?;
             let id = object_id(&data);
             let prior = old.get(path);
             if prior != Some(&id) {
-                if persist { self.store.put(BLOB, bytes)?; }
-                changes.push(Change { kind: if prior.is_some() { ChangeKind::Modify } else { ChangeKind::Add }, path: path.clone(), blob: Some(id) });
+                if persist {
+                    self.store.put(BLOB, bytes)?;
+                }
+                changes.push(Change {
+                    kind: if prior.is_some() {
+                        ChangeKind::Modify
+                    } else {
+                        ChangeKind::Add
+                    },
+                    path: path.clone(),
+                    blob: Some(id),
+                });
             }
         }
         for path in old.keys() {
             if !files.contains_key(path) {
-                changes.push(Change { kind: ChangeKind::Delete, path: path.clone(), blob: None });
+                changes.push(Change {
+                    kind: ChangeKind::Delete,
+                    path: path.clone(),
+                    blob: None,
+                });
             }
         }
-        changes.sort_by(|a,b| a.path.cmp(&b.path));
+        changes.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(changes)
     }
 
     /// Staging is opt-in for existing v1 repositories. Once enabled, commits
     /// always require an explicit set of staged paths; there is no silent fallback.
     pub fn staging_enabled(&self) -> Result<bool> {
-        let value: Option<String> = self.db.query_row(
-            "SELECT value FROM meta WHERE key='staging_mode'", [], |r| r.get(0)
-        ).optional()?;
+        let value: Option<String> = self
+            .db
+            .query_row("SELECT value FROM meta WHERE key='staging_mode'", [], |r| {
+                r.get(0)
+            })
+            .optional()?;
         Ok(value.as_deref() == Some("enabled"))
     }
 
     fn staged_blobs(&self) -> Result<BTreeMap<String, Option<ObjectId>>> {
-        let mut rows = self.db.prepare("SELECT path,blob_id FROM stage_index ORDER BY path")?;
+        let mut rows = self
+            .db
+            .prepare("SELECT path,blob_id FROM stage_index ORDER BY path")?;
         let mut entries = rows.query([])?;
         let mut map = BTreeMap::new();
         while let Some(row) = entries.next()? {
@@ -547,32 +793,34 @@ impl Repository {
     /// A single SQLite snapshot pins the ref and its index revision marker.
     pub fn staged_status(&self) -> Result<Vec<StatusEntry>> {
         let staged = self.staged_blobs()?;
-        if staged.is_empty() { return Ok(Vec::new()); }
+        if staged.is_empty() {
+            return Ok(Vec::new());
+        }
         let branch = self.current_branch()?;
         let tx = self.db.unchecked_transaction()?;
         let (ref_oid, index_oid): (Option<String>, Option<String>) = tx.query_row(
             "SELECT r.oid,t.oid FROM refs AS r
              LEFT JOIN branch_path_index_tip AS t ON t.branch=r.name
              WHERE r.name=?1",
-            [&branch], |row| Ok((row.get(0)?, row.get(1)?)),
+            [&branch],
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
         let current = index_oid.as_deref() == Some(ref_oid.as_deref().unwrap_or(""));
         if current {
-            let mut query = tx.prepare(
-                "SELECT 1 FROM branch_path_index WHERE branch=?1 AND path=?2"
-            )?;
+            let mut query =
+                tx.prepare("SELECT 1 FROM branch_path_index WHERE branch=?1 AND path=?2")?;
             let mut changes = Vec::with_capacity(staged.len());
             for (path, blob) in staged {
-                let tracked: Option<i64> = query.query_row(
-                    params![&branch,&path], |row| row.get(0),
-                ).optional()?;
+                let tracked: Option<i64> = query
+                    .query_row(params![&branch, &path], |row| row.get(0))
+                    .optional()?;
                 let kind = match (tracked.is_some(), blob) {
                     (false, Some(_)) => StatusKind::Added,
                     (true, Some(_)) => StatusKind::Modified,
                     (true, None) => StatusKind::Deleted,
-                    (false, None) => return Err(Error::Invalid(format!(
-                        "invalid staged deletion: {path}"
-                    ))),
+                    (false, None) => {
+                        return Err(Error::Invalid(format!("invalid staged deletion: {path}")))
+                    }
                 };
                 changes.push(StatusEntry { path, kind });
             }
@@ -591,9 +839,9 @@ impl Repository {
                 (None, Some(_)) => StatusKind::Added,
                 (Some(_), Some(_)) => StatusKind::Modified,
                 (Some(_), None) => StatusKind::Deleted,
-                (None, None) => return Err(Error::Invalid(format!(
-                    "invalid staged deletion: {path}"
-                ))),
+                (None, None) => {
+                    return Err(Error::Invalid(format!("invalid staged deletion: {path}")))
+                }
             };
             changes.push(StatusEntry { path, kind });
         }
@@ -618,12 +866,17 @@ impl Repository {
         let blob_id = match self.read_staging_path(path)? {
             Some(bytes) => Some(self.store.put(BLOB, &bytes)?),
             None if prior.is_some() => None,
-            None => return Err(Error::Invalid(format!("file is neither tracked nor present: {path}"))),
+            None => {
+                return Err(Error::Invalid(format!(
+                    "file is neither tracked nor present: {path}"
+                )))
+            }
         };
         let tx = self.db.unchecked_transaction()?;
         tx.execute(
             "INSERT INTO meta(key,value) VALUES ('staging_mode','enabled')
-             ON CONFLICT(key) DO UPDATE SET value='enabled'", []
+             ON CONFLICT(key) DO UPDATE SET value='enabled'",
+            [],
         )?;
         if prior == blob_id {
             tx.execute("DELETE FROM stage_index WHERE path=?1", [path])?;
@@ -631,7 +884,7 @@ impl Repository {
             tx.execute(
                 "INSERT INTO stage_index(path,blob_id) VALUES(?1,?2)
                  ON CONFLICT(path) DO UPDATE SET blob_id=excluded.blob_id",
-                params![path, blob_id.map(|id| id.to_string())]
+                params![path, blob_id.map(|id| id.to_string())],
             )?;
         }
         tx.commit()?;
@@ -642,21 +895,24 @@ impl Repository {
         validate_path(path)?;
         let _guard = self.lock_worktree()?;
         self.recover_locked()?;
-        self.db.execute("DELETE FROM stage_index WHERE path=?1", [path])?;
+        self.db
+            .execute("DELETE FROM stage_index WHERE path=?1", [path])?;
         Ok(())
     }
 
     /// A rebuildable derived index. First use on a legacy/stale branch
     /// reconstructs its first-parent snapshot; subsequent staged commits
     /// update only changed paths in the same transaction as the ref CAS.
-    fn ensure_branch_path_index(
-        &self, branch: &str, tip: Option<ObjectId>
-    ) -> Result<()> {
+    fn ensure_branch_path_index(&self, branch: &str, tip: Option<ObjectId>) -> Result<()> {
         let expected = tip.map(|id| id.to_string()).unwrap_or_default();
-        let current: Option<String> = self.db.query_row(
-            "SELECT oid FROM branch_path_index_tip WHERE branch=?1",
-            [branch], |r| r.get(0),
-        ).optional()?;
+        let current: Option<String> = self
+            .db
+            .query_row(
+                "SELECT oid FROM branch_path_index_tip WHERE branch=?1",
+                [branch],
+                |r| r.get(0),
+            )
+            .optional()?;
         if current.as_deref() == Some(expected.as_str()) {
             return Ok(());
         }
@@ -664,9 +920,8 @@ impl Repository {
         let tx = self.db.unchecked_transaction()?;
         tx.execute("DELETE FROM branch_path_index WHERE branch=?1", [branch])?;
         {
-            let mut insert = tx.prepare(
-                "INSERT INTO branch_path_index(branch,path,oid) VALUES(?1,?2,?3)"
-            )?;
+            let mut insert =
+                tx.prepare("INSERT INTO branch_path_index(branch,path,oid) VALUES(?1,?2,?3)")?;
             for (path, oid) in full_state {
                 insert.execute(params![branch, path, oid.to_string()])?;
             }
@@ -681,10 +936,14 @@ impl Repository {
     }
 
     fn indexed_blob(&self, branch: &str, path: &str) -> Result<Option<ObjectId>> {
-        let value: Option<String> = self.db.query_row(
-            "SELECT oid FROM branch_path_index WHERE branch=?1 AND path=?2",
-            params![branch, path], |r| r.get(0),
-        ).optional()?;
+        let value: Option<String> = self
+            .db
+            .query_row(
+                "SELECT oid FROM branch_path_index WHERE branch=?1 AND path=?2",
+                params![branch, path],
+                |r| r.get(0),
+            )
+            .optional()?;
         value.map(|raw| ObjectId::parse(&raw)).transpose()
     }
 
@@ -692,14 +951,22 @@ impl Repository {
         let mut changes = Vec::new();
         for (path, blob) in self.staged_blobs()? {
             let previous = self.indexed_blob(branch, &path)?;
-            if previous == blob { continue; }
-            let kind = if blob.is_none() { ChangeKind::Delete }
-                else if previous.is_none() { ChangeKind::Add }
-                else { ChangeKind::Modify };
+            if previous == blob {
+                continue;
+            }
+            let kind = if blob.is_none() {
+                ChangeKind::Delete
+            } else if previous.is_none() {
+                ChangeKind::Add
+            } else {
+                ChangeKind::Modify
+            };
             if let Some(id) = blob {
                 let raw = self.store.get(id)?;
                 if decode_object(&raw)?.0 != BLOB {
-                    return Err(Error::Invalid(format!("staged object is not a blob: {path}")));
+                    return Err(Error::Invalid(format!(
+                        "staged object is not a blob: {path}"
+                    )));
                 }
             }
             changes.push(Change { path, kind, blob });
@@ -709,25 +976,31 @@ impl Repository {
 
     /// Indexed collision check only touches ancestors and descendants of
     /// staged changes; it does not enumerate the entire tracked path set.
-    fn validate_staged_tree_indexed(
-        &self, branch: &str, changes: &[Change]
-    ) -> Result<()> {
-        let staged: BTreeMap<&str, &Change> = changes.iter()
-            .map(|change| (change.path.as_str(), change)).collect();
+    fn validate_staged_tree_indexed(&self, branch: &str, changes: &[Change]) -> Result<()> {
+        let staged: BTreeMap<&str, &Change> = changes
+            .iter()
+            .map(|change| (change.path.as_str(), change))
+            .collect();
         for change in changes {
-            if change.kind == ChangeKind::Delete { continue; }
+            if change.kind == ChangeKind::Delete {
+                continue;
+            }
             for (idx, ch) in change.path.char_indices() {
-                if ch != '/' { continue; }
+                if ch != '/' {
+                    continue;
+                }
                 let ancestor = &change.path[..idx];
                 if let Some(other) = staged.get(ancestor) {
                     if other.kind != ChangeKind::Delete {
                         return Err(Error::Conflict(format!(
-                            "staged file/directory collision: {}", change.path
+                            "staged file/directory collision: {}",
+                            change.path
                         )));
                     }
                 } else if self.indexed_blob(branch, ancestor)?.is_some() {
                     return Err(Error::Conflict(format!(
-                        "tracked file/directory collision: {}", change.path
+                        "tracked file/directory collision: {}",
+                        change.path
                     )));
                 }
             }
@@ -737,14 +1010,18 @@ impl Repository {
             let upper = format!("{}0", change.path);
             let mut stmt = self.db.prepare(
                 "SELECT path FROM branch_path_index
-                 WHERE branch=?1 AND path>=?2 AND path<?3"
+                 WHERE branch=?1 AND path>=?2 AND path<?3",
             )?;
             let paths = stmt.query_map(params![branch, lower, upper], |r| r.get::<_, String>(0))?;
             for entry in paths {
                 let child = entry?;
-                if !staged.get(child.as_str()).is_some_and(|other| other.kind == ChangeKind::Delete) {
+                if !staged
+                    .get(child.as_str())
+                    .is_some_and(|other| other.kind == ChangeKind::Delete)
+                {
                     return Err(Error::Conflict(format!(
-                        "staged file/directory collision: {}", change.path
+                        "staged file/directory collision: {}",
+                        change.path
                     )));
                 }
             }
@@ -753,17 +1030,24 @@ impl Repository {
     }
 
     fn publish_staged_commit(
-        &self, branch: &str, previous: Option<ObjectId>, next: ObjectId,
-        changes: &[Change], native_tree: ObjectId
+        &self,
+        branch: &str,
+        previous: Option<ObjectId>,
+        next: ObjectId,
+        changes: &[Change],
+        native_tree: ObjectId,
     ) -> Result<()> {
-        self.store.verify_external_closure(&[(next, CHANGESET), (native_tree, crate::format::TREE)])?;
+        self.store
+            .verify_external_closure(&[(next, CHANGESET), (native_tree, crate::format::TREE)])?;
         let tx = self.db.unchecked_transaction()?;
         let moved = tx.execute(
             "UPDATE refs SET oid=?1 WHERE name=?2 AND oid IS ?3",
-            params![next.to_string(), branch, previous.map(|id| id.to_string())]
+            params![next.to_string(), branch, previous.map(|id| id.to_string())],
         )?;
         if moved != 1 {
-            return Err(Error::Conflict(format!("branch {branch} moved; staged files retained")));
+            return Err(Error::Conflict(format!(
+                "branch {branch} moved; staged files retained"
+            )));
         }
         // Keep the derived path cache and its revision marker consistent with
         // refs in the SAME SQLite transaction. An interrupted commit cannot
@@ -777,9 +1061,9 @@ impl Repository {
                     )?;
                 }
                 ChangeKind::Add | ChangeKind::Modify => {
-                    let id = change.blob.ok_or_else(||
-                        Error::Invalid("staged update without blob".into())
-                    )?;
+                    let id = change
+                        .blob
+                        .ok_or_else(|| Error::Invalid("staged update without blob".into()))?;
                     tx.execute(
                         "INSERT INTO branch_path_index(branch,path,oid)
                          VALUES(?1,?2,?3)
@@ -810,12 +1094,18 @@ impl Repository {
         let old = self.state_at(self.head()?)?;
         let files = self.scan_files_tracked(&old)?;
         let changes = self.make_delta(&old, &files, false)?;
-        Ok(changes.into_iter().map(|ch| StatusEntry { path: ch.path, kind: match ch.kind {
-            ChangeKind::Add => StatusKind::Added, ChangeKind::Modify => StatusKind::Modified,
-            ChangeKind::Delete => StatusKind::Deleted
-        }}).collect())
+        Ok(changes
+            .into_iter()
+            .map(|ch| StatusEntry {
+                path: ch.path,
+                kind: match ch.kind {
+                    ChangeKind::Add => StatusKind::Added,
+                    ChangeKind::Modify => StatusKind::Modified,
+                    ChangeKind::Delete => StatusKind::Deleted,
+                },
+            })
+            .collect())
     }
-
 
     /// Compare the current worktree with HEAD without modifying the repository.
     /// The initial implementation scans full files and is limited by the v1 blob cap.
@@ -829,10 +1119,18 @@ impl Repository {
         for path in paths {
             let before = previous.get(&path);
             let after = files.get(&path);
-            let after_id = after.map(|bytes| encode_object(BLOB, bytes).map(|encoded| object_id(&encoded))).transpose()?;
-            if before.copied() == after_id { continue; }
+            let after_id = after
+                .map(|bytes| encode_object(BLOB, bytes).map(|encoded| object_id(&encoded)))
+                .transpose()?;
+            if before.copied() == after_id {
+                continue;
+            }
             let old = before.map(|id| self.blob_bytes(*id)).transpose()?;
-            result.push(FileDiff { path, before: old, after: after.cloned() });
+            result.push(FileDiff {
+                path,
+                before: old,
+                after: after.cloned(),
+            });
         }
         Ok(result)
     }
@@ -856,7 +1154,9 @@ impl Repository {
     /// Show the exact content the next explicitly staged commit would record.
     /// In legacy commit-all mode this is empty because nothing is staged.
     pub fn diff_staged(&self) -> Result<Vec<FileDiff>> {
-        if !self.staging_enabled()? { return Ok(Vec::new()); }
+        if !self.staging_enabled()? {
+            return Ok(Vec::new());
+        }
         let base = self.state_at(self.head()?)?;
         let staged = self.staged_state()?;
         let mut paths = BTreeSet::new();
@@ -866,7 +1166,9 @@ impl Repository {
         for path in paths {
             let before = base.get(&path);
             let after = staged.get(&path);
-            if before == after { continue; }
+            if before == after {
+                continue;
+            }
             result.push(FileDiff {
                 path,
                 before: before.map(|id| self.blob_bytes(*id)).transpose()?,
@@ -888,10 +1190,12 @@ impl Repository {
         for path in paths {
             let before = staged.get(&path);
             let after = files.get(&path);
-            let after_id = after.map(|bytes|
-                encode_object(BLOB, bytes).map(|encoded| object_id(&encoded))
-            ).transpose()?;
-            if before.copied() == after_id { continue; }
+            let after_id = after
+                .map(|bytes| encode_object(BLOB, bytes).map(|encoded| object_id(&encoded)))
+                .transpose()?;
+            if before.copied() == after_id {
+                continue;
+            }
             result.push(FileDiff {
                 path,
                 before: before.map(|id| self.blob_bytes(*id)).transpose()?,
@@ -904,14 +1208,21 @@ impl Repository {
     /// Accurate post-stage working tree status. This is informational;
     /// safety gates still use the full HEAD-to-worktree status.
     pub fn unstaged_status(&self) -> Result<Vec<StatusEntry>> {
-        Ok(self.diff_unstaged()?.into_iter().map(|change| {
-            let kind = match (change.before.is_some(), change.after.is_some()) {
-                (false, true) => StatusKind::Added,
-                (true, false) => StatusKind::Deleted,
-                _ => StatusKind::Modified,
-            };
-            StatusEntry { path: change.path, kind }
-        }).collect())
+        Ok(self
+            .diff_unstaged()?
+            .into_iter()
+            .map(|change| {
+                let kind = match (change.before.is_some(), change.after.is_some()) {
+                    (false, true) => StatusKind::Added,
+                    (true, false) => StatusKind::Deleted,
+                    _ => StatusKind::Modified,
+                };
+                StatusEntry {
+                    path: change.path,
+                    kind,
+                }
+            })
+            .collect())
     }
 
     /// Compare two branch tips without materializing either worktree.
@@ -925,7 +1236,9 @@ impl Repository {
         for path in paths {
             let before = left.get(&path);
             let after = right.get(&path);
-            if before == after { continue; }
+            if before == after {
+                continue;
+            }
             result.push(FileDiff {
                 path,
                 before: before.map(|id| self.blob_bytes(*id)).transpose()?,
@@ -944,19 +1257,21 @@ impl Repository {
     /// One SQLite read transaction pins the same snapshot for the ref marker
     /// and indexed path reads. Prefix lookups use the (branch,path) index for
     /// one exact lookup plus one bounded range, not a full branch path scan.
-    pub fn list_branch_files(
-        &self, branch: &str, prefix: Option<&str>
-    ) -> Result<Vec<String>> {
-        if let Some(path) = prefix { validate_path(path)?; }
+    pub fn list_branch_files(&self, branch: &str, prefix: Option<&str>) -> Result<Vec<String>> {
+        if let Some(path) = prefix {
+            validate_path(path)?;
+        }
         let tx = self.db.unchecked_transaction()?;
-        let current: Option<i64> = tx.query_row(
-            "SELECT 1 FROM refs AS r
+        let current: Option<i64> = tx
+            .query_row(
+                "SELECT 1 FROM refs AS r
              JOIN branch_path_index_tip AS t
                ON t.branch=r.name AND t.oid=COALESCE(r.oid,'')
              WHERE r.name=?1",
-            [branch],
-            |row| row.get(0),
-        ).optional()?;
+                [branch],
+                |row| row.get(0),
+            )
+            .optional()?;
         if current.is_some() {
             let mut paths = Vec::new();
             if let Some(p) = prefix {
@@ -968,12 +1283,11 @@ impl Repository {
                      UNION ALL
                      SELECT path FROM branch_path_index
                        WHERE branch=?1 AND path>=?3 AND path<?4
-                     ORDER BY path"
+                     ORDER BY path",
                 )?;
-                let rows = stmt.query_map(
-                    params![branch, p, lower, upper],
-                    |row| row.get::<_, String>(0),
-                )?;
+                let rows = stmt.query_map(params![branch, p, lower, upper], |row| {
+                    row.get::<_, String>(0)
+                })?;
                 for row in rows {
                     let path = row?;
                     validate_path(&path)?;
@@ -982,7 +1296,7 @@ impl Repository {
             } else {
                 let mut stmt = tx.prepare(
                     "SELECT path FROM branch_path_index
-                     WHERE branch=?1 ORDER BY path"
+                     WHERE branch=?1 ORDER BY path",
                 )?;
                 let rows = stmt.query_map([branch], |row| row.get::<_, String>(0))?;
                 for row in rows {
@@ -1000,11 +1314,16 @@ impl Repository {
         // authoritative. New staged commits rebuild the index when needed.
         let history = self.state_at(self.branch_tip(branch)?)?;
         let directory_prefix = prefix.map(|p| format!("{p}/"));
-        Ok(history.into_keys().filter(|path| {
-            prefix.is_none()
-                || prefix.is_some_and(|p| path.as_str() == p)
-                || directory_prefix.as_ref().is_some_and(|p| path.starts_with(p.as_str()))
-        }).collect())
+        Ok(history
+            .into_keys()
+            .filter(|path| {
+                prefix.is_none()
+                    || prefix.is_some_and(|p| path.as_str() == p)
+                    || directory_prefix
+                        .as_ref()
+                        .is_some_and(|p| path.starts_with(p.as_str()))
+            })
+            .collect())
     }
 
     /// Build a complete read-only file snapshot for an immutable revision.
@@ -1024,11 +1343,15 @@ impl Repository {
                 return Err(Error::Invalid("cycle in first-parent history".into()));
             }
             let commit = self.get_changeset(id)?;
-            let indexed: Option<i64> = self.db.query_row(
-                "SELECT entry_count FROM revision_tree_index_tip
+            let indexed: Option<i64> = self
+                .db
+                .query_row(
+                    "SELECT entry_count FROM revision_tree_index_tip
                  WHERE revision_oid=?1",
-                [id.to_string()], |r| r.get(0),
-            ).optional()?;
+                    [id.to_string()],
+                    |r| r.get(0),
+                )
+                .optional()?;
             if indexed.is_some() {
                 base = Some(id);
                 break;
@@ -1036,13 +1359,15 @@ impl Repository {
             next = commit.parents.first().copied();
             changesets.push(commit);
         }
-        if changesets.is_empty() { return Ok(()); }
+        if changesets.is_empty() {
+            return Ok(());
+        }
 
         let mut state = BTreeMap::new();
         if let Some(id) = base {
             let mut statement = self.db.prepare(
                 "SELECT path,blob_oid FROM revision_tree_index
-                 WHERE revision_oid=?1 ORDER BY path"
+                 WHERE revision_oid=?1 ORDER BY path",
             )?;
             let rows = statement.query_map([id.to_string()], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -1058,9 +1383,9 @@ impl Repository {
                 if change.kind == ChangeKind::Delete {
                     state.remove(&change.path);
                 } else {
-                    let blob = change.blob.ok_or_else(||
+                    let blob = change.blob.ok_or_else(|| {
                         Error::Invalid("historical update is missing blob".into())
-                    )?;
+                    })?;
                     state.insert(change.path.clone(), blob);
                 }
             }
@@ -1068,12 +1393,14 @@ impl Repository {
         // All entries and the completion marker are committed atomically.
         // Interrupted builders cannot expose a partially indexed revision.
         let tx = self.db.unchecked_transaction()?;
-        tx.execute("DELETE FROM revision_tree_index WHERE revision_oid=?1",
-                   [revision.to_string()])?;
+        tx.execute(
+            "DELETE FROM revision_tree_index WHERE revision_oid=?1",
+            [revision.to_string()],
+        )?;
         {
             let mut insert = tx.prepare(
                 "INSERT INTO revision_tree_index(revision_oid,path,blob_oid)
-                 VALUES(?1,?2,?3)"
+                 VALUES(?1,?2,?3)",
             )?;
             for (path, blob) in &state {
                 insert.execute(params![revision.to_string(), path, blob.to_string()])?;
@@ -1107,14 +1434,18 @@ impl Repository {
         while let Some(id) = cursor {
             if visited.len() >= 1_000_000 || !visited.insert(id) {
                 return Err(Error::Invalid(
-                    "native tree ancestry cycle or depth limit".into()
+                    "native tree ancestry cycle or depth limit".into(),
                 ));
             }
             let commit = self.get_changeset(id)?;
-            let cached: Option<String> = self.db.query_row(
-                "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
-                [id.to_string()], |row| row.get(0),
-            ).optional()?;
+            let cached: Option<String> = self
+                .db
+                .query_row(
+                    "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+                    [id.to_string()],
+                    |row| row.get(0),
+                )
+                .optional()?;
             if let Some(raw) = cached {
                 let root = ObjectId::parse(&raw)?;
                 crate::tree::NativeTree::decode(&self.store.get(root)?)?;
@@ -1127,14 +1458,10 @@ impl Repository {
 
         let mut root = match ancestor_root {
             Some(id) => id,
-            None => crate::tree::write_snapshot(
-                &self.store, &BTreeMap::new()
-            )?,
+            None => crate::tree::write_snapshot(&self.store, &BTreeMap::new())?,
         };
         for commit in pending.iter().rev() {
-            root = crate::tree::apply_changes(
-                &self.store, root, &commit.changes
-            )?;
+            root = crate::tree::apply_changes(&self.store, root, &commit.changes)?;
         }
         // The mapping is derived data. It is persisted only once every
         // referenced immutable tree object is fully written. A race must
@@ -1146,31 +1473,50 @@ impl Repository {
         )?;
         let published: String = self.db.query_row(
             "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
-            [&key], |row| row.get(0),
+            [&key],
+            |row| row.get(0),
         )?;
         if published != root.to_string() {
             return Err(Error::Conflict(
-                "another native tree root was published for this revision".into()
+                "another native tree root was published for this revision".into(),
             ));
         }
         Ok(root)
     }
 
+    /// Pin a native immutable revision for repeated path queries. This cache
+    /// is local to the returned view and never used for ref publication.
+    pub fn snapshot(&self, revision: ObjectId) -> Result<crate::Snapshot> {
+        self.snapshot_with_cache_bytes(revision, crate::DEFAULT_SNAPSHOT_CACHE_BYTES)
+    }
+
+    pub fn snapshot_with_cache_bytes(
+        &self,
+        revision: ObjectId,
+        bytes: usize,
+    ) -> Result<crate::Snapshot> {
+        let root = self.native_tree_root(revision)?;
+        crate::Snapshot::new(root, self.store.clone(), bytes)
+    }
+
     /// Resolve one immutable directory node by root ID and path, without
     /// asking SQLite for a branch or reconstructing a changeset history.
     fn native_directory(
-        &self, root: ObjectId, directory: Option<&str>
+        &self,
+        root: ObjectId,
+        directory: Option<&str>,
     ) -> Result<crate::tree::NativeTree> {
         let mut current = root;
         if let Some(path) = directory {
             validate_path(path)?;
             for component in path.split('/') {
                 let node = crate::tree::NativeTree::decode(&self.store.get(current)?)?;
-                let pos = node.entries.binary_search_by(|entry|
-                    entry.name.as_str().cmp(component)
-                ).map_err(|_| Error::Invalid(format!(
-                    "directory does not exist in native tree: {path}"
-                )))?;
+                let pos = node
+                    .entries
+                    .binary_search_by(|entry| entry.name.as_str().cmp(component))
+                    .map_err(|_| {
+                        Error::Invalid(format!("directory does not exist in native tree: {path}"))
+                    })?;
                 let child = &node.entries[pos];
                 if child.kind != crate::tree::TreeEntryKind::Directory {
                     return Err(Error::Invalid(format!(
@@ -1187,25 +1533,26 @@ impl Repository {
     /// This touches O(directory depth) objects and the requested directory,
     /// regardless of commit count or unrelated filesystem content.
     pub fn native_tree_entries(
-        &self, root: ObjectId, directory: Option<&str>
+        &self,
+        root: ObjectId,
+        directory: Option<&str>,
     ) -> Result<Vec<crate::tree::TreeEntry>> {
         Ok(self.native_directory(root, directory)?.entries)
     }
 
     /// Read a native file from a tree root, with no checkout, branch ref or
     /// SQLite index lookup. Each directory is addressed by its immutable ID.
-    pub fn native_tree_file(
-        &self, root: ObjectId, path: &str
-    ) -> Result<Option<Vec<u8>>> {
+    pub fn native_tree_file(&self, root: ObjectId, path: &str) -> Result<Option<Vec<u8>>> {
         validate_path(path)?;
         let (directory, filename) = match path.rsplit_once('/') {
             Some((dir, file)) => (Some(dir), file),
             None => (None, path),
         };
         let node = self.native_directory(root, directory)?;
-        let Ok(pos) = node.entries.binary_search_by(|entry|
-            entry.name.as_str().cmp(filename)
-        ) else {
+        let Ok(pos) = node
+            .entries
+            .binary_search_by(|entry| entry.name.as_str().cmp(filename))
+        else {
             return Ok(None);
         };
         let entry = &node.entries[pos];
@@ -1219,43 +1566,33 @@ impl Repository {
 
     /// List paths in any immutable historical revision without switching
     /// branches or changing the user worktree. A first query materializes a
-    /// derived snapshot; repeat and prefix queries use indexed SQLite ranges.
+    /// derived snapshot for full listings; prefix queries traverse native trees
+    /// directly and avoid indexing unrelated paths.
     pub fn list_revision_files(
-        &self, revision: ObjectId, prefix: Option<&str>
+        &self,
+        revision: ObjectId,
+        prefix: Option<&str>,
     ) -> Result<Vec<String>> {
-        if let Some(path) = prefix { validate_path(path)?; }
+        if let Some(path) = prefix {
+            validate_path(path)?;
+            // A scoped query must not construct a complete SQL snapshot.
+            // Native directory objects isolate it from unrelated subtrees.
+            let root = self.native_tree_root(revision)?;
+            return Ok(crate::tree::list_prefix(&self.store, root, path)?
+                .into_keys()
+                .collect());
+        }
         self.ensure_revision_tree_index(revision)?;
         let key = revision.to_string();
         let mut files = Vec::new();
-        if let Some(path) = prefix {
-            let lower = format!("{path}/");
-            let upper = format!("{path}0");
-            let mut stmt = self.db.prepare(
-                "SELECT path FROM revision_tree_index
-                 WHERE revision_oid=?1 AND path=?2
-                 UNION ALL
-                 SELECT path FROM revision_tree_index
-                 WHERE revision_oid=?1 AND path>=?3 AND path<?4
-                 ORDER BY path"
-            )?;
-            let rows = stmt.query_map(params![&key, path, lower, upper],
-                |row| row.get::<_, String>(0))?;
-            for row in rows {
-                let name = row?;
-                validate_path(&name)?;
-                files.push(name);
-            }
-        } else {
-            let mut stmt = self.db.prepare(
-                "SELECT path FROM revision_tree_index
-                 WHERE revision_oid=?1 ORDER BY path"
-            )?;
-            let rows = stmt.query_map([&key], |row| row.get::<_, String>(0))?;
-            for row in rows {
-                let name = row?;
-                validate_path(&name)?;
-                files.push(name);
-            }
+        let mut stmt = self
+            .db
+            .prepare("SELECT path FROM revision_tree_index WHERE revision_oid=?1 ORDER BY path")?;
+        let rows = stmt.query_map([&key], |row| row.get::<_, String>(0))?;
+        for row in rows {
+            let name = row?;
+            validate_path(&name)?;
+            files.push(name);
         }
         Ok(files)
     }
@@ -1264,9 +1601,7 @@ impl Repository {
     /// complete tree. v1 deltas use the first parent as their state base.
     /// The cache stores query results only; immutable changesets are the
     /// authoritative source and allow rebuilding the cache at any time.
-    fn resolve_revision_path(
-        &self, revision: ObjectId, path: &str
-    ) -> Result<Option<ObjectId>> {
+    fn resolve_revision_path(&self, revision: ObjectId, path: &str) -> Result<Option<ObjectId>> {
         let mut cursor = Some(revision);
         let mut visited = HashSet::new();
         while let Some(id) = cursor {
@@ -1278,7 +1613,10 @@ impl Repository {
             }
             let commit = self.get_changeset(id)?;
             // Canonical changesets always contain sorted, unique path entries.
-            if let Ok(pos) = commit.changes.binary_search_by(|c| c.path.as_str().cmp(path)) {
+            if let Ok(pos) = commit
+                .changes
+                .binary_search_by(|c| c.path.as_str().cmp(path))
+            {
                 return Ok(commit.changes[pos].blob);
             }
             cursor = commit.parents.first().copied();
@@ -1288,25 +1626,41 @@ impl Repository {
 
     /// Return a file's bytes at any native changeset ID, without checking out
     /// the revision. Cache hits require one indexed SQLite lookup and the
-    /// requested immutable blob read; a cache miss walks only change metadata
-    /// along the first-parent chain rather than materializing all paths.
-    pub fn read_revision_file(
-        &self, revision: ObjectId, path: &str
-    ) -> Result<Option<Vec<u8>>> {
+    /// requested immutable blob read. Misses use a materialized native root
+    /// when available, otherwise walk first-parent change metadata. Neither
+    /// path constructs the complete file index.
+    pub fn read_revision_file(&self, revision: ObjectId, path: &str) -> Result<Option<Vec<u8>>> {
         validate_path(path)?;
         // A cache hit must not turn a missing/non-changeset revision into a
         // valid lookup. The requested revision itself is always checked.
         self.get_changeset(revision)?;
         let key = revision.to_string();
-        let cached: Option<Option<String>> = self.db.query_row(
-            "SELECT blob_oid FROM revision_file_cache
+        let cached: Option<Option<String>> = self
+            .db
+            .query_row(
+                "SELECT blob_oid FROM revision_file_cache
              WHERE revision_oid=?1 AND path=?2",
-            params![&key, path], |row| row.get(0),
-        ).optional()?;
+                params![&key, path],
+                |row| row.get(0),
+            )
+            .optional()?;
         let blob = if let Some(value) = cached {
             value.map(|raw| ObjectId::parse(&raw)).transpose()?
         } else {
-            let resolved = self.resolve_revision_path(revision, path)?;
+            let root: Option<String> = self
+                .db
+                .query_row(
+                    "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+                    [&key],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let resolved = if let Some(root) = root {
+                crate::tree::lookup_file(&self.store, ObjectId::parse(&root)?, path)?
+            } else {
+                // Repositories predating native roots retain their v1 path.
+                self.resolve_revision_path(revision, path)?
+            };
             self.db.execute(
                 "INSERT OR IGNORE INTO revision_file_cache(revision_oid,path,blob_oid)
                  VALUES(?1,?2,?3)",
@@ -1326,36 +1680,49 @@ impl Repository {
     /// history remains authoritative and can reconstruct the requested file.
     pub fn read_branch_file(&self, branch: &str, path: &str) -> Result<Option<Vec<u8>>> {
         validate_path(path)?;
-        let cached: Option<Option<String>> = self.db.query_row(
-            "SELECT i.oid FROM refs AS r
+        let cached: Option<Option<String>> = self
+            .db
+            .query_row(
+                "SELECT i.oid FROM refs AS r
              JOIN branch_path_index_tip AS t
                ON t.branch=r.name AND t.oid=COALESCE(r.oid,'')
              LEFT JOIN branch_path_index AS i
                ON i.branch=r.name AND i.path=?2
              WHERE r.name=?1",
-            params![branch, path],
-            |row| row.get(0),
-        ).optional()?;
+                params![branch, path],
+                |row| row.get(0),
+            )
+            .optional()?;
         match cached {
             Some(Some(id)) => return self.blob_bytes(ObjectId::parse(&id)?).map(Some),
             Some(None) => return Ok(None),
-            None => {},
+            None => {}
         }
         let state = self.state_at(self.branch_tip(branch)?)?;
-        state.get(path).copied().map(|id| self.blob_bytes(id)).transpose()
+        state
+            .get(path)
+            .copied()
+            .map(|id| self.blob_bytes(id))
+            .transpose()
     }
 
     fn blob_bytes(&self, id: ObjectId) -> Result<Vec<u8>> {
         let raw = self.store.get(id)?;
         let (kind, payload) = decode_object(&raw)?;
-        if kind != BLOB { return Err(Error::Invalid(format!("expected blob object: {id}"))); }
+        if kind != BLOB {
+            return Err(Error::Invalid(format!("expected blob object: {id}")));
+        }
         Ok(payload.to_vec())
     }
 
     pub fn commit(&self, author: &str, message: &str) -> Result<ObjectId> {
         let _worktree_guard = self.lock_worktree()?;
         self.recover_locked()?;
-        if author.trim().is_empty() || message.trim().is_empty() { return Err(Error::Invalid("author and commit message are required".into())); }
+        if author.trim().is_empty() || message.trim().is_empty() {
+            return Err(Error::Invalid(
+                "author and commit message are required".into(),
+            ));
+        }
         let branch = self.current_branch()?;
         let prev = self.branch_tip(&branch)?;
         let staged = self.staging_enabled()?;
@@ -1373,11 +1740,25 @@ impl Repository {
             self.make_delta(&old, &files, true)?
         };
         if changes.is_empty() {
-            return Err(Error::Invalid(if staged { "nothing staged to commit" } else { "nothing to commit" }.into()));
+            return Err(Error::Invalid(
+                if staged {
+                    "nothing staged to commit"
+                } else {
+                    "nothing to commit"
+                }
+                .into(),
+            ));
         }
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| Error::Invalid("system time before epoch".into()))?;
-        let c = Changeset { parents: prev.into_iter().collect(), author: author.into(), message: message.into(),
-            timestamp_seconds: now.as_secs() as i64, changes };
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| Error::Invalid("system time before epoch".into()))?;
+        let c = Changeset {
+            parents: prev.into_iter().collect(),
+            author: author.into(),
+            message: message.into(),
+            timestamp_seconds: now.as_secs() as i64,
+            changes,
+        };
         // Both staged and legacy commit-all updates now publish immutable
         // native roots alongside the branch ref. Legacy mode still scans the
         // worktree to compute its changes; applying those changes to the
@@ -1387,9 +1768,7 @@ impl Repository {
         } else {
             crate::tree::write_snapshot(&self.store, &BTreeMap::new())?
         };
-        let native_tree = crate::tree::apply_changes(
-            &self.store, previous_root, &c.changes
-        )?;
+        let native_tree = crate::tree::apply_changes(&self.store, previous_root, &c.changes)?;
         let raw = c.encode()?;
         let (_, payload) = decode_object(&raw)?;
         let id = self.store.put(CHANGESET, payload)?;
@@ -1406,8 +1785,12 @@ impl Repository {
         let mut visited = HashSet::new();
         let mut next = self.head()?;
         while let Some(id) = next {
-            if result.len() >= limit.min(10_000) { break; }
-            if !visited.insert(id) { return Err(Error::Invalid("history cycle".into())); }
+            if result.len() >= limit.min(10_000) {
+                break;
+            }
+            if !visited.insert(id) {
+                return Err(Error::Invalid("history cycle".into()));
+            }
             let c = self.get_changeset(id)?;
             next = c.parents.first().copied();
             result.push((id, c));
@@ -1415,7 +1798,11 @@ impl Repository {
         Ok(result)
     }
 
-    fn materialize(&self, target: &BTreeMap<String,ObjectId>, previous: &BTreeMap<String,ObjectId>) -> Result<()> {
+    fn materialize(
+        &self,
+        target: &BTreeMap<String, ObjectId>,
+        previous: &BTreeMap<String, ObjectId>,
+    ) -> Result<()> {
         // Reject file/directory collisions and unexpected files before touching the worktree.
         for path in target.keys() {
             for (idx, ch) in path.char_indices() {
@@ -1430,7 +1817,9 @@ impl Repository {
         known.extend(target.keys().cloned());
         for path in actual.keys() {
             if !known.contains(path) {
-                return Err(Error::Conflict(format!("untracked file blocks recovery: {path}")));
+                return Err(Error::Conflict(format!(
+                    "untracked file blocks recovery: {path}"
+                )));
             }
         }
         for path in &known {
@@ -1440,35 +1829,57 @@ impl Repository {
                 let encoded = encode_object(BLOB, bytes)?;
                 let current = object_id(&encoded);
                 if Some(current) != before && Some(current) != after {
-                    return Err(Error::Conflict(format!("modified file blocks recovery: {path}")));
+                    return Err(Error::Conflict(format!(
+                        "modified file blocks recovery: {path}"
+                    )));
                 }
             } else if before.is_some() && after.is_some() {
-                return Err(Error::Conflict(format!("missing tracked file blocks recovery: {path}")));
+                return Err(Error::Conflict(format!(
+                    "missing tracked file blocks recovery: {path}"
+                )));
             }
         }
         // Verify every required blob before removing anything.
-        for id in target.values() { self.blob_bytes(*id)?; }
+        for id in target.values() {
+            self.blob_bytes(*id)?;
+        }
 
         for path in previous.keys() {
-            if target.contains_key(path) { continue; }
+            if target.contains_key(path) {
+                continue;
+            }
             let full = self.root.join(path);
             match fs::symlink_metadata(&full) {
                 Ok(meta) if meta.is_file() => fs::remove_file(&full)?,
-                Ok(meta) if meta.is_dir() && target.keys().any(|p| p.starts_with(&format!("{path}/"))) => {},
-                Ok(_) => return Err(Error::Conflict(format!("unexpected path type during recovery: {path}"))),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+                Ok(meta)
+                    if meta.is_dir()
+                        && target.keys().any(|p| p.starts_with(&format!("{path}/"))) => {}
+                Ok(_) => {
+                    return Err(Error::Conflict(format!(
+                        "unexpected path type during recovery: {path}"
+                    )))
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => return Err(e.into()),
             }
         }
-        let mut dirs: Vec<PathBuf> = previous.keys()
-            .filter_map(|p| self.root.join(p).parent().map(Path::to_path_buf)).collect();
+        let mut dirs: Vec<PathBuf> = previous
+            .keys()
+            .filter_map(|p| self.root.join(p).parent().map(Path::to_path_buf))
+            .collect();
         dirs.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
         dirs.dedup();
         for dir in dirs {
-            if dir == self.root { continue; }
+            if dir == self.root {
+                continue;
+            }
             match fs::remove_dir(&dir) {
-                Ok(()) => {},
-                Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty) => {},
+                Ok(()) => {}
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
+                    ) => {}
                 Err(e) => return Err(e.into()),
             }
         }
@@ -1481,28 +1892,42 @@ impl Repository {
             let already_correct = actual.get(path).is_some_and(|bytes| {
                 encode_object(BLOB, bytes).is_ok_and(|encoded| object_id(&encoded) == *oid)
             });
-            if already_correct { continue; }
+            if already_correct {
+                continue;
+            }
             let bytes = self.blob_bytes(*oid)?;
             let full = self.root.join(path);
-            if let Some(parent) = full.parent() { fs::create_dir_all(parent)?; }
+            if let Some(parent) = full.parent() {
+                fs::create_dir_all(parent)?;
+            }
             let mut tempfile = None;
             for _ in 0..16 {
                 let nonce = STAGE_NONCE.fetch_add(1, Ordering::Relaxed);
                 let candidate = staging.join(format!("{}-{nonce}", std::process::id()));
-                match fs::OpenOptions::new().create_new(true).write(true).open(&candidate) {
-                    Ok(file) => { tempfile = Some((candidate, file)); break; }
-                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {},
+                match fs::OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(&candidate)
+                {
+                    Ok(file) => {
+                        tempfile = Some((candidate, file));
+                        break;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
                     Err(e) => return Err(e.into()),
                 }
             }
-            let (temp, mut file) = tempfile.ok_or_else(|| Error::Conflict("unable to allocate a staging file".into()))?;
+            let (temp, mut file) = tempfile
+                .ok_or_else(|| Error::Conflict("unable to allocate a staging file".into()))?;
             use std::io::Write;
             file.write_all(&bytes)?;
             file.sync_all()?;
             drop(file);
             fs::rename(&temp, &full)?;
             #[cfg(unix)]
-            if let Some(parent) = full.parent() { fs::File::open(parent)?.sync_all()?; }
+            if let Some(parent) = full.parent() {
+                fs::File::open(parent)?.sync_all()?;
+            }
         }
         Ok(())
     }
@@ -1510,16 +1935,24 @@ impl Repository {
         let _worktree_guard = self.lock_worktree()?;
         self.recover_locked()?;
         if !self.staged_blobs()?.is_empty() {
-            return Err(Error::Conflict("unstage or commit staged changes before switching branches".into()));
+            return Err(Error::Conflict(
+                "unstage or commit staged changes before switching branches".into(),
+            ));
         }
         if !self.status()?.is_empty() {
-            return Err(Error::Conflict("working tree has uncommitted or untracked files".into()));
+            return Err(Error::Conflict(
+                "working tree has uncommitted or untracked files".into(),
+            ));
         }
         let old_branch = self.current_branch()?;
         let before = self.head()?;
         let after = self.branch_tip(name)?;
-        if old_branch == name { return Ok(()); }
-        for id in self.state_at(after)?.values() { self.blob_bytes(*id)?; }
+        if old_branch == name {
+            return Ok(());
+        }
+        for id in self.state_at(after)?.values() {
+            self.blob_bytes(*id)?;
+        }
         self.begin_transition(&PendingTransition {
             operation: "switch".into(),
             from_branch: old_branch,
@@ -1530,12 +1963,13 @@ impl Repository {
         self.recover_locked()
     }
 
-
     fn ancestor_ids(&self, start: ObjectId) -> Result<HashSet<ObjectId>> {
         let mut seen = HashSet::new();
         let mut queue = VecDeque::from([start]);
         while let Some(id) = queue.pop_front() {
-            if seen.contains(&id) { continue; }
+            if seen.contains(&id) {
+                continue;
+            }
             if seen.len() >= 1_000_000 {
                 return Err(Error::Invalid("ancestry traversal limit reached".into()));
             }
@@ -1561,14 +1995,18 @@ impl Repository {
         for head in rest {
             let ancestors = self.ancestor_ids(*head)?;
             common.retain(|id| ancestors.contains(id));
-            if common.is_empty() { return Ok(Vec::new()); }
+            if common.is_empty() {
+                return Ok(Vec::new());
+            }
         }
         // Every parent of a common revision is also common. Removing direct
         // parents therefore removes all dominated ancestors transitively.
         let mut dominated = HashSet::new();
         for id in &common {
             for parent in self.get_changeset(*id)?.parents {
-                if common.contains(&parent) { dominated.insert(parent); }
+                if common.contains(&parent) {
+                    dominated.insert(parent);
+                }
             }
         }
         let mut best: Vec<ObjectId> = common.difference(&dominated).copied().collect();
@@ -1594,10 +2032,14 @@ impl Repository {
     /// The recursive work is bounded to avoid untrusted-DAG resource abuse.
     /// Virtual states are never published as changesets or refs.
     fn virtual_merge_base(
-        &self, bases: &[ObjectId], budget: &mut usize
+        &self,
+        bases: &[ObjectId],
+        budget: &mut usize,
     ) -> Result<BTreeMap<String, ObjectId>> {
         if *budget == 0 || bases.len() > 64 {
-            return Err(Error::Invalid("virtual merge-base complexity limit reached".into()));
+            return Err(Error::Invalid(
+                "virtual merge-base complexity limit reached".into(),
+            ));
         }
         *budget -= 1;
         match bases {
@@ -1607,7 +2049,7 @@ impl Repository {
                 let older = self.best_common_bases(many)?;
                 if older.is_empty() {
                     return Err(Error::Conflict(
-                        "multiple merge bases without a shared ancestor".into()
+                        "multiple merge bases without a shared ancestor".into(),
                     ));
                 }
                 let ancestor = self.virtual_merge_base(&older, budget)?;
@@ -1616,9 +2058,7 @@ impl Repository {
                 // modifications must agree or be conservatively text-merged.
                 for id in many {
                     let next = self.state_at(Some(*id))?;
-                    result = self.merge_states(
-                        &ancestor, &result, &next, "virtual merge-base"
-                    )?;
+                    result = self.merge_states(&ancestor, &result, &next, "virtual merge-base")?;
                 }
                 Ok(result)
             }
@@ -1645,26 +2085,34 @@ impl Repository {
             let original = base.get(&path);
             let local = ours.get(&path);
             let remote = theirs.get(&path);
-            let chosen = if local == remote { local.copied() }
-                else if local == original { remote.copied() }
-                else if remote == original { local.copied() }
-                else {
-                    match (original, local, remote) {
-                        (Some(base_id), Some(our_id), Some(their_id)) => {
-                            let b = self.blob_bytes(*base_id)?;
-                            let o = self.blob_bytes(*our_id)?;
-                            let t = self.blob_bytes(*their_id)?;
-                            if let Some(bytes) = crate::text_merge::merge_text(&b, &o, &t) {
-                                Some(self.store.put(BLOB, &bytes)?)
-                            } else {
-                                conflicts.push(path.clone());
-                                continue;
-                            }
+            let chosen = if local == remote {
+                local.copied()
+            } else if local == original {
+                remote.copied()
+            } else if remote == original {
+                local.copied()
+            } else {
+                match (original, local, remote) {
+                    (Some(base_id), Some(our_id), Some(their_id)) => {
+                        let b = self.blob_bytes(*base_id)?;
+                        let o = self.blob_bytes(*our_id)?;
+                        let t = self.blob_bytes(*their_id)?;
+                        if let Some(bytes) = crate::text_merge::merge_text(&b, &o, &t) {
+                            Some(self.store.put(BLOB, &bytes)?)
+                        } else {
+                            conflicts.push(path.clone());
+                            continue;
                         }
-                        _ => { conflicts.push(path.clone()); continue }
                     }
-                };
-            if let Some(id) = chosen { merged.insert(path, id); }
+                    _ => {
+                        conflicts.push(path.clone());
+                        continue;
+                    }
+                }
+            };
+            if let Some(id) = chosen {
+                merged.insert(path, id);
+            }
         }
         // No file may also be an ancestor directory of another file.
         for path in merged.keys() {
@@ -1678,7 +2126,8 @@ impl Repository {
             conflicts.sort();
             conflicts.dedup();
             return Err(Error::Conflict(format!(
-                "{context} conflicts in: {}", conflicts.join(", ")
+                "{context} conflicts in: {}",
+                conflicts.join(", ")
             )));
         }
         Ok(merged)
@@ -1691,22 +2140,33 @@ impl Repository {
         let _worktree_guard = self.lock_worktree()?;
         self.recover_locked()?;
         if !self.staged_blobs()?.is_empty() {
-            return Err(Error::Conflict("unstage or commit staged changes before merging".into()));
+            return Err(Error::Conflict(
+                "unstage or commit staged changes before merging".into(),
+            ));
         }
         if author.trim().is_empty() || message.trim().is_empty() {
             return Err(Error::Invalid("author and message required".into()));
         }
         if !self.status()?.is_empty() {
-            return Err(Error::Conflict("working tree must be clean before merge".into()));
+            return Err(Error::Conflict(
+                "working tree must be clean before merge".into(),
+            ));
         }
         let branch = self.current_branch()?;
-        let ours = self.head()?.ok_or_else(|| Error::Invalid("cannot merge into unborn branch".into()))?;
-        let theirs = self.branch_tip(name)?.ok_or_else(|| Error::Invalid("cannot merge unborn branch".into()))?;
-        if ours == theirs { return Ok(ours); }
+        let ours = self
+            .head()?
+            .ok_or_else(|| Error::Invalid("cannot merge into unborn branch".into()))?;
+        let theirs = self
+            .branch_tip(name)?
+            .ok_or_else(|| Error::Invalid("cannot merge unborn branch".into()))?;
+        if ours == theirs {
+            return Ok(ours);
+        }
         let bases = self.best_merge_bases(ours, theirs)?;
         if bases.is_empty() {
             return Err(Error::Conflict(
-                "branches have unrelated histories; refusing merge without a common ancestor".into()
+                "branches have unrelated histories; refusing merge without a common ancestor"
+                    .into(),
             ));
         }
         if bases.len() == 1 && bases[0] == theirs {
@@ -1738,7 +2198,8 @@ impl Repository {
             // closed until typed resolution records are supported.
             for (path, id) in &base {
                 if (our_files.get(path) == Some(id) && !their_files.contains_key(path))
-                    || (their_files.get(path) == Some(id) && !our_files.contains_key(path)) {
+                    || (their_files.get(path) == Some(id) && !our_files.contains_key(path))
+                {
                     return Err(Error::Conflict(format!(
                         "virtual merge-base deletion ambiguity at {path}"
                     )));
@@ -1748,20 +2209,37 @@ impl Repository {
         let mut changes = Vec::new();
         for (path, id) in &merged {
             if our_files.get(path) != Some(id) {
-                changes.push(Change { path: path.clone(), kind: if our_files.contains_key(path) {
-                    ChangeKind::Modify
-                } else { ChangeKind::Add }, blob: Some(*id) });
+                changes.push(Change {
+                    path: path.clone(),
+                    kind: if our_files.contains_key(path) {
+                        ChangeKind::Modify
+                    } else {
+                        ChangeKind::Add
+                    },
+                    blob: Some(*id),
+                });
             }
         }
         for path in our_files.keys() {
             if !merged.contains_key(path) {
-                changes.push(Change { path: path.clone(), kind: ChangeKind::Delete, blob: None });
+                changes.push(Change {
+                    path: path.clone(),
+                    kind: ChangeKind::Delete,
+                    blob: None,
+                });
             }
         }
-        changes.sort_by(|a,b| a.path.cmp(&b.path));
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| Error::Invalid("system time before epoch".into()))?;
-        let commit = Changeset { parents: vec![ours, theirs], author: author.into(), message: message.into(),
-            timestamp_seconds: now.as_secs() as i64, changes };
+        changes.sort_by(|a, b| a.path.cmp(&b.path));
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| Error::Invalid("system time before epoch".into()))?;
+        let commit = Changeset {
+            parents: vec![ours, theirs],
+            author: author.into(),
+            message: message.into(),
+            timestamp_seconds: now.as_secs() as i64,
+            changes,
+        };
         let encoded = commit.encode()?;
         let (_, payload) = decode_object(&encoded)?;
         let id = self.store.put(CHANGESET, payload)?;
@@ -1786,12 +2264,19 @@ impl Repository {
                 let c = Changeset::decode(&data)?;
                 for parent in c.parents {
                     let raw = self.store.get(parent)?;
-                    if decode_object(&raw)?.0 != CHANGESET { return Err(Error::Invalid(format!("non-changeset parent: {parent}"))); }
+                    if decode_object(&raw)?.0 != CHANGESET {
+                        return Err(Error::Invalid(format!("non-changeset parent: {parent}")));
+                    }
                 }
                 for ch in c.changes {
                     if let Some(blob) = ch.blob {
                         let raw = self.store.get(blob)?;
-                        if decode_object(&raw)?.0 != BLOB { return Err(Error::Invalid(format!("non-blob referenced at {}", ch.path))); }
+                        if decode_object(&raw)?.0 != BLOB {
+                            return Err(Error::Invalid(format!(
+                                "non-blob referenced at {}",
+                                ch.path
+                            )));
+                        }
                     }
                 }
             }
@@ -1806,7 +2291,8 @@ impl Repository {
                     };
                     if actual_kind != expected {
                         return Err(Error::Invalid(format!(
-                            "native tree entry references wrong object type: {}", entry.name
+                            "native tree entry references wrong object type: {}",
+                            entry.name
                         )));
                     }
                 }
@@ -1821,17 +2307,21 @@ impl Repository {
         if !staged.is_empty() {
             if !self.staging_enabled()? {
                 return Err(Error::Invalid(
-                    "staging index has entries but staging mode is disabled".into()
+                    "staging index has entries but staging mode is disabled".into(),
                 ));
             }
             let tracked = self.state_at(self.head()?)?;
             for (path, blob) in staged {
                 match blob {
-                    Some(id) => { self.blob_bytes(id)?; }
-                    None if tracked.contains_key(&path) => {},
-                    None => return Err(Error::Invalid(format!(
-                        "staged deletion does not reference a tracked path: {path}"
-                    ))),
+                    Some(id) => {
+                        self.blob_bytes(id)?;
+                    }
+                    None if tracked.contains_key(&path) => {}
+                    None => {
+                        return Err(Error::Invalid(format!(
+                            "staged deletion does not reference a tracked path: {path}"
+                        )))
+                    }
                 }
             }
         }
@@ -1844,19 +2334,25 @@ impl Repository {
             }
         }
         for (branch, tip) in self.branches()? {
-            if let Some(id) = tip { self.get_changeset(id)?; }
+            if let Some(id) = tip {
+                self.get_changeset(id)?;
+            }
             let expected = self.state_at(tip)?;
             // Derived index is allowed to be absent or stale after merge,
             // branch creation or legacy commit, but if its revision marker
             // claims to be current its contents must match immutable history.
-            let indexed_tip: Option<String> = self.db.query_row(
-                "SELECT oid FROM branch_path_index_tip WHERE branch=?1",
-                [&branch], |row| row.get(0),
-            ).optional()?;
+            let indexed_tip: Option<String> = self
+                .db
+                .query_row(
+                    "SELECT oid FROM branch_path_index_tip WHERE branch=?1",
+                    [&branch],
+                    |row| row.get(0),
+                )
+                .optional()?;
             let head = tip.map(|id| id.to_string()).unwrap_or_default();
             if indexed_tip.as_deref() == Some(head.as_str()) {
                 let mut stmt = self.db.prepare(
-                    "SELECT path,oid FROM branch_path_index WHERE branch=?1 ORDER BY path"
+                    "SELECT path,oid FROM branch_path_index WHERE branch=?1 ORDER BY path",
                 )?;
                 let entries = stmt.query_map([&branch], |r| {
                     Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -1877,13 +2373,15 @@ impl Repository {
         // Cached historical answers are derived data, not new repository
         // authority. fsck detects stale or tampered path results by replaying
         // only the requested path along the immutable first-parent chain.
-        let mut statement = self.db.prepare(
-            "SELECT revision_oid,path,blob_oid FROM revision_file_cache"
-        )?;
+        let mut statement = self
+            .db
+            .prepare("SELECT revision_oid,path,blob_oid FROM revision_file_cache")?;
         let entries = statement.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?,
+            Ok((
+                row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?))
+                row.get::<_, Option<String>>(2)?,
+            ))
         })?;
         for entry in entries {
             let (raw_revision, path, raw_blob) = entry?;
@@ -1899,21 +2397,25 @@ impl Repository {
         // Historical tree checkpoints are disposable derivations, not
         // additional authority. Validate both their completion markers and
         // every cached path/ID against canonical first-parent replay.
-        let dangling: Option<String> = self.db.query_row(
-            "SELECT e.revision_oid FROM revision_tree_index AS e
+        let dangling: Option<String> = self
+            .db
+            .query_row(
+                "SELECT e.revision_oid FROM revision_tree_index AS e
              LEFT JOIN revision_tree_index_tip AS t
                ON t.revision_oid=e.revision_oid
              WHERE t.revision_oid IS NULL LIMIT 1",
-            [], |row| row.get(0),
-        ).optional()?;
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
         if let Some(id) = dangling {
             return Err(Error::Invalid(format!(
                 "historical tree has entries without a completion marker: {id}"
             )));
         }
-        let mut marker_query = self.db.prepare(
-            "SELECT revision_oid,entry_count FROM revision_tree_index_tip"
-        )?;
+        let mut marker_query = self
+            .db
+            .prepare("SELECT revision_oid,entry_count FROM revision_tree_index_tip")?;
         let markers = marker_query.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })?;
@@ -1924,7 +2426,7 @@ impl Repository {
             let mut actual = BTreeMap::new();
             let mut contents = self.db.prepare(
                 "SELECT path,blob_oid FROM revision_tree_index
-                 WHERE revision_oid=?1"
+                 WHERE revision_oid=?1",
             )?;
             let rows = contents.query_map([&raw_revision], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -1942,9 +2444,9 @@ impl Repository {
         }
         // A native v2 tree is a durable immutable DAG. Its optional mapping
         // to a v1 revision is derived and must reflect that revision exactly.
-        let mut roots = self.db.prepare(
-            "SELECT revision_oid,root_oid FROM revision_native_tree"
-        )?;
+        let mut roots = self
+            .db
+            .prepare("SELECT revision_oid,root_oid FROM revision_native_tree")?;
         let items = roots.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -1972,7 +2474,8 @@ mod tests {
         let repo = Repository::init(dir.path()).unwrap();
         (dir, repo)
     }
-    #[test] fn basic_commit_status_log_fsck() {
+    #[test]
+    fn basic_commit_status_log_fsck() {
         let (dir, r) = repo();
         assert_eq!(r.current_branch().unwrap(), "main");
         fs::write(dir.path().join("hello.txt"), b"hello").unwrap();
@@ -1985,7 +2488,8 @@ mod tests {
         assert_eq!(r.get_changeset(second).unwrap().parents, vec![first]);
         assert!(r.fsck().unwrap() >= 4);
     }
-    #[test] fn branches_switch_and_cas() {
+    #[test]
+    fn branches_switch_and_cas() {
         let (dir, r) = repo();
         fs::write(dir.path().join("a"), b"first").unwrap();
         r.commit("a", "c1").unwrap();
@@ -2014,9 +2518,13 @@ mod tests {
         let current = repo.head().unwrap();
         let next = repo.branch_tip("feature").unwrap();
         repo.begin_transition(&PendingTransition {
-            operation: "switch".into(), from_branch: "main".into(),
-            to_branch: "feature".into(), before: current, after: next,
-        }).unwrap();
+            operation: "switch".into(),
+            from_branch: "main".into(),
+            to_branch: "feature".into(),
+            before: current,
+            after: next,
+        })
+        .unwrap();
         // Imitate a terminated process: only the first file made it to disk.
         fs::write(dir.path().join("a.txt"), b"feature a").unwrap();
         drop(repo);
@@ -2036,10 +2544,13 @@ mod tests {
         repo.commit("tester", "baseline").unwrap();
         repo.create_branch("feature").unwrap();
         repo.begin_transition(&PendingTransition {
-            operation: "switch".into(), from_branch: "main".into(),
-            to_branch: "feature".into(), before: repo.head().unwrap(),
+            operation: "switch".into(),
+            from_branch: "main".into(),
+            to_branch: "feature".into(),
+            before: repo.head().unwrap(),
             after: repo.branch_tip("feature").unwrap(),
-        }).unwrap();
+        })
+        .unwrap();
         drop(repo);
         fs::write(dir.path().join("user.txt"), b"untouched").unwrap();
         assert!(Repository::discover(dir.path()).is_err());
@@ -2063,7 +2574,10 @@ mod tests {
         repo.switch_branch("main").unwrap();
         assert_eq!(fs::read(dir.path().join("node")).unwrap(), b"one");
         repo.switch_branch("directory").unwrap();
-        assert_eq!(fs::read(dir.path().join("node").join("leaf")).unwrap(), b"two");
+        assert_eq!(
+            fs::read(dir.path().join("node").join("leaf")).unwrap(),
+            b"two"
+        );
         assert!(repo.status().unwrap().is_empty());
     }
 
@@ -2079,9 +2593,13 @@ mod tests {
         repo.switch_branch("main").unwrap();
         let before = repo.head().unwrap();
         repo.begin_transition(&PendingTransition {
-            operation: "switch".into(), from_branch: "main".into(),
-            to_branch: "feature".into(), before, after: repo.branch_tip("feature").unwrap(),
-        }).unwrap();
+            operation: "switch".into(),
+            from_branch: "main".into(),
+            to_branch: "feature".into(),
+            before,
+            after: repo.branch_tip("feature").unwrap(),
+        })
+        .unwrap();
         drop(repo);
         fs::write(dir.path().join("file"), b"user edit").unwrap();
         assert!(Repository::discover(dir.path()).is_err());
@@ -2101,17 +2619,27 @@ mod tests {
         let first = repo.head().unwrap().unwrap();
         let blob = repo.store.put(BLOB, b"merged").unwrap();
         let merged = Changeset {
-            parents: vec![first, first], author: "tester".into(), message: "merge".into(),
+            parents: vec![first, first],
+            author: "tester".into(),
+            message: "merge".into(),
             timestamp_seconds: 1,
-            changes: vec![Change { kind: ChangeKind::Modify, path: "a".into(), blob: Some(blob) }],
+            changes: vec![Change {
+                kind: ChangeKind::Modify,
+                path: "a".into(),
+                blob: Some(blob),
+            }],
         };
         let bytes = merged.encode().unwrap();
         let (_, payload) = decode_object(&bytes).unwrap();
         let merged_id = repo.store.put(CHANGESET, payload).unwrap();
         repo.begin_transition(&PendingTransition {
-            operation: "merge".into(), from_branch: "main".into(), to_branch: "main".into(),
-            before: Some(first), after: Some(merged_id),
-        }).unwrap();
+            operation: "merge".into(),
+            from_branch: "main".into(),
+            to_branch: "main".into(),
+            before: Some(first),
+            after: Some(merged_id),
+        })
+        .unwrap();
         assert_eq!(repo.head().unwrap(), Some(first));
         drop(repo);
         let reopened = Repository::discover(dir.path()).unwrap();
@@ -2121,19 +2649,28 @@ mod tests {
         assert!(reopened.status().unwrap().is_empty());
     }
 
-
     #[test]
     fn derived_index_is_incremental_and_rebuildable() {
         let (dir, r) = repo();
         for i in 0..40 {
-            fs::write(dir.path().join(format!("file-{i:03}.txt")), format!("base {i}")).unwrap();
+            fs::write(
+                dir.path().join(format!("file-{i:03}.txt")),
+                format!("base {i}"),
+            )
+            .unwrap();
         }
         let baseline = r.commit("tester", "baseline").unwrap();
         // Legacy repository lazily initializes its derived branch index.
-        assert!(r.db.query_row(
-            "SELECT oid FROM branch_path_index_tip WHERE branch='main'",
-            [], |row| row.get::<_, String>(0)
-        ).optional().unwrap().is_none());
+        assert!(r
+            .db
+            .query_row(
+                "SELECT oid FROM branch_path_index_tip WHERE branch='main'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .optional()
+            .unwrap()
+            .is_none());
         for i in 0..12 {
             fs::write(dir.path().join("file-000.txt"), format!("step {i}")).unwrap();
             r.add("file-000.txt").unwrap();
@@ -2141,29 +2678,40 @@ mod tests {
         }
         let tip = r.head().unwrap().unwrap();
         assert_ne!(tip, baseline);
-        let current: String = r.db.query_row(
-            "SELECT oid FROM branch_path_index_tip WHERE branch='main'",
-            [], |row| row.get(0)
-        ).unwrap();
+        let current: String =
+            r.db.query_row(
+                "SELECT oid FROM branch_path_index_tip WHERE branch='main'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(current, tip.to_string());
-        let size: i64 = r.db.query_row(
-            "SELECT count(*) FROM branch_path_index WHERE branch='main'",
-            [], |row| row.get(0)
-        ).unwrap();
+        let size: i64 =
+            r.db.query_row(
+                "SELECT count(*) FROM branch_path_index WHERE branch='main'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(size, 40);
-        assert_eq!(r.indexed_blob("main", "file-000.txt").unwrap(),
-            r.state_at(Some(tip)).unwrap().get("file-000.txt").copied());
+        assert_eq!(
+            r.indexed_blob("main", "file-000.txt").unwrap(),
+            r.state_at(Some(tip)).unwrap().get("file-000.txt").copied()
+        );
 
         // Drop only derived data. History remains authoritative and an
         // upcoming staged commit reconstructs the index from immutable data.
-        r.db.execute("DELETE FROM branch_path_index_tip", []).unwrap();
+        r.db.execute("DELETE FROM branch_path_index_tip", [])
+            .unwrap();
         r.db.execute("DELETE FROM branch_path_index", []).unwrap();
         fs::write(dir.path().join("file-001.txt"), b"recovered").unwrap();
         r.add("file-001.txt").unwrap();
         r.commit("tester", "after index eviction").unwrap();
         assert!(r.fsck().is_ok());
-        assert_eq!(r.read_branch_file("main", "file-001.txt").unwrap(),
-            Some(b"recovered".to_vec()));
+        assert_eq!(
+            r.read_branch_file("main", "file-001.txt").unwrap(),
+            Some(b"recovered".to_vec())
+        );
     }
 
     #[test]
@@ -2176,19 +2724,24 @@ mod tests {
         fs::write(dir.path().join("shared"), b"feature").unwrap();
         r.add("shared").unwrap();
         r.commit("tester", "feature version").unwrap();
-        assert_eq!(r.read_branch_file("feature", "shared").unwrap(),
-            Some(b"feature".to_vec()));
+        assert_eq!(
+            r.read_branch_file("feature", "shared").unwrap(),
+            Some(b"feature".to_vec())
+        );
         r.switch_branch("main").unwrap();
         fs::write(dir.path().join("shared"), b"main").unwrap();
         r.add("shared").unwrap();
         r.commit("tester", "main version").unwrap();
-        assert_eq!(r.read_branch_file("main", "shared").unwrap(),
-            Some(b"main".to_vec()));
-        assert_eq!(r.read_branch_file("feature", "shared").unwrap(),
-            Some(b"feature".to_vec()));
+        assert_eq!(
+            r.read_branch_file("main", "shared").unwrap(),
+            Some(b"main".to_vec())
+        );
+        assert_eq!(
+            r.read_branch_file("feature", "shared").unwrap(),
+            Some(b"feature".to_vec())
+        );
         assert!(r.fsck().is_ok());
     }
-
 
     #[test]
     fn branch_file_reads_follow_indexed_commits_additions_and_deletions() {
@@ -2197,25 +2750,33 @@ mod tests {
         fs::write(dir.path().join("keep.txt"), b"unchanged").unwrap();
         r.commit("tester", "initial").unwrap();
         // Legacy commits have no derived index; history is the fallback.
-        assert_eq!(r.read_branch_file("main", "first.txt").unwrap(),
-            Some(b"original".to_vec()));
+        assert_eq!(
+            r.read_branch_file("main", "first.txt").unwrap(),
+            Some(b"original".to_vec())
+        );
         assert_eq!(r.read_branch_file("main", "missing.txt").unwrap(), None);
 
         fs::write(dir.path().join("first.txt"), b"indexed").unwrap();
         r.add("first.txt").unwrap();
         r.commit("tester", "create indexed tip").unwrap();
-        assert_eq!(r.read_branch_file("main", "first.txt").unwrap(),
-            Some(b"indexed".to_vec()));
-        assert_eq!(r.read_branch_file("main", "keep.txt").unwrap(),
-            Some(b"unchanged".to_vec()));
+        assert_eq!(
+            r.read_branch_file("main", "first.txt").unwrap(),
+            Some(b"indexed".to_vec())
+        );
+        assert_eq!(
+            r.read_branch_file("main", "keep.txt").unwrap(),
+            Some(b"unchanged".to_vec())
+        );
         assert_eq!(r.read_branch_file("main", "missing.txt").unwrap(), None);
 
         fs::remove_file(dir.path().join("first.txt")).unwrap();
         r.add("first.txt").unwrap();
         r.commit("tester", "delete indexed path").unwrap();
         assert_eq!(r.read_branch_file("main", "first.txt").unwrap(), None);
-        assert_eq!(r.read_branch_file("main", "keep.txt").unwrap(),
-            Some(b"unchanged".to_vec()));
+        assert_eq!(
+            r.read_branch_file("main", "keep.txt").unwrap(),
+            Some(b"unchanged".to_vec())
+        );
         assert!(r.fsck().is_ok());
     }
 
@@ -2228,19 +2789,27 @@ mod tests {
         r.add("a").unwrap();
         r.commit("tester", "indexed change").unwrap();
         let current = r.head().unwrap().unwrap();
-        assert_eq!(r.read_branch_file("main", "a").unwrap(),
-            Some(b"two".to_vec()));
+        assert_eq!(
+            r.read_branch_file("main", "a").unwrap(),
+            Some(b"two".to_vec())
+        );
         // Simulate index eviction: the immutable changesets remain usable.
-        r.db.execute("DELETE FROM branch_path_index_tip", []).unwrap();
-        assert_eq!(r.read_branch_file("main", "a").unwrap(),
-            Some(b"two".to_vec()));
+        r.db.execute("DELETE FROM branch_path_index_tip", [])
+            .unwrap();
+        assert_eq!(
+            r.read_branch_file("main", "a").unwrap(),
+            Some(b"two".to_vec())
+        );
         // A stale marker must not masquerade as the current branch revision.
         r.db.execute(
             "INSERT INTO branch_path_index_tip(branch,oid) VALUES('main',?1)",
             [ObjectId([7; 32]).to_string()],
-        ).unwrap();
-        assert_eq!(r.read_branch_file("main", "a").unwrap(),
-            Some(b"two".to_vec()));
+        )
+        .unwrap();
+        assert_eq!(
+            r.read_branch_file("main", "a").unwrap(),
+            Some(b"two".to_vec())
+        );
         assert_eq!(r.head().unwrap(), Some(current));
         assert!(r.fsck().is_ok());
     }
@@ -2259,10 +2828,14 @@ mod tests {
         fs::write(dir.path().join("value"), b"main").unwrap();
         r.add("value").unwrap();
         r.commit("tester", "main commit").unwrap();
-        assert_eq!(r.read_branch_file("feature", "value").unwrap(),
-            Some(b"feature".to_vec()));
-        assert_eq!(r.read_branch_file("main", "value").unwrap(),
-            Some(b"main".to_vec()));
+        assert_eq!(
+            r.read_branch_file("feature", "value").unwrap(),
+            Some(b"feature".to_vec())
+        );
+        assert_eq!(
+            r.read_branch_file("main", "value").unwrap(),
+            Some(b"main".to_vec())
+        );
         assert!(r.read_branch_file("does-not-exist", "value").is_err());
         assert!(r.fsck().is_ok());
     }
@@ -2275,28 +2848,35 @@ mod tests {
         fs::write(dir.path().join("src/beta"), b"beta").unwrap();
         fs::write(dir.path().join("src2"), b"sibling").unwrap();
         r.commit("tester", "base").unwrap();
-        assert_eq!(r.list_branch_files("main", Some("src")).unwrap(),
-                   vec!["src/alpha", "src/beta"]);
+        assert_eq!(
+            r.list_branch_files("main", Some("src")).unwrap(),
+            vec!["src/alpha", "src/beta"]
+        );
         fs::write(dir.path().join("src/alpha"), b"updated").unwrap();
         r.add("src/alpha").unwrap();
         r.commit("tester", "warm cache").unwrap();
         let expected = vec!["src/alpha".to_owned(), "src/beta".to_owned()];
         assert_eq!(r.list_branch_files("main", Some("src")).unwrap(), expected);
-        r.db.execute("DELETE FROM branch_path_index_tip", []).unwrap();
+        r.db.execute("DELETE FROM branch_path_index_tip", [])
+            .unwrap();
         assert_eq!(r.list_branch_files("main", Some("src")).unwrap(), expected);
         r.db.execute(
             "INSERT INTO branch_path_index_tip(branch,oid) VALUES('main',?1)",
             [ObjectId([9; 32]).to_string()],
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(r.list_branch_files("main", Some("src")).unwrap(), expected);
-        assert_eq!(r.list_branch_files("main", Some("src2")).unwrap(),
-                   vec!["src2"]);
-        assert_eq!(r.list_branch_files("main", Some("missing")).unwrap(),
-                   Vec::<String>::new());
+        assert_eq!(
+            r.list_branch_files("main", Some("src2")).unwrap(),
+            vec!["src2"]
+        );
+        assert_eq!(
+            r.list_branch_files("main", Some("missing")).unwrap(),
+            Vec::<String>::new()
+        );
         assert!(r.list_branch_files("missing", None).is_err());
         assert!(r.list_branch_files("main", Some("../unsafe")).is_err());
     }
-
 
     #[test]
     fn fsck_verifies_staged_content_and_tombstones() {
@@ -2328,9 +2908,13 @@ mod tests {
 
         r.db.execute(
             "UPDATE stage_index SET blob_id=?1 WHERE path='tracked'",
-            [changeset.to_string()]
-        ).unwrap();
-        assert!(r.fsck().is_err(), "changeset must not be treated as staged blob");
+            [changeset.to_string()],
+        )
+        .unwrap();
+        assert!(
+            r.fsck().is_err(),
+            "changeset must not be treated as staged blob"
+        );
     }
 
     #[test]
@@ -2342,8 +2926,9 @@ mod tests {
         r.add("new-file").unwrap();
         r.db.execute(
             "INSERT INTO stage_index(path,blob_id) VALUES('ghost-file',NULL)",
-            []
-        ).unwrap();
+            [],
+        )
+        .unwrap();
         assert!(r.fsck().is_err());
     }
 
@@ -2357,10 +2942,10 @@ mod tests {
             to_branch: "main".into(),
             before: None,
             after: Some(ObjectId([9; 32])),
-        }).unwrap();
+        })
+        .unwrap();
         assert!(r.fsck().is_err());
     }
-
 
     #[test]
     fn indexed_add_handles_create_modify_and_delete_with_precise_status() {
@@ -2371,17 +2956,30 @@ mod tests {
         fs::write(dir.path().join("new"), b"new").unwrap();
         r.add("tracked").unwrap();
         r.add("new").unwrap();
-        assert_eq!(r.staged_status().unwrap(), vec![
-            StatusEntry { path: "new".into(), kind: StatusKind::Added },
-            StatusEntry { path: "tracked".into(), kind: StatusKind::Modified },
-        ]);
+        assert_eq!(
+            r.staged_status().unwrap(),
+            vec![
+                StatusEntry {
+                    path: "new".into(),
+                    kind: StatusKind::Added
+                },
+                StatusEntry {
+                    path: "tracked".into(),
+                    kind: StatusKind::Modified
+                },
+            ]
+        );
         r.commit("tester", "both").unwrap();
         assert!(r.staged_status().unwrap().is_empty());
         fs::remove_file(dir.path().join("tracked")).unwrap();
         r.add("tracked").unwrap();
-        assert_eq!(r.staged_status().unwrap(), vec![
-            StatusEntry { path: "tracked".into(), kind: StatusKind::Deleted }
-        ]);
+        assert_eq!(
+            r.staged_status().unwrap(),
+            vec![StatusEntry {
+                path: "tracked".into(),
+                kind: StatusKind::Deleted
+            }]
+        );
         r.commit("tester", "delete").unwrap();
         assert_eq!(r.read_branch_file("main", "tracked").unwrap(), None);
         assert!(r.fsck().is_ok());
@@ -2395,23 +2993,33 @@ mod tests {
         fs::write(dir.path().join("one"), b"second").unwrap();
         r.add("one").unwrap();
         r.commit("tester", "second").unwrap();
-        r.db.execute("DELETE FROM branch_path_index_tip", []).unwrap();
+        r.db.execute("DELETE FROM branch_path_index_tip", [])
+            .unwrap();
         r.db.execute("DELETE FROM branch_path_index", []).unwrap();
         fs::write(dir.path().join("one"), b"third").unwrap();
         r.add("one").unwrap();
-        assert_eq!(r.staged_status().unwrap(), vec![
-            StatusEntry { path: "one".into(), kind: StatusKind::Modified }
-        ]);
+        assert_eq!(
+            r.staged_status().unwrap(),
+            vec![StatusEntry {
+                path: "one".into(),
+                kind: StatusKind::Modified
+            }]
+        );
         r.commit("tester", "third").unwrap();
         r.db.execute(
             "UPDATE branch_path_index_tip SET oid=?1 WHERE branch='main'",
-            [ObjectId([4; 32]).to_string()]
-        ).unwrap();
+            [ObjectId([4; 32]).to_string()],
+        )
+        .unwrap();
         fs::remove_file(dir.path().join("one")).unwrap();
         r.add("one").unwrap();
-        assert_eq!(r.staged_status().unwrap(), vec![
-            StatusEntry { path: "one".into(), kind: StatusKind::Deleted }
-        ]);
+        assert_eq!(
+            r.staged_status().unwrap(),
+            vec![StatusEntry {
+                path: "one".into(),
+                kind: StatusKind::Deleted
+            }]
+        );
         assert!(r.fsck().is_ok());
     }
 
@@ -2422,13 +3030,17 @@ mod tests {
         r.commit("tester", "base").unwrap();
         fs::write(dir.path().join("old"), b"changed").unwrap();
         r.add("old").unwrap();
-        r.db.execute("DELETE FROM branch_path_index_tip", []).unwrap();
-        assert_eq!(r.staged_status().unwrap(), vec![
-            StatusEntry { path: "old".into(), kind: StatusKind::Modified }
-        ]);
+        r.db.execute("DELETE FROM branch_path_index_tip", [])
+            .unwrap();
+        assert_eq!(
+            r.staged_status().unwrap(),
+            vec![StatusEntry {
+                path: "old".into(),
+                kind: StatusKind::Modified
+            }]
+        );
         assert!(r.fsck().is_ok());
     }
-
 
     #[test]
     fn historical_file_queries_follow_first_parent_deltas_and_deletions() {
@@ -2442,21 +3054,28 @@ mod tests {
         let deleted = r.commit("tester", "remove").unwrap();
 
         for _ in 0..2 {
-            assert_eq!(r.read_revision_file(first, "a").unwrap(),
-                       Some(b"one".to_vec()));
-            assert_eq!(r.read_revision_file(second, "a").unwrap(),
-                       Some(b"two".to_vec()));
+            assert_eq!(
+                r.read_revision_file(first, "a").unwrap(),
+                Some(b"one".to_vec())
+            );
+            assert_eq!(
+                r.read_revision_file(second, "a").unwrap(),
+                Some(b"two".to_vec())
+            );
             assert_eq!(r.read_revision_file(deleted, "a").unwrap(), None);
-            assert_eq!(r.read_revision_file(deleted, "untouched").unwrap(),
-                       Some(b"stable".to_vec()));
+            assert_eq!(
+                r.read_revision_file(deleted, "untouched").unwrap(),
+                Some(b"stable".to_vec())
+            );
             assert_eq!(r.read_revision_file(first, "absent").unwrap(), None);
         }
         assert!(r.read_revision_file(ObjectId([9; 32]), "a").is_err());
         assert!(r.read_revision_file(first, "../unsafe").is_err());
-        let count: i64 = r.db.query_row(
-            "SELECT COUNT(*) FROM revision_file_cache",
-            [], |row| row.get(0),
-        ).unwrap();
+        let count: i64 =
+            r.db.query_row("SELECT COUNT(*) FROM revision_file_cache", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
         assert_eq!(count, 5, "cache records hits and negative lookups");
         assert!(r.fsck().is_ok());
     }
@@ -2467,20 +3086,27 @@ mod tests {
         fs::write(dir.path().join("one"), b"first").unwrap();
         fs::write(dir.path().join("two"), b"second").unwrap();
         let revision = r.commit("tester", "base").unwrap();
-        assert_eq!(r.read_revision_file(revision, "one").unwrap(),
-                   Some(b"first".to_vec()));
+        assert_eq!(
+            r.read_revision_file(revision, "one").unwrap(),
+            Some(b"first".to_vec())
+        );
         r.db.execute("DELETE FROM revision_file_cache", []).unwrap();
-        assert_eq!(r.read_revision_file(revision, "one").unwrap(),
-                   Some(b"first".to_vec()));
+        assert_eq!(
+            r.read_revision_file(revision, "one").unwrap(),
+            Some(b"first".to_vec())
+        );
         assert!(r.fsck().is_ok());
         let incorrect = r.state_at(Some(revision)).unwrap()["two"];
         r.db.execute(
             "UPDATE revision_file_cache SET blob_oid=?1
              WHERE revision_oid=?2 AND path='one'",
             params![incorrect.to_string(), revision.to_string()],
-        ).unwrap();
-        assert!(r.fsck().is_err(),
-                "fsck must reject incorrect but otherwise valid cached content");
+        )
+        .unwrap();
+        assert!(
+            r.fsck().is_err(),
+            "fsck must reject incorrect but otherwise valid cached content"
+        );
     }
 
     #[test]
@@ -2488,10 +3114,11 @@ mod tests {
         let (dir, r) = repo();
         fs::write(dir.path().join("binary"), [0u8, 1, 255, 0, 7]).unwrap();
         let initial = r.commit("tester", "binary").unwrap();
-        assert_eq!(r.read_revision_file(initial, "binary").unwrap(),
-                   Some(vec![0, 1, 255, 0, 7]));
+        assert_eq!(
+            r.read_revision_file(initial, "binary").unwrap(),
+            Some(vec![0, 1, 255, 0, 7])
+        );
     }
-
 
     #[test]
     fn historical_tree_snapshots_are_branch_independent_and_rebuildable() {
@@ -2512,25 +3139,39 @@ mod tests {
         let original = vec!["src/a".to_owned(), "src/b".to_owned()];
         assert_eq!(r.list_revision_files(base, Some("src")).unwrap(), original);
         // The already-cached base becomes a checkpoint for its descendants.
-        assert_eq!(r.list_revision_files(tip, Some("src")).unwrap(),
-                   vec!["src/b"]);
-        assert_eq!(r.list_revision_files(tip, Some("src2")).unwrap(),
-                   vec!["src2"]);
-        assert_eq!(r.list_revision_files(tip, None).unwrap(),
-                   vec!["feature", "src/b", "src2"]);
-        assert_eq!(r.list_revision_files(base, None).unwrap(),
-                   vec!["src/a", "src/b", "src2"]);
+        assert_eq!(
+            r.list_revision_files(tip, Some("src")).unwrap(),
+            vec!["src/b"]
+        );
+        assert_eq!(
+            r.list_revision_files(tip, Some("src2")).unwrap(),
+            vec!["src2"]
+        );
+        assert_eq!(
+            r.list_revision_files(tip, None).unwrap(),
+            vec!["feature", "src/b", "src2"]
+        );
+        assert_eq!(
+            r.list_revision_files(base, None).unwrap(),
+            vec!["src/a", "src/b", "src2"]
+        );
 
-        let expected_count: i64 = r.db.query_row(
-            "SELECT entry_count FROM revision_tree_index_tip
+        let expected_count: i64 =
+            r.db.query_row(
+                "SELECT entry_count FROM revision_tree_index_tip
              WHERE revision_oid=?1",
-            [tip.to_string()], |row| row.get(0),
-        ).unwrap();
+                [tip.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(expected_count, 3);
-        r.db.execute("DELETE FROM revision_tree_index_tip", []).unwrap();
+        r.db.execute("DELETE FROM revision_tree_index_tip", [])
+            .unwrap();
         r.db.execute("DELETE FROM revision_tree_index", []).unwrap();
-        assert_eq!(r.list_revision_files(tip, None).unwrap(),
-                   vec!["feature", "src/b", "src2"]);
+        assert_eq!(
+            r.list_revision_files(tip, None).unwrap(),
+            vec!["feature", "src/b", "src2"]
+        );
         assert!(r.fsck().is_ok());
     }
 
@@ -2540,33 +3181,42 @@ mod tests {
         fs::write(dir.path().join("one"), b"one").unwrap();
         fs::write(dir.path().join("two"), b"two").unwrap();
         let revision = r.commit("tester", "base").unwrap();
-        assert_eq!(r.list_revision_files(revision, None).unwrap(),
-                   vec!["one", "two"]);
+        assert_eq!(
+            r.list_revision_files(revision, None).unwrap(),
+            vec!["one", "two"]
+        );
         assert!(r.fsck().is_ok());
 
         r.db.execute(
             "DELETE FROM revision_tree_index WHERE revision_oid=?1 AND path='two'",
             [revision.to_string()],
-        ).unwrap();
+        )
+        .unwrap();
         assert!(r.fsck().is_err(), "missing index entry must be detected");
         r.db.execute(
             "DELETE FROM revision_tree_index_tip WHERE revision_oid=?1",
             [revision.to_string()],
-        ).unwrap();
+        )
+        .unwrap();
         assert!(r.fsck().is_err(), "dangling entries must be detected");
 
         r.db.execute("DELETE FROM revision_tree_index", []).unwrap();
-        assert_eq!(r.list_revision_files(revision, None).unwrap(),
-                   vec!["one", "two"]);
+        assert_eq!(
+            r.list_revision_files(revision, None).unwrap(),
+            vec!["one", "two"]
+        );
         assert!(r.fsck().is_ok());
         let other_blob = r.state_at(Some(revision)).unwrap()["two"];
         r.db.execute(
             "UPDATE revision_tree_index SET blob_oid=?1
              WHERE revision_oid=?2 AND path='one'",
             params![other_blob.to_string(), revision.to_string()],
-        ).unwrap();
-        assert!(r.fsck().is_err(),
-                "a valid but incorrect blob reference is still corruption");
+        )
+        .unwrap();
+        assert!(
+            r.fsck().is_err(),
+            "a valid but incorrect blob reference is still corruption"
+        );
     }
 
     #[test]
@@ -2577,18 +3227,23 @@ mod tests {
         fs::remove_file(dir.path().join("temporary")).unwrap();
         let empty = r.commit("tester", "delete").unwrap();
         assert!(r.list_revision_files(empty, None).unwrap().is_empty());
-        assert!(r.list_revision_files(empty, Some("temporary")).unwrap().is_empty());
-        let count: i64 = r.db.query_row(
-            "SELECT entry_count FROM revision_tree_index_tip
+        assert!(r
+            .list_revision_files(empty, Some("temporary"))
+            .unwrap()
+            .is_empty());
+        let count: i64 =
+            r.db.query_row(
+                "SELECT entry_count FROM revision_tree_index_tip
              WHERE revision_oid=?1",
-            [empty.to_string()], |row| row.get(0),
-        ).unwrap();
+                [empty.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 0);
         assert!(r.list_revision_files(ObjectId([5; 32]), None).is_err());
         assert!(r.list_revision_files(empty, Some("../unsafe")).is_err());
         assert!(r.fsck().is_ok());
     }
-
 
     #[test]
     fn native_tree_roots_are_deterministic_and_preserve_v1_history() {
@@ -2599,18 +3254,29 @@ mod tests {
         let original = r.commit("tester", "original changeset").unwrap();
         let root = r.native_tree_root(original).unwrap();
         assert_eq!(r.native_tree_root(original).unwrap(), root);
-        assert_eq!(r.get_changeset(original).unwrap().message, "original changeset");
+        assert_eq!(
+            r.get_changeset(original).unwrap().message,
+            "original changeset"
+        );
         let tree = crate::tree::NativeTree::decode(&r.store.get(root).unwrap()).unwrap();
-        assert_eq!(tree.entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
-                   vec!["README", "src"]);
+        assert_eq!(
+            tree.entries
+                .iter()
+                .map(|e| e.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["README", "src"]
+        );
         assert_eq!(tree.entries[1].kind, crate::tree::TreeEntryKind::Directory);
-        assert_eq!(crate::tree::flatten_snapshot(&r.store, root).unwrap(),
-                   r.state_at(Some(original)).unwrap());
+        assert_eq!(
+            crate::tree::flatten_snapshot(&r.store, root).unwrap(),
+            r.state_at(Some(original)).unwrap()
+        );
         assert!(r.fsck().is_ok());
 
         // The SQLite root mapping is disposable; immutable nodes are
         // deduplicated and recreating from the same history gives the same ID.
-        r.db.execute("DELETE FROM revision_native_tree", []).unwrap();
+        r.db.execute("DELETE FROM revision_native_tree", [])
+            .unwrap();
         assert_eq!(r.native_tree_root(original).unwrap(), root);
         assert!(r.fsck().is_ok());
     }
@@ -2630,13 +3296,21 @@ mod tests {
         let old_node = crate::tree::NativeTree::decode(&r.store.get(old_root).unwrap()).unwrap();
         let new_node = crate::tree::NativeTree::decode(&r.store.get(new_root).unwrap()).unwrap();
         let child = |tree: crate::tree::NativeTree| -> ObjectId {
-            tree.entries.into_iter().find(|e| e.name == "src").unwrap().object
+            tree.entries
+                .into_iter()
+                .find(|e| e.name == "src")
+                .unwrap()
+                .object
         };
         assert_eq!(child(old_node), child(new_node));
-        assert_eq!(crate::tree::flatten_snapshot(&r.store, old_root).unwrap(),
-                   r.state_at(Some(first)).unwrap());
-        assert_eq!(crate::tree::flatten_snapshot(&r.store, new_root).unwrap(),
-                   r.state_at(Some(second)).unwrap());
+        assert_eq!(
+            crate::tree::flatten_snapshot(&r.store, old_root).unwrap(),
+            r.state_at(Some(first)).unwrap()
+        );
+        assert_eq!(
+            crate::tree::flatten_snapshot(&r.store, new_root).unwrap(),
+            r.state_at(Some(second)).unwrap()
+        );
         assert!(r.fsck().is_ok());
     }
 
@@ -2651,21 +3325,25 @@ mod tests {
         let new_root = r.native_tree_root(second).unwrap();
         r.db.execute(
             "UPDATE revision_native_tree SET root_oid=?1 WHERE revision_oid=?2",
-            params![old_root.to_string(), second.to_string()]
-        ).unwrap();
+            params![old_root.to_string(), second.to_string()],
+        )
+        .unwrap();
         assert!(r.fsck().is_err(), "stale native tree root must be detected");
         r.db.execute(
             "UPDATE revision_native_tree SET root_oid=?1 WHERE revision_oid=?2",
-            params![new_root.to_string(), second.to_string()]
-        ).unwrap();
+            params![new_root.to_string(), second.to_string()],
+        )
+        .unwrap();
         assert!(r.fsck().is_ok());
 
         let tree = crate::tree::NativeTree::decode(&r.store.get(new_root).unwrap()).unwrap();
         let blob = tree.entries[0].object;
         fs::remove_file(r.store.path_for_test(blob)).unwrap();
-        assert!(r.fsck().is_err(), "missing native tree child must be detected");
+        assert!(
+            r.fsck().is_err(),
+            "missing native tree child must be detected"
+        );
     }
-
 
     #[test]
     fn native_object_navigation_avoids_ref_and_worktree_state() {
@@ -2677,28 +3355,34 @@ mod tests {
         let root = r.native_tree_root(revision).unwrap();
 
         let top = r.native_tree_entries(root, None).unwrap();
-        assert_eq!(top.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
-                   vec!["README.md", "src"]);
+        assert_eq!(
+            top.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+            vec!["README.md", "src"]
+        );
         let src = r.native_tree_entries(root, Some("src")).unwrap();
         assert_eq!(src.len(), 1);
         assert_eq!(src[0].name, "deep");
         assert_eq!(src[0].kind, crate::tree::TreeEntryKind::Directory);
         let deep = r.native_tree_entries(root, Some("src/deep")).unwrap();
         assert_eq!(deep[0].name, "bytes.bin");
-        assert_eq!(r.native_tree_file(root, "src/deep/bytes.bin").unwrap(),
-                   Some(vec![0, 1, 255, 0]));
+        assert_eq!(
+            r.native_tree_file(root, "src/deep/bytes.bin").unwrap(),
+            Some(vec![0, 1, 255, 0])
+        );
         assert_eq!(r.native_tree_file(root, "missing").unwrap(), None);
 
         // After the worktree changes, the immutable root must still resolve
         // the original bytes without consulting HEAD or cached revision paths.
         fs::write(dir.path().join("src/deep/bytes.bin"), b"new").unwrap();
-        assert_eq!(r.native_tree_file(root, "src/deep/bytes.bin").unwrap(),
-                   Some(vec![0, 1, 255, 0]));
+        assert_eq!(
+            r.native_tree_file(root, "src/deep/bytes.bin").unwrap(),
+            Some(vec![0, 1, 255, 0])
+        );
         assert!(r.native_tree_file(root, "src").is_err());
         assert!(r.native_tree_entries(root, Some("README.md")).is_err());
         assert!(r.native_tree_file(root, "../escape").is_err());
         assert!(r.native_tree_entries(root, Some("../escape")).is_err());
-        assert!(r.native_tree_entries(ObjectId([8;32]), None).is_err());
+        assert!(r.native_tree_entries(ObjectId([8; 32]), None).is_err());
         assert!(r.fsck().is_ok());
     }
 
@@ -2723,8 +3407,13 @@ mod tests {
         fs::write(dir.path().join("untouched/b"), b"stable").unwrap();
         let first = r.commit("tester", "initial").unwrap();
         let original_root = r.native_tree_root(first).unwrap();
-        let sibling = r.native_tree_entries(original_root, None).unwrap()
-            .into_iter().find(|e| e.name == "untouched").unwrap().object;
+        let sibling = r
+            .native_tree_entries(original_root, None)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.name == "untouched")
+            .unwrap()
+            .object;
 
         let mut current = first;
         for i in 0..24 {
@@ -2732,20 +3421,27 @@ mod tests {
             r.add("src/a").unwrap();
             current = r.commit("tester", &format!("update-{i}")).unwrap();
             let incrementally_built = r.native_tree_root(current).unwrap();
-            let fully_rebuilt = crate::tree::write_snapshot(
-                &r.store, &r.state_at(Some(current)).unwrap()
-            ).unwrap();
+            let fully_rebuilt =
+                crate::tree::write_snapshot(&r.store, &r.state_at(Some(current)).unwrap()).unwrap();
             assert_eq!(incrementally_built, fully_rebuilt);
-            assert_eq!(r.native_tree_file(incrementally_built, "src/a").unwrap(),
-                       Some(format!("value-{i}").into_bytes()));
-            let preserved = r.native_tree_entries(incrementally_built, None).unwrap()
-                .into_iter().find(|e| e.name == "untouched").unwrap().object;
+            assert_eq!(
+                r.native_tree_file(incrementally_built, "src/a").unwrap(),
+                Some(format!("value-{i}").into_bytes())
+            );
+            let preserved = r
+                .native_tree_entries(incrementally_built, None)
+                .unwrap()
+                .into_iter()
+                .find(|e| e.name == "untouched")
+                .unwrap()
+                .object;
             assert_eq!(sibling, preserved);
         }
         assert!(r.fsck().is_ok());
         let current_root = r.native_tree_root(current).unwrap();
         // The optional revision-to-tree mapping is entirely rebuildable.
-        r.db.execute("DELETE FROM revision_native_tree", []).unwrap();
+        r.db.execute("DELETE FROM revision_native_tree", [])
+            .unwrap();
         assert_eq!(r.native_tree_root(current).unwrap(), current_root);
         assert!(r.fsck().is_ok());
     }
@@ -2769,17 +3465,23 @@ mod tests {
         let main_root = r.native_tree_root(main).unwrap();
         assert_ne!(feature_root, main_root);
         assert_ne!(base_root, feature_root);
-        assert_eq!(r.native_tree_file(feature_root, "feature-file").unwrap(),
-                   Some(b"feature".to_vec()));
+        assert_eq!(
+            r.native_tree_file(feature_root, "feature-file").unwrap(),
+            Some(b"feature".to_vec())
+        );
         assert_eq!(r.native_tree_file(main_root, "feature-file").unwrap(), None);
-        assert_eq!(r.native_tree_file(main_root, "main-file").unwrap(),
-                   Some(b"main".to_vec()));
-        assert_eq!(feature_root, crate::tree::write_snapshot(
-            &r.store, &r.state_at(Some(feature)).unwrap()
-        ).unwrap());
-        assert_eq!(main_root, crate::tree::write_snapshot(
-            &r.store, &r.state_at(Some(main)).unwrap()
-        ).unwrap());
+        assert_eq!(
+            r.native_tree_file(main_root, "main-file").unwrap(),
+            Some(b"main".to_vec())
+        );
+        assert_eq!(
+            feature_root,
+            crate::tree::write_snapshot(&r.store, &r.state_at(Some(feature)).unwrap()).unwrap()
+        );
+        assert_eq!(
+            main_root,
+            crate::tree::write_snapshot(&r.store, &r.state_at(Some(main)).unwrap()).unwrap()
+        );
         assert!(r.fsck().is_ok());
     }
 
@@ -2790,28 +3492,38 @@ mod tests {
         fs::write(dir.path().join("src/file"), b"v1").unwrap();
         fs::write(dir.path().join("stable"), b"unchanged").unwrap();
         let base = r.commit("tester", "legacy baseline").unwrap();
-        let base_root: String = r.db.query_row(
-            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
-            [base.to_string()], |row| row.get(0)
-        ).unwrap();
-        assert_eq!(ObjectId::parse(&base_root).unwrap(),
-                   crate::tree::write_snapshot(
-                       &r.store, &r.state_at(Some(base)).unwrap()
-                   ).unwrap());
+        let base_root: String =
+            r.db.query_row(
+                "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+                [base.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            ObjectId::parse(&base_root).unwrap(),
+            crate::tree::write_snapshot(&r.store, &r.state_at(Some(base)).unwrap()).unwrap()
+        );
 
         fs::write(dir.path().join("src/file"), b"v2").unwrap();
         r.add("src/file").unwrap();
         let first = r.commit("tester", "first staged").unwrap();
-        let stored: String = r.db.query_row(
-            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
-            [first.to_string()], |row| row.get(0)
-        ).unwrap();
+        let stored: String =
+            r.db.query_row(
+                "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+                [first.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
         let root = ObjectId::parse(&stored).unwrap();
         assert_eq!(r.native_tree_root(first).unwrap(), root);
-        assert_eq!(r.native_tree_file(root, "src/file").unwrap(),
-                   Some(b"v2".to_vec()));
-        assert_eq!(crate::tree::flatten_snapshot(&r.store, root).unwrap(),
-                   r.state_at(Some(first)).unwrap());
+        assert_eq!(
+            r.native_tree_file(root, "src/file").unwrap(),
+            Some(b"v2".to_vec())
+        );
+        assert_eq!(
+            crate::tree::flatten_snapshot(&r.store, root).unwrap(),
+            r.state_at(Some(first)).unwrap()
+        );
         assert_eq!(r.head().unwrap(), Some(first));
         assert!(r.staged_blobs().unwrap().is_empty());
 
@@ -2819,14 +3531,17 @@ mod tests {
             fs::write(dir.path().join("src/file"), format!("update-{i}")).unwrap();
             r.add("src/file").unwrap();
             let tip = r.commit("tester", "more").unwrap();
-            let stored: String = r.db.query_row(
-                "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
-                [tip.to_string()], |row| row.get(0)
-            ).unwrap();
-            assert_eq!(ObjectId::parse(&stored).unwrap(),
-                       crate::tree::write_snapshot(
-                           &r.store, &r.state_at(Some(tip)).unwrap()
-                       ).unwrap());
+            let stored: String =
+                r.db.query_row(
+                    "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+                    [tip.to_string()],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                ObjectId::parse(&stored).unwrap(),
+                crate::tree::write_snapshot(&r.store, &r.state_at(Some(tip)).unwrap()).unwrap()
+            );
         }
         assert!(r.fsck().is_ok());
     }
@@ -2846,14 +3561,20 @@ mod tests {
             kind: ChangeKind::Modify,
             blob: Some(r.state_at(Some(second)).unwrap()["tracked"]),
         };
-        assert!(r.publish_staged_commit(
-            "main", Some(first), fake, &[change], root
-        ).is_err());
+        assert!(r
+            .publish_staged_commit("main", Some(first), fake, &[change], root)
+            .is_err());
         assert_eq!(r.head().unwrap(), Some(second));
-        assert!(r.db.query_row(
-            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
-            [fake.to_string()], |row| row.get::<_, String>(0)
-        ).optional().unwrap().is_none());
+        assert!(r
+            .db
+            .query_row(
+                "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+                [fake.to_string()],
+                |row| row.get::<_, String>(0)
+            )
+            .optional()
+            .unwrap()
+            .is_none());
         assert_eq!(r.native_tree_root(second).unwrap(), root);
         assert!(r.fsck().is_ok());
     }
@@ -2870,12 +3591,13 @@ mod tests {
         r.add("node/child").unwrap();
         let new_revision = r.commit("tester", "file becomes folder").unwrap();
         let root = r.native_tree_root(new_revision).unwrap();
-        assert_eq!(r.native_tree_file(root, "node/child").unwrap(),
-                   Some(b"nested".to_vec()));
+        assert_eq!(
+            r.native_tree_file(root, "node/child").unwrap(),
+            Some(b"nested".to_vec())
+        );
         assert_eq!(r.native_tree_entries(root, Some("node")).unwrap().len(), 1);
         assert!(r.fsck().is_ok());
     }
-
 
     #[test]
     fn legacy_commit_all_atomically_publishes_native_tree_roots() {
@@ -2884,25 +3606,37 @@ mod tests {
         fs::write(dir.path().join("src/one"), b"one").unwrap();
         fs::write(dir.path().join("stable"), b"unchanged").unwrap();
         let first = r.commit("tester", "first legacy").unwrap();
-        let first_root: String = r.db.query_row(
-            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
-            [first.to_string()], |row| row.get(0),
-        ).unwrap();
-        assert_eq!(r.native_tree_root(first).unwrap(),
-                   ObjectId::parse(&first_root).unwrap());
+        let first_root: String =
+            r.db.query_row(
+                "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+                [first.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            r.native_tree_root(first).unwrap(),
+            ObjectId::parse(&first_root).unwrap()
+        );
 
         fs::write(dir.path().join("src/one"), b"changed").unwrap();
         fs::write(dir.path().join("src/new"), b"new").unwrap();
         let second = r.commit("tester", "second legacy").unwrap();
-        let second_root: String = r.db.query_row(
-            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
-            [second.to_string()], |row| row.get(0),
-        ).unwrap();
+        let second_root: String =
+            r.db.query_row(
+                "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+                [second.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
         let root = ObjectId::parse(&second_root).unwrap();
-        assert_eq!(root, crate::tree::write_snapshot(
-            &r.store, &r.state_at(Some(second)).unwrap()
-        ).unwrap());
-        assert_eq!(r.native_tree_file(root, "src/new").unwrap(), Some(b"new".to_vec()));
+        assert_eq!(
+            root,
+            crate::tree::write_snapshot(&r.store, &r.state_at(Some(second)).unwrap()).unwrap()
+        );
+        assert_eq!(
+            r.native_tree_file(root, "src/new").unwrap(),
+            Some(b"new".to_vec())
+        );
         assert_eq!(r.head().unwrap(), Some(second));
         assert!(r.fsck().is_ok());
     }
@@ -2915,14 +3649,18 @@ mod tests {
         let root = r.native_tree_root(first).unwrap();
         let nonmatching_parent = ObjectId([31; 32]);
         let fake_revision = ObjectId([32; 32]);
-        assert!(r.save_ref_cas_with_tree(
-            "main", Some(nonmatching_parent), fake_revision, root
-        ).is_err());
+        assert!(r
+            .save_ref_cas_with_tree("main", Some(nonmatching_parent), fake_revision, root)
+            .is_err());
         assert_eq!(r.head().unwrap(), Some(first));
-        let absent: Option<String> = r.db.query_row(
-            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
-            [fake_revision.to_string()], |row| row.get(0),
-        ).optional().unwrap();
+        let absent: Option<String> =
+            r.db.query_row(
+                "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+                [fake_revision.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
         assert!(absent.is_none());
         assert!(r.fsck().is_ok());
     }
@@ -2952,20 +3690,29 @@ mod tests {
         fs::write(dir.path().join("main-file"), b"main bytes").unwrap();
         r.commit("tester", "main").unwrap();
         let merged = r.merge_branch("feature", "tester", "merge both").unwrap();
-        let root_raw: String = r.db.query_row(
-            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
-            [merged.to_string()], |row| row.get(0),
-        ).unwrap();
+        let root_raw: String =
+            r.db.query_row(
+                "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+                [merged.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
         let root = ObjectId::parse(&root_raw).unwrap();
         assert_ne!(merged, base);
         assert_eq!(r.head().unwrap(), Some(merged));
         assert_eq!(r.native_tree_root(merged).unwrap(), root);
-        assert_eq!(r.native_tree_file(root, "feature-file").unwrap(),
-                   Some(b"feature bytes".to_vec()));
-        assert_eq!(r.native_tree_file(root, "main-file").unwrap(),
-                   Some(b"main bytes".to_vec()));
-        assert_eq!(crate::tree::flatten_snapshot(&r.store, root).unwrap(),
-                   r.state_at(Some(merged)).unwrap());
+        assert_eq!(
+            r.native_tree_file(root, "feature-file").unwrap(),
+            Some(b"feature bytes".to_vec())
+        );
+        assert_eq!(
+            r.native_tree_file(root, "main-file").unwrap(),
+            Some(b"main bytes".to_vec())
+        );
+        assert_eq!(
+            crate::tree::flatten_snapshot(&r.store, root).unwrap(),
+            r.state_at(Some(merged)).unwrap()
+        );
         assert!(r.pending_transition().unwrap().is_none());
         assert!(r.fsck().is_ok());
     }
@@ -2979,38 +3726,58 @@ mod tests {
         let blob = r.store.put(BLOB, b"merged").unwrap();
         let merged = Changeset {
             parents: vec![before, before],
-            author: "tester".into(), message: "replay merge".into(),
+            author: "tester".into(),
+            message: "replay merge".into(),
             timestamp_seconds: 1,
             changes: vec![Change {
                 kind: ChangeKind::Modify,
-                path: "a".into(), blob: Some(blob),
+                path: "a".into(),
+                blob: Some(blob),
             }],
         };
         let raw = merged.encode().unwrap();
         let (_, payload) = decode_object(&raw).unwrap();
         let after = r.store.put(CHANGESET, payload).unwrap();
         r.begin_transition(&PendingTransition {
-            operation: "merge".into(), from_branch: "main".into(),
-            to_branch: "main".into(), before: Some(before), after: Some(after),
-        }).unwrap();
+            operation: "merge".into(),
+            from_branch: "main".into(),
+            to_branch: "main".into(),
+            before: Some(before),
+            after: Some(after),
+        })
+        .unwrap();
         assert_eq!(r.head().unwrap(), Some(before));
-        assert!(r.db.query_row(
-            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
-            [after.to_string()], |row| row.get::<_, String>(0),
-        ).optional().unwrap().is_none());
+        assert!(r
+            .db
+            .query_row(
+                "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+                [after.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .unwrap()
+            .is_none());
         drop(r);
         let recovered = Repository::discover(dir.path()).unwrap();
         assert_eq!(recovered.head().unwrap(), Some(after));
         assert_eq!(fs::read(dir.path().join("a")).unwrap(), b"merged");
-        let root: String = recovered.db.query_row(
-            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
-            [after.to_string()], |row| row.get(0),
-        ).unwrap();
+        let root: String = recovered
+            .db
+            .query_row(
+                "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+                [after.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
         let id = ObjectId::parse(&root).unwrap();
-        assert_eq!(recovered.native_tree_file(id, "a").unwrap(),
-                   Some(b"merged".to_vec()));
-        assert_eq!(crate::tree::flatten_snapshot(&recovered.store, id).unwrap(),
-                   recovered.state_at(Some(after)).unwrap());
+        assert_eq!(
+            recovered.native_tree_file(id, "a").unwrap(),
+            Some(b"merged".to_vec())
+        );
+        assert_eq!(
+            crate::tree::flatten_snapshot(&recovered.store, id).unwrap(),
+            recovered.state_at(Some(after)).unwrap()
+        );
         assert!(recovered.pending_transition().unwrap().is_none());
         assert!(recovered.fsck().is_ok());
     }
@@ -3022,38 +3789,61 @@ mod tests {
         let before = r.commit("tester", "base").unwrap();
         let blob = r.store.put(BLOB, b"next").unwrap();
         let merge = Changeset {
-            parents: vec![before, before], author: "tester".into(),
-            message: "merge".into(), timestamp_seconds: 1,
+            parents: vec![before, before],
+            author: "tester".into(),
+            message: "merge".into(),
+            timestamp_seconds: 1,
             changes: vec![Change {
-                kind: ChangeKind::Modify, path: "a".into(), blob: Some(blob)
+                kind: ChangeKind::Modify,
+                path: "a".into(),
+                blob: Some(blob),
             }],
         };
         let raw = merge.encode().unwrap();
         let (_, payload) = decode_object(&raw).unwrap();
         let after = r.store.put(CHANGESET, payload).unwrap();
         r.begin_transition(&PendingTransition {
-            operation: "merge".into(), from_branch: "main".into(),
-            to_branch: "main".into(), before: Some(before), after: Some(after),
-        }).unwrap();
+            operation: "merge".into(),
+            from_branch: "main".into(),
+            to_branch: "main".into(),
+            before: Some(before),
+            after: Some(after),
+        })
+        .unwrap();
 
         fs::write(dir.path().join("a"), b"unexpected user edit").unwrap();
         assert!(r.recover_locked().is_err());
         assert_eq!(r.head().unwrap(), Some(before));
         assert!(r.pending_transition().unwrap().is_some());
-        assert!(r.db.query_row(
-            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
-            [after.to_string()], |row| row.get::<_, String>(0),
-        ).optional().unwrap().is_none());
-        assert_eq!(fs::read(dir.path().join("a")).unwrap(), b"unexpected user edit");
+        assert!(r
+            .db
+            .query_row(
+                "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+                [after.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            fs::read(dir.path().join("a")).unwrap(),
+            b"unexpected user edit"
+        );
         fs::write(dir.path().join("a"), b"base").unwrap();
         r.recover_locked().unwrap();
         assert_eq!(r.head().unwrap(), Some(after));
-        let root: String = r.db.query_row(
-            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
-            [after.to_string()], |row| row.get(0),
-        ).unwrap();
-        assert_eq!(r.native_tree_file(ObjectId::parse(&root).unwrap(), "a").unwrap(),
-                   Some(b"next".to_vec()));
+        let root: String =
+            r.db.query_row(
+                "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+                [after.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            r.native_tree_file(ObjectId::parse(&root).unwrap(), "a")
+                .unwrap(),
+            Some(b"next".to_vec())
+        );
         assert!(r.pending_transition().unwrap().is_none());
         assert!(r.fsck().is_ok());
     }
@@ -3066,50 +3856,65 @@ mod tests {
         let before = r.commit("tester", "base").unwrap();
         let parent_root = r.native_tree_root(before).unwrap();
         // A syntactically valid empty tree is still the wrong snapshot.
-        let wrong_root = crate::tree::write_snapshot(
-            &r.store, &BTreeMap::new()
-        ).unwrap();
+        let wrong_root = crate::tree::write_snapshot(&r.store, &BTreeMap::new()).unwrap();
         assert_ne!(parent_root, wrong_root);
         r.db.execute(
             "UPDATE revision_native_tree SET root_oid=?1 WHERE revision_oid=?2",
             params![wrong_root.to_string(), before.to_string()],
-        ).unwrap();
+        )
+        .unwrap();
 
         let blob = r.store.put(BLOB, b"merged").unwrap();
         let commit = Changeset {
-            parents: vec![before, before], author: "tester".into(),
-            message: "broken parent".into(), timestamp_seconds: 1,
+            parents: vec![before, before],
+            author: "tester".into(),
+            message: "broken parent".into(),
+            timestamp_seconds: 1,
             changes: vec![Change {
-                kind: ChangeKind::Modify, path: "a".into(), blob: Some(blob),
+                kind: ChangeKind::Modify,
+                path: "a".into(),
+                blob: Some(blob),
             }],
         };
         let encoded = commit.encode().unwrap();
         let (_, payload) = decode_object(&encoded).unwrap();
         let after = r.store.put(CHANGESET, payload).unwrap();
         r.begin_transition(&PendingTransition {
-            operation: "merge".into(), from_branch: "main".into(),
-            to_branch: "main".into(), before: Some(before), after: Some(after),
-        }).unwrap();
+            operation: "merge".into(),
+            from_branch: "main".into(),
+            to_branch: "main".into(),
+            before: Some(before),
+            after: Some(after),
+        })
+        .unwrap();
         assert!(r.recover_locked().is_err());
         assert_eq!(r.head().unwrap(), Some(before));
         assert_eq!(fs::read(dir.path().join("a")).unwrap(), b"base");
         assert_eq!(fs::read(dir.path().join("unchanged")).unwrap(), b"keep");
         assert!(r.pending_transition().unwrap().is_some());
-        assert!(r.db.query_row(
-            "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
-            [after.to_string()], |row| row.get::<_, String>(0)
-        ).optional().unwrap().is_none());
+        assert!(r
+            .db
+            .query_row(
+                "SELECT root_oid FROM revision_native_tree WHERE revision_oid=?1",
+                [after.to_string()],
+                |row| row.get::<_, String>(0)
+            )
+            .optional()
+            .unwrap()
+            .is_none());
 
         r.db.execute(
             "UPDATE revision_native_tree SET root_oid=?1 WHERE revision_oid=?2",
             params![parent_root.to_string(), before.to_string()],
-        ).unwrap();
+        )
+        .unwrap();
         r.recover_locked().unwrap();
         assert_eq!(r.head().unwrap(), Some(after));
         assert!(r.fsck().is_ok());
     }
 
-    #[test] fn corrupt_object_detected() {
+    #[test]
+    fn corrupt_object_detected() {
         let (_dir, r) = repo();
         let oid = r.store.put(BLOB, b"x").unwrap();
         fs::write(r.store.path_for_test(oid), b"corrupt").unwrap();
@@ -3132,7 +3937,10 @@ mod tests {
         let main = r.commit("tester", "main side").unwrap();
 
         assert_eq!(r.best_merge_bases(main, feature).unwrap(), vec![ancestor]);
-        assert_eq!(r.branch_merge_bases("main", "feature").unwrap(), vec![ancestor]);
+        assert_eq!(
+            r.branch_merge_bases("main", "feature").unwrap(),
+            vec![ancestor]
+        );
         assert_eq!(r.best_merge_bases(main, root).unwrap(), vec![root]);
         assert_eq!(r.best_merge_bases(main, main).unwrap(), vec![main]);
         assert!(r.branch_merge_bases("main", "nonexistent").is_err());
@@ -3185,14 +3993,18 @@ mod tests {
         r.db.execute(
             "UPDATE refs SET oid=?1 WHERE name='main'",
             [left.to_string()],
-        ).unwrap();
+        )
+        .unwrap();
         r.db.execute(
             "UPDATE refs SET oid=?1 WHERE name='feature'",
             [right.to_string()],
-        ).unwrap();
+        )
+        .unwrap();
         assert!(r.status().unwrap().is_empty());
         assert_eq!(r.branch_merge_bases("main", "feature").unwrap(), expected);
-        let err = r.merge_branch("feature", "tester", "ambiguous merge").unwrap_err();
+        let err = r
+            .merge_branch("feature", "tester", "ambiguous merge")
+            .unwrap_err();
         assert!(format!("{err}").contains("virtual merge-base deletion ambiguity"));
         assert_eq!(r.head().unwrap(), Some(left));
         assert!(r.pending_transition().unwrap().is_none());
@@ -3221,8 +4033,11 @@ mod tests {
         // Left and right then add their own independent content.
         let add_merge = |parents: Vec<ObjectId>, changes: Vec<Change>, label: &str| {
             let commit = Changeset {
-                parents, changes, author: "tester".into(),
-                message: label.into(), timestamp_seconds: 1,
+                parents,
+                changes,
+                author: "tester".into(),
+                message: label.into(),
+                timestamp_seconds: 1,
             };
             let encoded = commit.encode().unwrap();
             let (_, bytes) = decode_object(&encoded).unwrap();
@@ -3232,14 +4047,38 @@ mod tests {
         let b_blob = r.state_at(Some(b)).unwrap()["b"];
         let left_blob = r.store.put(BLOB, b"left").unwrap();
         let right_blob = r.store.put(BLOB, b"right").unwrap();
-        let left = add_merge(vec![a, b], vec![
-            Change { kind: ChangeKind::Add, path: "b".into(), blob: Some(b_blob) },
-            Change { kind: ChangeKind::Add, path: "left".into(), blob: Some(left_blob) },
-        ], "left resolution");
-        let right = add_merge(vec![b, a], vec![
-            Change { kind: ChangeKind::Add, path: "a".into(), blob: Some(a_blob) },
-            Change { kind: ChangeKind::Add, path: "right".into(), blob: Some(right_blob) },
-        ], "right resolution");
+        let left = add_merge(
+            vec![a, b],
+            vec![
+                Change {
+                    kind: ChangeKind::Add,
+                    path: "b".into(),
+                    blob: Some(b_blob),
+                },
+                Change {
+                    kind: ChangeKind::Add,
+                    path: "left".into(),
+                    blob: Some(left_blob),
+                },
+            ],
+            "left resolution",
+        );
+        let right = add_merge(
+            vec![b, a],
+            vec![
+                Change {
+                    kind: ChangeKind::Add,
+                    path: "a".into(),
+                    blob: Some(a_blob),
+                },
+                Change {
+                    kind: ChangeKind::Add,
+                    path: "right".into(),
+                    blob: Some(right_blob),
+                },
+            ],
+            "right resolution",
+        );
         let mut expected = vec![a, b];
         expected.sort();
         assert_eq!(r.best_merge_bases(left, right).unwrap(), expected);
@@ -3248,14 +4087,23 @@ mod tests {
         // before updating refs; no branch switch is needed.
         r.materialize(
             &r.state_at(Some(left)).unwrap(),
-            &r.state_at(Some(a)).unwrap()
-        ).unwrap();
-        r.db.execute("UPDATE refs SET oid=?1 WHERE name='main'",
-                     [left.to_string()]).unwrap();
-        r.db.execute("UPDATE refs SET oid=?1 WHERE name='feature'",
-                     [right.to_string()]).unwrap();
+            &r.state_at(Some(a)).unwrap(),
+        )
+        .unwrap();
+        r.db.execute(
+            "UPDATE refs SET oid=?1 WHERE name='main'",
+            [left.to_string()],
+        )
+        .unwrap();
+        r.db.execute(
+            "UPDATE refs SET oid=?1 WHERE name='feature'",
+            [right.to_string()],
+        )
+        .unwrap();
         assert!(r.status().unwrap().is_empty());
-        let result = r.merge_branch("feature", "tester", "recursive bases").unwrap();
+        let result = r
+            .merge_branch("feature", "tester", "recursive bases")
+            .unwrap();
         assert_eq!(r.get_changeset(result).unwrap().parents, vec![left, right]);
         for (path, expected) in [
             ("a", b"branch-a".as_slice()),
@@ -3276,15 +4124,21 @@ mod tests {
         fs::write(dir.path().join("root"), b"root").unwrap();
         let root = r.commit("tester", "root").unwrap();
         let mut alternatives = Vec::new();
-        for (name, bytes) in [("alpha", b"A".as_slice()),
-                               ("beta", b"B".as_slice()),
-                               ("gamma", b"C".as_slice())] {
+        for (name, bytes) in [
+            ("alpha", b"A".as_slice()),
+            ("beta", b"B".as_slice()),
+            ("gamma", b"C".as_slice()),
+        ] {
             let blob = r.store.put(BLOB, bytes).unwrap();
             let commit = Changeset {
-                parents: vec![root], author: "tester".into(),
-                message: name.into(), timestamp_seconds: 1,
+                parents: vec![root],
+                author: "tester".into(),
+                message: name.into(),
+                timestamp_seconds: 1,
                 changes: vec![Change {
-                    kind: ChangeKind::Add, path: name.into(), blob: Some(blob)
+                    kind: ChangeKind::Add,
+                    path: name.into(),
+                    blob: Some(blob),
                 }],
             };
             let raw = commit.encode().unwrap();
@@ -3313,11 +4167,14 @@ mod tests {
         for payload in [b"first".as_slice(), b"second".as_slice()] {
             let blob = r.store.put(BLOB, payload).unwrap();
             let commit = Changeset {
-                parents: vec![root], author: "tester".into(),
+                parents: vec![root],
+                author: "tester".into(),
                 message: String::from_utf8(payload.to_vec()).unwrap(),
                 timestamp_seconds: 1,
                 changes: vec![Change {
-                    kind: ChangeKind::Modify, path: "overlap".into(), blob: Some(blob)
+                    kind: ChangeKind::Modify,
+                    path: "overlap".into(),
+                    blob: Some(blob),
                 }],
             };
             let raw = commit.encode().unwrap();
@@ -3326,7 +4183,9 @@ mod tests {
         }
         alternatives.sort();
         let mut budget = 128;
-        let err = r.virtual_merge_base(&alternatives, &mut budget).unwrap_err();
+        let err = r
+            .virtual_merge_base(&alternatives, &mut budget)
+            .unwrap_err();
         assert!(format!("{err}").contains("virtual merge-base conflicts"));
         assert_eq!(r.head().unwrap(), Some(root));
         assert_eq!(fs::read(dir.path().join("overlap")).unwrap(), b"root");
@@ -3354,21 +4213,29 @@ mod tests {
         let raw = change.encode().unwrap();
         let (_, payload) = decode_object(&raw).unwrap();
         let other = r.store.put(CHANGESET, payload).unwrap();
-        assert_eq!(r.best_merge_bases(first, other).unwrap(), Vec::<ObjectId>::new());
+        assert_eq!(
+            r.best_merge_bases(first, other).unwrap(),
+            Vec::<ObjectId>::new()
+        );
         r.create_branch("unrelated").unwrap();
         r.db.execute(
             "UPDATE refs SET oid=?1 WHERE name='unrelated'",
             [other.to_string()],
-        ).unwrap();
-        assert!(r.branch_merge_bases("main", "unrelated").unwrap().is_empty());
-        let err = r.merge_branch("unrelated", "tester", "must refuse").unwrap_err();
+        )
+        .unwrap();
+        assert!(r
+            .branch_merge_bases("main", "unrelated")
+            .unwrap()
+            .is_empty());
+        let err = r
+            .merge_branch("unrelated", "tester", "must refuse")
+            .unwrap_err();
         assert!(format!("{err}").contains("unrelated histories"));
         assert_eq!(r.head().unwrap(), Some(first));
         assert!(r.pending_transition().unwrap().is_none());
         assert_eq!(fs::read(dir.path().join("file")).unwrap(), b"one");
         assert!(r.fsck().is_ok());
     }
-
 
     #[test]
     fn fast_forward_merge_preserves_source_changeset_identity_and_tree() {
@@ -3385,17 +4252,24 @@ mod tests {
         r.switch_branch("main").unwrap();
         assert_eq!(r.head().unwrap(), Some(base));
         assert!(!dir.path().join("new").exists());
-        let merged = r.merge_branch("feature", "tester", "no synthetic commit").unwrap();
+        let merged = r
+            .merge_branch("feature", "tester", "no synthetic commit")
+            .unwrap();
         assert_eq!(merged, feature_tip);
         assert_eq!(r.head().unwrap(), Some(feature_tip));
-        assert_eq!(r.get_changeset(merged).unwrap().parents.len(), 1,
-                   "fast-forward must not introduce a merge changeset");
+        assert_eq!(
+            r.get_changeset(merged).unwrap().parents.len(),
+            1,
+            "fast-forward must not introduce a merge changeset"
+        );
         assert_eq!(fs::read(dir.path().join("new")).unwrap(), b"second version");
         assert_eq!(r.native_tree_root(merged).unwrap(), expected_root);
         assert!(r.pending_transition().unwrap().is_none());
 
         // Merging a branch that is already contained must be a no-op.
-        let second = r.merge_branch("feature", "tester", "already up-to-date").unwrap();
+        let second = r
+            .merge_branch("feature", "tester", "already up-to-date")
+            .unwrap();
         assert_eq!(second, merged);
         assert_eq!(r.head().unwrap(), Some(feature_tip));
         assert!(r.fsck().is_ok());
@@ -3410,7 +4284,11 @@ mod tests {
         fs::write(dir.path().join("new"), b"newer").unwrap();
         let tip = r.commit("tester", "later").unwrap();
         assert_eq!(r.branch_tip("old").unwrap(), Some(root));
-        assert_eq!(r.merge_branch("old", "tester", "already contained").unwrap(), tip);
+        assert_eq!(
+            r.merge_branch("old", "tester", "already contained")
+                .unwrap(),
+            tip
+        );
         assert_eq!(r.head().unwrap(), Some(tip));
         assert!(r.pending_transition().unwrap().is_none());
         assert!(r.fsck().is_ok());
@@ -3431,9 +4309,12 @@ mod tests {
         r.switch_branch("main").unwrap();
         r.begin_transition(&PendingTransition {
             operation: "fast-forward".into(),
-            from_branch: "main".into(), to_branch: "main".into(),
-            before: Some(root), after: Some(target),
-        }).unwrap();
+            from_branch: "main".into(),
+            to_branch: "main".into(),
+            before: Some(root),
+            after: Some(target),
+        })
+        .unwrap();
         assert_eq!(r.head().unwrap(), Some(root));
         drop(r);
         let reopened = Repository::discover(dir.path()).unwrap();
@@ -3456,9 +4337,12 @@ mod tests {
         r.switch_branch("main").unwrap();
         r.begin_transition(&PendingTransition {
             operation: "fast-forward".into(),
-            from_branch: "main".into(), to_branch: "main".into(),
-            before: Some(original), after: Some(target),
-        }).unwrap();
+            from_branch: "main".into(),
+            to_branch: "main".into(),
+            before: Some(original),
+            after: Some(target),
+        })
+        .unwrap();
         fs::write(dir.path().join("base"), b"user edited").unwrap();
         assert!(r.recover_locked().is_err());
         assert_eq!(r.head().unwrap(), Some(original));
@@ -3474,16 +4358,20 @@ mod tests {
         // HEAD or the worktree, even if both object IDs are valid.
         r.begin_transition(&PendingTransition {
             operation: "fast-forward".into(),
-            from_branch: "main".into(), to_branch: "main".into(),
-            before: Some(target), after: Some(original),
-        }).unwrap();
+            from_branch: "main".into(),
+            to_branch: "main".into(),
+            before: Some(target),
+            after: Some(original),
+        })
+        .unwrap();
         assert!(r.recover_locked().is_err());
         assert_eq!(r.head().unwrap(), Some(target));
         assert!(r.pending_transition().unwrap().is_some());
         assert_eq!(fs::read(dir.path().join("base")).unwrap(), b"new");
     }
 
-    #[test] fn non_overlapping_merge_and_conflict_rejection() {
+    #[test]
+    fn non_overlapping_merge_and_conflict_rejection() {
         let (dir, r) = repo();
         fs::write(dir.path().join("a"), b"base-a").unwrap();
         fs::write(dir.path().join("b"), b"base-b").unwrap();
@@ -3513,5 +4401,4 @@ mod tests {
         assert_eq!(r.head().unwrap(), previous);
         assert_eq!(fs::read(dir.path().join("a")).unwrap(), b"another-side");
     }
-
 }

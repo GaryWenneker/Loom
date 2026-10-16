@@ -34,7 +34,7 @@ Tail percentiles require ample repetitions. Distinguish cold/warm cache performa
 
 ## Automated evidence
 
-The [Scalability evidence workflow](../.github/workflows/scalability.yml) runs weekly or manually from GitHub Actions. It builds the release binary, runs the 100/1,000/10,000-file suites with 20 commits each and uploads raw JSON samples as a versioned artifact (90-day retention).
+The [Scalability evidence workflow](../.github/workflows/scalability.yml) runs weekly or manually from GitHub Actions. It also publishes checked comparisons against packed Git for wide trees through 100,000 files and a sharded 10,000-file control. It builds the release binary, runs the 100/1,000/10,000-file suites with 20 commits each and uploads raw JSON samples as a versioned artifact (90-day retention).
 
 Runner hardware may vary between runs. Always compare hardware metadata and binary hashes before attributing timing differences to Loom code. These observations are not release performance guarantees.
 
@@ -52,3 +52,33 @@ Performance without lossless results and fault tolerance does **not** satisfy a 
 ## Shared immutable provider stress
 
 `python3 benchmarks/shared_object_stress.py --binary target/debug/loom --backend sqlite --agents 10 --commits 10` runs concurrent independent workspaces against one object database. Choose `--backend filesystem` for shared loose objects. It fails on any command error, missing acknowledged history, snapshot mismatch or `fsck` failure. Output is JSON; this is a local correctness workload, not distributed ref or failure-injection evidence.
+
+## Equivalent Git comparison
+
+```sh
+cargo build --release --locked -p loom-cli
+python3 benchmarks/compare_git.py --loom target/release/loom --batch \
+  --files 1000 10000 100000 --repeat 5 --requests 1000 \
+  --output compare-git-results.json
+```
+
+The disposable fixture gives both engines identical tracked binary bytes and
+pins immutable revisions. Git uses packed objects and a changed-path commit
+graph by default; `--git-layout loose` exercises loose objects. Batch compares
+one Loom query process against one `git cat-file --batch` process, with 1,000
+path requests (10% misses), checking every returned byte and frame. Single-file
+reads, scoped listings and clean status are measured separately. Inherited Git
+configuration/provider variables are removed, and engine order alternates.
+
+The intentionally **wide directory** fixture exposes repeated tree decoding;
+it does not represent every repository layout. Use `--layout sharded` as a
+control with files spread over 256 directories. Samples include startup with
+warm OS caches. Reports include binary/harness hashes, hardware metadata, raw
+samples, percentiles, logical repository bytes and per-operation 100× target
+flags. Five samples give only a rough tail estimate. Peak RSS, CPU time, cold
+storage, network access and concurrent clients are not measured. Never infer
+an overall speed guarantee from a batch result. In particular, clean status
+still scans file contents and remains an explicit bottleneck.
+
+[Measured 2026-10-16 results](../docs/performance-20261016.md) include raw wide and
+sharded samples and explicitly retain operations that miss the 100× goal.

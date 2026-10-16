@@ -14,7 +14,9 @@ pub struct ReplicatedObjectBackend {
 impl ReplicatedObjectBackend {
     pub fn new(replicas: Vec<Arc<dyn ObjectBackend>>) -> Result<Self> {
         if replicas.is_empty() {
-            return Err(Error::Invalid("replicated storage requires at least one backend".into()));
+            return Err(Error::Invalid(
+                "replicated storage requires at least one backend".into(),
+            ));
         }
         if replicas.iter().any(|r| {
             let c = r.capabilities();
@@ -27,7 +29,9 @@ impl ReplicatedObjectBackend {
         Ok(Self { replicas })
     }
 
-    pub fn replica_count(&self) -> usize { self.replicas.len() }
+    pub fn replica_count(&self) -> usize {
+        self.replicas.len()
+    }
 }
 
 impl ObjectBackend for ReplicatedObjectBackend {
@@ -47,7 +51,9 @@ impl ObjectBackend for ReplicatedObjectBackend {
             match replica.get(id) {
                 Ok(bytes) => {
                     if object_id(&bytes) != id {
-                        return Err(Error::Invalid(format!("replica returned invalid hash for {id}")));
+                        return Err(Error::Invalid(format!(
+                            "replica returned invalid hash for {id}"
+                        )));
                     }
                     decode_object(&bytes)?;
                     return Ok(bytes);
@@ -60,7 +66,8 @@ impl ObjectBackend for ReplicatedObjectBackend {
         }
         if missing {
             Err(Error::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound, format!("object {id} absent from all replicas"),
+                std::io::ErrorKind::NotFound,
+                format!("object {id} absent from all replicas"),
             )))
         } else {
             Err(Error::Invalid("no replicas available".into()))
@@ -69,14 +76,18 @@ impl ObjectBackend for ReplicatedObjectBackend {
 
     fn put_if_absent(&self, id: ObjectId, canonical_envelope: &[u8]) -> Result<()> {
         if object_id(canonical_envelope) != id {
-            return Err(Error::Invalid("object ID does not match canonical envelope".into()));
+            return Err(Error::Invalid(
+                "object ID does not match canonical envelope".into(),
+            ));
         }
         decode_object(canonical_envelope)?;
         for replica in &self.replicas {
             replica.put_if_absent(id, canonical_envelope)?;
             // A backend must not acknowledge bytes that cannot be verified.
             if replica.get(id)? != canonical_envelope {
-                return Err(Error::Invalid(format!("replica failed read-after-write verification for {id}")));
+                return Err(Error::Invalid(format!(
+                    "replica failed read-after-write verification for {id}"
+                )));
             }
         }
         Ok(())
@@ -86,7 +97,9 @@ impl ObjectBackend for ReplicatedObjectBackend {
         // Existence on only one replica is insufficient to promise a durable
         // fully replicated object closure for later ref publication.
         for replica in &self.replicas {
-            if !replica.exists(id)? { return Ok(false); }
+            if !replica.exists(id)? {
+                return Ok(false);
+            }
         }
         Ok(true)
     }
@@ -96,9 +109,9 @@ impl ObjectBackend for ReplicatedObjectBackend {
 mod tests {
     use super::*;
     use crate::format::{encode_object, BLOB};
+    use std::collections::HashMap;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex;
-    use std::collections::HashMap;
 
     #[derive(Default)]
     struct FakeDurable {
@@ -107,8 +120,13 @@ mod tests {
     }
     impl ObjectBackend for FakeDurable {
         fn capabilities(&self) -> StoreCapabilities {
-            StoreCapabilities { durable_writes: true, conditional_create: true,
-                streaming_reads: false, streaming_writes: false, list_objects: false }
+            StoreCapabilities {
+                durable_writes: true,
+                conditional_create: true,
+                streaming_reads: false,
+                streaming_writes: false,
+                list_objects: false,
+            }
         }
         fn get(&self, id: ObjectId) -> Result<Vec<u8>> {
             self.bytes.lock().unwrap().get(&id).cloned().ok_or_else(|| {
@@ -119,7 +137,11 @@ mod tests {
             if self.fail.load(Ordering::SeqCst) {
                 return Err(Error::Io(std::io::Error::other("injected outage")));
             }
-            self.bytes.lock().unwrap().entry(id).or_insert_with(|| bytes.to_vec());
+            self.bytes
+                .lock()
+                .unwrap()
+                .entry(id)
+                .or_insert_with(|| bytes.to_vec());
             Ok(())
         }
         fn exists(&self, id: ObjectId) -> Result<bool> {
@@ -148,12 +170,23 @@ mod tests {
         struct Volatile;
         impl ObjectBackend for Volatile {
             fn capabilities(&self) -> StoreCapabilities {
-                StoreCapabilities { durable_writes: false, conditional_create: true,
-                    streaming_reads: false, streaming_writes: false, list_objects: false }
+                StoreCapabilities {
+                    durable_writes: false,
+                    conditional_create: true,
+                    streaming_reads: false,
+                    streaming_writes: false,
+                    list_objects: false,
+                }
             }
-            fn get(&self, _: ObjectId) -> Result<Vec<u8>> { unreachable!() }
-            fn put_if_absent(&self, _: ObjectId, _: &[u8]) -> Result<()> { unreachable!() }
-            fn exists(&self, _: ObjectId) -> Result<bool> { unreachable!() }
+            fn get(&self, _: ObjectId) -> Result<Vec<u8>> {
+                unreachable!()
+            }
+            fn put_if_absent(&self, _: ObjectId, _: &[u8]) -> Result<()> {
+                unreachable!()
+            }
+            fn exists(&self, _: ObjectId) -> Result<bool> {
+                unreachable!()
+            }
         }
         assert!(ReplicatedObjectBackend::new(vec![Arc::new(Volatile)]).is_err());
     }

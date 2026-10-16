@@ -1,10 +1,10 @@
+mod batch;
 use loom_core::{FilesystemObjectBackend, ObjectId, Repository, StatusKind};
 use std::{env, path::Path, process};
 
 fn usage() {
-    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path] [--object-dir DIRECTORY | --object-db FILE]\n  loom status\n  loom add PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom merge-bases LEFT_BRANCH RIGHT_BRANCH\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom cat @CHANGESET_ID PATH\n  loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]\n  loom tree @CHANGESET_ID\n  loom tree ls @TREE_ID [DIR]\n  loom tree cat @TREE_ID PATH\n  loom fsck\n  loom git -- GIT_ARGS...\n\nExternal object storage: set LOOM_OBJECT_DIR or LOOM_OBJECT_DB for every command.\n");
+    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path] [--object-dir DIRECTORY | --object-db FILE]\n  loom status\n  loom add PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom merge-bases LEFT_BRANCH RIGHT_BRANCH\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom cat @CHANGESET_ID PATH\n  loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]\n  loom tree @CHANGESET_ID\n  loom tree ls @TREE_ID [DIR]\n  loom tree cat @TREE_ID PATH\n  loom fsck\n  loom git -- GIT_ARGS...\n  loom query --batch @CHANGESET_ID [--cache-bytes N]\n\nExternal object storage: set LOOM_OBJECT_DIR or LOOM_OBJECT_DB for every command.\n");
 }
-
 
 fn print_diff(change: &loom_core::FileDiff) {
     let name = &change.path;
@@ -17,10 +17,24 @@ fn print_diff(change: &loom_core::FileDiff) {
     }
     match (std::str::from_utf8(before), std::str::from_utf8(after)) {
         (Ok(old), Ok(new)) if !old.contains('\0') && !new.contains('\0') => {
-            let old_name = if change.before.is_some() { format!("a/{name}") } else { "/dev/null".into() };
-            let new_name = if change.after.is_some() { format!("b/{name}") } else { "/dev/null".into() };
+            let old_name = if change.before.is_some() {
+                format!("a/{name}")
+            } else {
+                "/dev/null".into()
+            };
+            let new_name = if change.after.is_some() {
+                format!("b/{name}")
+            } else {
+                "/dev/null".into()
+            };
             let patch = similar::TextDiff::from_lines(old, new);
-            print!("{}", patch.unified_diff().context_radius(3).header(&old_name, &new_name));
+            print!(
+                "{}",
+                patch
+                    .unified_diff()
+                    .context_radius(3)
+                    .header(&old_name, &new_name)
+            );
         }
         _ => println!("Binary files differ"),
     }
@@ -29,19 +43,33 @@ fn print_diff(change: &loom_core::FileDiff) {
 type ObjectProvider = std::sync::Arc<dyn loom_core::storage_backend::ObjectBackend>;
 
 fn object_backend(
-    directory: Option<std::ffi::OsString>, database: Option<std::ffi::OsString>,
+    directory: Option<std::ffi::OsString>,
+    database: Option<std::ffi::OsString>,
+    existing: bool,
 ) -> Result<Option<ObjectProvider>, Box<dyn std::error::Error>> {
     match (directory, database) {
-        (Some(_), Some(_)) => Err("choose one object provider: LOOM_OBJECT_DIR or LOOM_OBJECT_DB".into()),
-        (Some(path), None) => Ok(Some(std::sync::Arc::new(FilesystemObjectBackend::open(path)?))),
-        (None, Some(path)) => Ok(Some(std::sync::Arc::new(loom_core::sqlite_object_storage::SqliteObjectBackend::open(path)?))),
+        (Some(_), Some(_)) => {
+            Err("choose one object provider: LOOM_OBJECT_DIR or LOOM_OBJECT_DB".into())
+        }
+        (Some(path), None) => Ok(Some(std::sync::Arc::new(if existing {
+            FilesystemObjectBackend::open_existing(path)?
+        } else {
+            FilesystemObjectBackend::open(path)?
+        }))),
+        (None, Some(path)) => Ok(Some(std::sync::Arc::new(if existing {
+            loom_core::sqlite_object_storage::SqliteObjectBackend::open_existing(path)?
+        } else {
+            loom_core::sqlite_object_storage::SqliteObjectBackend::open(path)?
+        }))),
         (None, None) => Ok(None),
     }
 }
 
 /// Object-provider files must never become input to their own VCS snapshots.
 fn validate_external_location(
-    workspace: &Path, directory: Option<&std::ffi::OsStr>, database: Option<&std::ffi::OsStr>,
+    workspace: &Path,
+    directory: Option<&std::ffi::OsStr>,
+    database: Option<&std::ffi::OsStr>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let root = std::fs::canonicalize(workspace)?;
     for value in [directory, database].into_iter().flatten() {
@@ -49,8 +77,13 @@ fn validate_external_location(
         let location = if path.exists() {
             std::fs::canonicalize(path)?
         } else {
-            let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
-            let name = path.file_name().ok_or("object storage requires a named path")?;
+            let parent = path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+            let name = path
+                .file_name()
+                .ok_or("object storage requires a named path")?;
             std::fs::canonicalize(parent)?.join(name)
         };
         if location.starts_with(&root) {
@@ -62,8 +95,14 @@ fn validate_external_location(
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
-    let Some(cmd) = args.first().map(String::as_str) else { usage(); return Err("missing command".into()); };
-    if matches!(cmd, "--help" | "-h" | "help") { usage(); return Ok(()); }
+    let Some(cmd) = args.first().map(String::as_str) else {
+        usage();
+        return Err("missing command".into());
+    };
+    if matches!(cmd, "--help" | "-h" | "help") {
+        usage();
+        return Ok(());
+    }
     if cmd == "init" {
         let mut path = None;
         let mut object_dir = env::var_os("LOOM_OBJECT_DIR");
@@ -72,30 +111,80 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut rest = args[1..].iter();
         while let Some(arg) = rest.next() {
             if arg == "--object-dir" || arg == "--object-db" {
-                if selected { return Err("choose exactly one object storage option".into()); }
+                if selected {
+                    return Err("choose exactly one object storage option".into());
+                }
                 selected = true;
                 let value = rest.next().ok_or("object storage option requires a path")?;
-                object_dir = if arg == "--object-dir" { Some(value.into()) } else { None };
-                object_db = if arg == "--object-db" { Some(value.into()) } else { None };
+                object_dir = if arg == "--object-dir" {
+                    Some(value.into())
+                } else {
+                    None
+                };
+                object_db = if arg == "--object-db" {
+                    Some(value.into())
+                } else {
+                    None
+                };
             } else if arg.starts_with('-') || path.is_some() {
-                return Err("usage: loom init [path] [--object-dir DIRECTORY | --object-db FILE]".into());
+                return Err(
+                    "usage: loom init [path] [--object-dir DIRECTORY | --object-db FILE]".into(),
+                );
             } else {
                 path = Some(arg.as_str());
             }
         }
         let path = path.unwrap_or(".");
-        if !Path::new(path).exists() { std::fs::create_dir_all(path)?; }
+        if !Path::new(path).exists() {
+            std::fs::create_dir_all(path)?;
+        }
         validate_external_location(Path::new(path), object_dir.as_deref(), object_db.as_deref())?;
-        let backend = object_backend(object_dir, object_db)?;
+        let backend = object_backend(object_dir, object_db, false)?;
         let repo = if let Some(backend) = backend {
             Repository::init_with_object_backend(path, backend)?
         } else {
             Repository::init(path)?
         };
-        println!("Initialized native Loom repository at {}", repo.root().display());
+        println!(
+            "Initialized native Loom repository at {}",
+            repo.root().display()
+        );
         return Ok(());
     }
-    let repo = if let Some(backend) = object_backend(env::var_os("LOOM_OBJECT_DIR"), env::var_os("LOOM_OBJECT_DB"))? {
+    if cmd == "query" {
+        if args.len() != 3 && args.len() != 5 {
+            return Err("usage: loom query --batch @CHANGESET_ID [--cache-bytes N]".into());
+        }
+        if args[1] != "--batch" {
+            return Err("query requires --batch".into());
+        }
+        let revision = ObjectId::parse(
+            args[2]
+                .strip_prefix('@')
+                .ok_or("query requires an immutable @CHANGESET_ID")?,
+        )?;
+        let budget = if args.len() == 5 {
+            if args[3] != "--cache-bytes" {
+                return Err("expected --cache-bytes N".into());
+            }
+            args[4].parse::<usize>()?
+        } else {
+            loom_core::DEFAULT_SNAPSHOT_CACHE_BYTES
+        };
+        let backend = object_backend(
+            env::var_os("LOOM_OBJECT_DIR"),
+            env::var_os("LOOM_OBJECT_DB"),
+            true,
+        )?;
+        let snapshot = Repository::query_snapshot(env::current_dir()?, revision, backend, budget)?;
+        batch::serve(&snapshot, std::io::stdin().lock(), std::io::stdout().lock())?;
+        return Ok(());
+    }
+    let repo = if let Some(backend) = object_backend(
+        env::var_os("LOOM_OBJECT_DIR"),
+        env::var_os("LOOM_OBJECT_DB"),
+        true,
+    )? {
         Repository::discover_with_object_backend(env::current_dir()?, backend)?
     } else {
         Repository::discover(env::current_dir()?)?
@@ -106,18 +195,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let staged = repo.staged_status()?;
             if repo.staging_enabled()? {
                 println!("Explicit staging enabled");
-                if staged.is_empty() { println!("No changes staged"); }
+                if staged.is_empty() {
+                    println!("No changes staged");
+                }
                 for change in staged {
                     let flag = match change.kind {
-                        StatusKind::Added => "A", StatusKind::Modified => "M", StatusKind::Deleted => "D"
+                        StatusKind::Added => "A",
+                        StatusKind::Modified => "M",
+                        StatusKind::Deleted => "D",
                     };
                     println!("staged {flag} {}", change.path);
                 }
             }
             let changes = repo.unstaged_status()?;
-            if changes.is_empty() { println!("Working tree clean"); }
+            if changes.is_empty() {
+                println!("Working tree clean");
+            }
             for change in changes {
-                let flag = match change.kind { StatusKind::Added => "A", StatusKind::Modified => "M", StatusKind::Deleted => "D" };
+                let flag = match change.kind {
+                    StatusKind::Added => "A",
+                    StatusKind::Modified => "M",
+                    StatusKind::Deleted => "D",
+                };
                 println!("{flag} {}", change.path);
             }
         }
@@ -126,34 +225,60 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 return Err(format!("usage: loom {cmd} PATH [PATH ...]").into());
             }
             for path in &args[1..] {
-                if cmd == "add" { repo.add(path)?; }
-                else { repo.unstage(path)?; }
-                println!("{} {path}", if cmd == "add" { "Staged" } else { "Unstaged" });
+                if cmd == "add" {
+                    repo.add(path)?;
+                } else {
+                    repo.unstage(path)?;
+                }
+                println!(
+                    "{} {path}",
+                    if cmd == "add" { "Staged" } else { "Unstaged" }
+                );
             }
         }
         "commit" => {
-            let pos = args.iter().position(|x| x == "-m").ok_or("commit requires -m MESSAGE")?;
-            let msg = args.get(pos+1).ok_or("commit requires a message after -m")?;
+            let pos = args
+                .iter()
+                .position(|x| x == "-m")
+                .ok_or("commit requires -m MESSAGE")?;
+            let msg = args
+                .get(pos + 1)
+                .ok_or("commit requires a message after -m")?;
             let author = if let Some(pos) = args.iter().position(|x| x == "--author") {
-                args.get(pos+1).ok_or("missing --author value")?.clone()
+                args.get(pos + 1).ok_or("missing --author value")?.clone()
             } else {
-                env::var("LOOM_AUTHOR").or_else(|_| env::var("USER")).or_else(|_| env::var("USERNAME")).unwrap_or_else(|_| "unknown".into())
+                env::var("LOOM_AUTHOR")
+                    .or_else(|_| env::var("USER"))
+                    .or_else(|_| env::var("USERNAME"))
+                    .unwrap_or_else(|_| "unknown".into())
             };
             let oid = repo.commit(&author, msg)?;
             println!("Committed {oid}");
         }
         "log" => {
-            let limit = args.get(1).map(|s| s.parse::<usize>()).transpose()?.unwrap_or(20);
+            let limit = args
+                .get(1)
+                .map(|s| s.parse::<usize>())
+                .transpose()?
+                .unwrap_or(20);
             for (oid, c) in repo.log(limit)? {
-                println!("commit {oid}\nAuthor: {}\nDate: {}\n\n    {}\n", c.author, c.timestamp_seconds, c.message);
+                println!(
+                    "commit {oid}\nAuthor: {}\nDate: {}\n\n    {}\n",
+                    c.author, c.timestamp_seconds, c.message
+                );
             }
         }
         "branch" => match args.get(1).map(String::as_str) {
             Some("list") => {
                 let current = repo.current_branch()?;
                 for (name, tip) in repo.branches()? {
-                    println!("{} {} {}", if name == current { "*" } else { " " }, name,
-                        tip.map(|x| x.to_string()).unwrap_or_else(|| "(unborn)".into()));
+                    println!(
+                        "{} {} {}",
+                        if name == current { "*" } else { " " },
+                        name,
+                        tip.map(|x| x.to_string())
+                            .unwrap_or_else(|| "(unborn)".into())
+                    );
                 }
             }
             Some("create") => {
@@ -161,7 +286,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 repo.create_branch(name)?;
                 println!("Created branch {name}");
             }
-            _ => return Err("usage: loom branch list|create NAME".into())
+            _ => return Err("usage: loom branch list|create NAME".into()),
         },
         "switch" => {
             let name = args.get(1).ok_or("switch requires a branch name")?;
@@ -171,10 +296,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "merge" => {
             let name = args.get(1).ok_or("merge requires a source branch")?;
             let message = if let Some(pos) = args.iter().position(|x| x == "-m") {
-                args.get(pos+1).ok_or("missing -m value")?.clone()
-            } else { format!("Merge branch {name}") };
-            let author = env::var("LOOM_AUTHOR").or_else(|_| env::var("USER"))
-                .or_else(|_| env::var("USERNAME")).unwrap_or_else(|_| "unknown".into());
+                args.get(pos + 1).ok_or("missing -m value")?.clone()
+            } else {
+                format!("Merge branch {name}")
+            };
+            let author = env::var("LOOM_AUTHOR")
+                .or_else(|_| env::var("USER"))
+                .or_else(|_| env::var("USERNAME"))
+                .unwrap_or_else(|_| "unknown".into());
             let before = repo.head()?;
             let source_tip = repo.branch_tip(name)?;
             let oid = repo.merge_branch(name, &author, &message)?;
@@ -200,29 +329,51 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 [_, option] if option == "--staged" => repo.diff_staged()?,
                 [_, option] if option == "--unstaged" => repo.diff_unstaged()?,
                 [_, from, to] => repo.diff_branches(from, to)?,
-                _ => return Err("usage: loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]".into()),
+                _ => {
+                    return Err(
+                        "usage: loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]".into(),
+                    )
+                }
             };
-            for change in &changes { print_diff(change); }
+            for change in &changes {
+                print_diff(change);
+            }
         }
         "review" => {
-            if args.len() != 1 { return Err("usage: loom review".into()); }
+            if args.len() != 1 {
+                return Err("usage: loom review".into());
+            }
             println!("=== Ready to commit (staged) ===");
             let staged = repo.diff_staged()?;
-            if staged.is_empty() { println!("No staged changes"); }
-            for change in &staged { print_diff(change); }
+            if staged.is_empty() {
+                println!("No staged changes");
+            }
+            for change in &staged {
+                print_diff(change);
+            }
             println!("=== Working changes (not staged) ===");
             let working = repo.diff_unstaged()?;
-            if working.is_empty() { println!("No unstaged changes"); }
-            for change in &working { print_diff(change); }
+            if working.is_empty() {
+                println!("No unstaged changes");
+            }
+            for change in &working {
+                print_diff(change);
+            }
             if !repo.staging_enabled()? {
-                println!("Legacy commit-all mode: 'loom commit' currently includes all working changes.");
+                println!(
+                    "Legacy commit-all mode: 'loom commit' currently includes all working changes."
+                );
             }
         }
         "files" => {
             // Text mode quotes/escapes filenames, including embedded newlines.
             // --null uses NUL-delimited raw UTF-8 paths for tool pipelines.
             let null = args.last().is_some_and(|value| value == "--null");
-            let positional = if null { &args[1..args.len()-1] } else { &args[1..] };
+            let positional = if null {
+                &args[1..args.len() - 1]
+            } else {
+                &args[1..]
+            };
             let (branch, prefix) = match positional {
                 [branch] => (branch.as_str(), None),
                 [branch, prefix] => (branch.as_str(), Some(prefix.as_str())),
@@ -245,68 +396,74 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        "tree" => {
-            match args.as_slice() {
-                [_, revision] if revision.starts_with('@') => {
-                    let root = repo.native_tree_root(
-                        ObjectId::parse(&revision[1..])?
-                    )?;
-                    println!("{root}");
-                }
-                [_, action, root] if action == "ls" => {
-                    let hex = root.strip_prefix('@')
-                        .ok_or("tree ls requires a @TREE_ID")?;
-                    let entries = repo.native_tree_entries(
-                        ObjectId::parse(hex)?, None
-                    )?;
-                    for entry in entries {
-                        let kind = match entry.kind {
-                            loom_core::TreeEntryKind::File => "file",
-                            loom_core::TreeEntryKind::Directory => "dir",
-                        };
-                        println!("{kind} {} {:?}", entry.object, entry.name);
-                    }
-                }
-                [_, action, root, directory] if action == "ls" => {
-                    let hex = root.strip_prefix('@')
-                        .ok_or("tree ls requires a @TREE_ID")?;
-                    let entries = repo.native_tree_entries(
-                        ObjectId::parse(hex)?, Some(directory)
-                    )?;
-                    for entry in entries {
-                        let kind = match entry.kind {
-                            loom_core::TreeEntryKind::File => "file",
-                            loom_core::TreeEntryKind::Directory => "dir",
-                        };
-                        println!("{kind} {} {:?}", entry.object, entry.name);
-                    }
-                }
-                [_, action, root, path] if action == "cat" => {
-                    let hex = root.strip_prefix('@')
-                        .ok_or("tree cat requires a @TREE_ID")?;
-                    let data = repo.native_tree_file(
-                        ObjectId::parse(hex)?, path
-                    )?.ok_or_else(|| format!("not a file in native tree: {path}"))?;
-                    use std::io::Write;
-                    std::io::stdout().lock().write_all(&data)?;
-                }
-                _ => return Err(
-                    "usage: loom tree @CHANGESET_ID | ls @TREE_ID [DIR] | cat @TREE_ID PATH".into()
-                ),
+        "tree" => match args.as_slice() {
+            [_, revision] if revision.starts_with('@') => {
+                let root = repo.native_tree_root(ObjectId::parse(&revision[1..])?)?;
+                println!("{root}");
             }
-        }
+            [_, action, root] if action == "ls" => {
+                let hex = root
+                    .strip_prefix('@')
+                    .ok_or("tree ls requires a @TREE_ID")?;
+                let entries = repo.native_tree_entries(ObjectId::parse(hex)?, None)?;
+                for entry in entries {
+                    let kind = match entry.kind {
+                        loom_core::TreeEntryKind::File => "file",
+                        loom_core::TreeEntryKind::Directory => "dir",
+                    };
+                    println!("{kind} {} {:?}", entry.object, entry.name);
+                }
+            }
+            [_, action, root, directory] if action == "ls" => {
+                let hex = root
+                    .strip_prefix('@')
+                    .ok_or("tree ls requires a @TREE_ID")?;
+                let entries = repo.native_tree_entries(ObjectId::parse(hex)?, Some(directory))?;
+                for entry in entries {
+                    let kind = match entry.kind {
+                        loom_core::TreeEntryKind::File => "file",
+                        loom_core::TreeEntryKind::Directory => "dir",
+                    };
+                    println!("{kind} {} {:?}", entry.object, entry.name);
+                }
+            }
+            [_, action, root, path] if action == "cat" => {
+                let hex = root
+                    .strip_prefix('@')
+                    .ok_or("tree cat requires a @TREE_ID")?;
+                let data = repo
+                    .native_tree_file(ObjectId::parse(hex)?, path)?
+                    .ok_or_else(|| format!("not a file in native tree: {path}"))?;
+                use std::io::Write;
+                std::io::stdout().lock().write_all(&data)?;
+            }
+            _ => {
+                return Err(
+                    "usage: loom tree @CHANGESET_ID | ls @TREE_ID [DIR] | cat @TREE_ID PATH".into(),
+                )
+            }
+        },
         "cat" => {
-            if args.len() != 3 { return Err("usage: loom cat BRANCH|@CHANGESET_ID PATH".into()); }
+            if args.len() != 3 {
+                return Err("usage: loom cat BRANCH|@CHANGESET_ID PATH".into());
+            }
             let data = if let Some(hex) = args[1].strip_prefix('@') {
                 repo.read_revision_file(ObjectId::parse(hex)?, &args[2])?
             } else {
                 repo.read_branch_file(&args[1], &args[2])?
-            }.ok_or_else(|| format!("path not found at {}: {}", args[1], args[2]))?;
+            }
+            .ok_or_else(|| format!("path not found at {}: {}", args[1], args[2]))?;
             use std::io::Write;
             std::io::stdout().lock().write_all(&data)?;
         }
-        "fsck" => println!("Verified {} native objects and branch references", repo.fsck()?),
-        _ => { usage(); return Err(format!("unknown command: {cmd}").into()); }
+        "fsck" => println!(
+            "Verified {} native objects and branch references",
+            repo.fsck()?
+        ),
+        _ => {
+            usage();
+            return Err(format!("unknown command: {cmd}").into());
+        }
     }
     Ok(())
 }
@@ -316,9 +473,13 @@ fn git_bridge(args: &[std::ffi::OsString]) -> Result<i32, Box<dyn std::error::Er
     if args.get(1).map(|s| s.as_os_str()) != Some(std::ffi::OsStr::new("--")) || args.len() < 3 {
         return Err("usage: loom git -- GIT_ARGS...".into());
     }
-    let status = process::Command::new("git").args(&args[2..]).status()
+    let status = process::Command::new("git")
+        .args(&args[2..])
+        .status()
         .map_err(|error| format!("cannot launch Git compatibility bridge: {error}"))?;
-    if let Some(code) = status.code() { return Ok(code); }
+    if let Some(code) = status.code() {
+        return Ok(code);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt;
@@ -333,7 +494,10 @@ fn main() {
     if raw.first().map(|s| s.as_os_str()) == Some(std::ffi::OsStr::new("git")) {
         match git_bridge(&raw) {
             Ok(code) => process::exit(code),
-            Err(error) => { eprintln!("loom: {error}"); process::exit(1); },
+            Err(error) => {
+                eprintln!("loom: {error}");
+                process::exit(1);
+            }
         }
     }
     if let Err(e) = run() {

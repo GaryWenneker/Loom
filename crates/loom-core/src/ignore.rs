@@ -19,7 +19,9 @@ impl IgnoreRules {
         let mut patterns = Vec::new();
         for (i, line) in source.lines().enumerate() {
             let value = line.trim();
-            if value.is_empty() || value.starts_with('#') { continue; }
+            if value.is_empty() || value.starts_with('#') {
+                continue;
+            }
             if value.starts_with('!') || value.contains('\\') {
                 return Err(Error::Invalid(format!(
                     ".loomignore:{}: negation and backslash escapes are not supported",
@@ -28,13 +30,21 @@ impl IgnoreRules {
             }
             let anchored = value.starts_with('/');
             let normalized = value.trim_start_matches('/');
-            if normalized.is_empty() { continue; }
+            if normalized.is_empty() {
+                continue;
+            }
             let directory = normalized.ends_with('/');
             let pattern = normalized.trim_end_matches('/');
-            if pattern.is_empty() { continue; }
+            if pattern.is_empty() {
+                continue;
+            }
             // A rule without a slash is a basename rule at any depth.
             // A slash-containing rule is anchored to the repository root.
-            let prefix = if !anchored && !pattern.contains('/') { "**/" } else { "" };
+            let prefix = if !anchored && !pattern.contains('/') {
+                "**/"
+            } else {
+                ""
+            };
             let expanded = if directory {
                 format!("{prefix}{pattern}/**")
             } else {
@@ -43,9 +53,12 @@ impl IgnoreRules {
             let glob = GlobBuilder::new(&expanded)
                 .literal_separator(true)
                 .build()
-                .map_err(|err| Error::Invalid(format!(
-                    ".loomignore:{}: invalid pattern {value:?}: {err}", i + 1
-                )))?;
+                .map_err(|err| {
+                    Error::Invalid(format!(
+                        ".loomignore:{}: invalid pattern {value:?}: {err}",
+                        i + 1
+                    ))
+                })?;
             patterns.push(glob.compile_matcher());
         }
         Ok(Self { patterns })
@@ -53,7 +66,9 @@ impl IgnoreRules {
 
     pub fn ignores(&self, path: &str) -> bool {
         // Rules must never hide their own definition.
-        if path == ".loomignore" { return false; }
+        if path == ".loomignore" {
+            return false;
+        }
         self.patterns.iter().any(|rule| rule.is_match(path))
     }
 }
@@ -66,7 +81,11 @@ mod tests {
     #[test]
     fn basename_and_rooted_directory_rules() {
         let tmp = tempfile::tempdir().unwrap();
-        fs::write(tmp.path().join(".loomignore"), "*.log\n/build/\ncache/\n#comment\n").unwrap();
+        fs::write(
+            tmp.path().join(".loomignore"),
+            "*.log\n/build/\ncache/\n#comment\n",
+        )
+        .unwrap();
         let rules = IgnoreRules::load(tmp.path()).unwrap();
         assert!(rules.ignores("error.log"));
         assert!(rules.ignores("nested/error.log"));

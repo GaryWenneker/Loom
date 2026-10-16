@@ -49,3 +49,12 @@ Initialize with `loom init [path] --object-dir DIRECTORY`, or set `LOOM_OBJECT_D
 ## SQLite objects
 
 `loom init [path] --object-db FILE` initializes with SQLite object storage. Set `LOOM_OBJECT_DB` to the same database for subsequent commands. Use an absolute path and an existing parent directory. Choose one of `LOOM_OBJECT_DIR` and `LOOM_OBJECT_DB`; setting both is an error. The native format and IDs are identical to filesystem objects. Refs and the workspace journal retain their local SQLite transaction boundary.
+
+## Persistent immutable queries
+
+`loom query --batch @CHANGESET_ID [--cache-bytes N]` reads JSON-line requests
+and emits framed binary `cat` replies or JSON `files`/`stats` replies. It opens
+existing storage read-only without acquiring the workspace lock. See the
+[protocol and integrity contract](snapshot-query-protocol.md) before implementing
+a client. For a legacy revision without a native root, prepare it explicitly
+with `loom tree @CHANGESET_ID`.

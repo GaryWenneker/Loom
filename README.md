@@ -18,6 +18,7 @@ Loom has its own native storage engine and object format. An explicit `loom git 
 - Local full-worktree status, commits, log, branch creation/switching, basic conservative merges and `fsck`, including checks for staged blob references and pending-recovery changesets.
 - Opt-in persistent native staging index: `loom add PATH...`, `loom unstage PATH...`, frozen content snapshots and staged-only commits. Once enabled, every later commit requires explicit staging; existing repositories retain legacy commit-all behavior until their first `loom add`.
 - Targeted `loom add` and staged status use the native derived branch path index when current; the index can be rebuilt from authoritative history if missing or stale. General worktree scans and indexed ancestry/blame remain separate performance work.
+- Revision-pinned [batch query sessions](docs/snapshot-query-protocol.md) provide binary-safe reads, paginated path listing and a bounded verified cache without locking or recovering the workspace.
 - A CLI named `loom`, including an explicit [Git fallback](docs/git-compatibility-bridge.md) that works in Git-only repositories and preserves Git exit codes.
 - Read-only `loom diff` for worktree changes and comparisons between branch snapshots; `loom diff --staged` and `loom diff --unstaged` show the two sides of the staging boundary independently.
 - `loom review` displays both prepared commit content and remaining uncommitted workspace edits in one view. Text patches use unified diff output; large/binary changes are reported without textual hunks.

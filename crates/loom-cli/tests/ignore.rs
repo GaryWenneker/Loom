@@ -11,7 +11,12 @@ fn cmd(root: &Path, args: &[&str]) -> std::process::Output {
 
 fn ok(root: &Path, args: &[&str]) -> String {
     let output = cmd(root, args);
-    assert!(output.status.success(), "{:?}: {}", args, String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{:?}: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
     String::from_utf8(output.stdout).unwrap()
 }
 
@@ -33,9 +38,11 @@ fn ignores_untracked_globs_but_commits_loomignore_itself() {
     ok(root, &["commit", "-m", "root ignore rules"]);
     assert!(ok(root, &["status"]).contains("Working tree clean"));
     assert!(!cmd(root, &["cat", "main", "debug.log"]).status.success());
-    assert!(!cmd(root, &["cat", "main", "cache/data.bin"]).status.success());
+    assert!(!cmd(root, &["cat", "main", "cache/data.bin"])
+        .status
+        .success());
     assert!(ok(root, &["cat", "main", ".loomignore"]).contains("*.log"));
-    assert!(cmd(root, &["add", "debug.log"]).status.success() == false);
+    assert!(!cmd(root, &["add", "debug.log"]).status.success());
     ok(root, &["fsck"]);
 }
 
@@ -55,7 +62,9 @@ fn tracked_file_remains_visible_after_new_ignore_pattern() {
     ok(root, &["add", "tracked.log", ".loomignore"]);
     ok(root, &["commit", "-m", "update tracked despite ignore"]);
     assert_eq!(ok(root, &["cat", "main", "tracked.log"]), "v2");
-    assert!(!cmd(root, &["cat", "main", "untracked.log"]).status.success());
+    assert!(!cmd(root, &["cat", "main", "untracked.log"])
+        .status
+        .success());
 }
 
 #[test]
