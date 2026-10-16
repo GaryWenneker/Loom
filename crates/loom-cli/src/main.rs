@@ -2,7 +2,7 @@ use loom_core::{FilesystemObjectBackend, ObjectId, Repository, StatusKind};
 use std::{env, path::Path, process};
 
 fn usage() {
-    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path] [--object-dir DIRECTORY]\n  loom status\n  loom add PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom merge-bases LEFT_BRANCH RIGHT_BRANCH\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom cat @CHANGESET_ID PATH\n  loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]\n  loom tree @CHANGESET_ID\n  loom tree ls @TREE_ID [DIR]\n  loom tree cat @TREE_ID PATH\n  loom fsck\n\nExternal object storage: set LOOM_OBJECT_DIR for every command.\n");
+    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path] [--object-dir DIRECTORY]\n  loom status\n  loom add PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom merge-bases LEFT_BRANCH RIGHT_BRANCH\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom cat @CHANGESET_ID PATH\n  loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]\n  loom tree @CHANGESET_ID\n  loom tree ls @TREE_ID [DIR]\n  loom tree cat @TREE_ID PATH\n  loom fsck\n  loom git -- GIT_ARGS...\n\nExternal object storage: set LOOM_OBJECT_DIR for every command.\n");
 }
 
 
@@ -272,7 +272,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
+/// Run the explicit bridge before UTF-8 native argument parsing or discovery.
+/// OS arguments preserve binary filenames and are passed directly, without a shell.
+fn git_bridge(args: &[std::ffi::OsString]) -> Result<i32, Box<dyn std::error::Error>> {
+    if args.get(1).map(|s| s.as_os_str()) != Some(std::ffi::OsStr::new("--")) || args.len() < 3 {
+        return Err("usage: loom git -- GIT_ARGS...".into());
+    }
+    let status = process::Command::new("git").args(&args[2..]).status()
+        .map_err(|error| format!("cannot launch Git compatibility bridge: {error}"))?;
+    if let Some(code) = status.code() { return Ok(code); }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        Ok(128 + status.signal().unwrap_or(1))
+    }
+    #[cfg(not(unix))]
+    Ok(1)
+}
+
 fn main() {
+    let raw: Vec<_> = env::args_os().skip(1).collect();
+    if raw.first().map(|s| s.as_os_str()) == Some(std::ffi::OsStr::new("git")) {
+        match git_bridge(&raw) {
+            Ok(code) => process::exit(code),
+            Err(error) => { eprintln!("loom: {error}"); process::exit(1); },
+        }
+    }
     if let Err(e) = run() {
         eprintln!("loom: {e}");
         process::exit(1);

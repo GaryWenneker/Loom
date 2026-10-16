@@ -87,3 +87,7 @@ Before marking Loom a usable **Git replacement** for a declared environment:
 5. Safety, recovery, security and cross-platform gates from [release-gates.md](release-gates.md) still apply.
 
 **Important:** "No functionality lost" is a release criterion. It is not a claim about the current experimental alpha.
+
+## Current explicit compatibility path
+
+`loom git -- GIT_ARGS...` is available for workflows in existing Git repositories. It forwards arguments and exit codes to an installed Git executable without native discovery or automatic fallback. This does not close the native/import/export gaps in the inventory above.

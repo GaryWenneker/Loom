@@ -39,3 +39,7 @@ Commands exit nonzero on error and diagnostics go to stderr. Typed exit codes an
 ## External filesystem objects
 
 Initialize with `loom init [path] --object-dir DIRECTORY`, or set `LOOM_OBJECT_DIR` before initialization. Set `LOOM_OBJECT_DIR` to that same object directory for every subsequent command. Prefer an absolute directory path so invocation from nested workspace directories resolves consistently. The workspace's refs, staging and journal remain under `.loom`; only immutable objects move. Missing explicit binding is an error. Setting the environment variable on an existing default-storage repository does not perform a migration. See [storage backends](storage-backends.md).
+
+## Explicit Git fallback
+
+`loom git -- GIT_ARGS...` invokes installed Git with the current directory, terminal streams and unmodified OS arguments. It preserves Git's exit code and works without a Loom repository. No shell is inserted. Native commands never silently fall back. This is explicit Git execution, not native history import/export; Git commands retain their normal filesystem/network side effects. See [Git compatibility bridge](git-compatibility-bridge.md).

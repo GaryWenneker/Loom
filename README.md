@@ -2,7 +2,7 @@
 
 Loom is an experimental, standalone **native version control system**, implemented in Rust.
 
-Loom has its own native storage engine and object format. A separate Git interoperability bridge is planned.
+Loom has its own native storage engine and object format. An explicit `loom git -- GIT_ARGS...` bridge invokes installed Git for Git workflows; native/Git history import and export remain planned.
 
 **Product direction:** Git is the **functional baseline**, not a syntax or architecture template. Loom may offer fewer steps, reversible operations and agent-safe workflows, but must eventually preserve equivalent user capabilities. See the [Git capability inventory](docs/git-capability-parity.md).
 
@@ -18,7 +18,7 @@ Loom has its own native storage engine and object format. A separate Git interop
 - Local full-worktree status, commits, log, branch creation/switching, basic conservative merges and `fsck`, including checks for staged blob references and pending-recovery changesets.
 - Opt-in persistent native staging index: `loom add PATH...`, `loom unstage PATH...`, frozen content snapshots and staged-only commits. Once enabled, every later commit requires explicit staging; existing repositories retain legacy commit-all behavior until their first `loom add`.
 - Targeted `loom add` and staged status use the native derived branch path index when current; the index can be rebuilt from authoritative history if missing or stale. General worktree scans and indexed ancestry/blame remain separate performance work.
-- A CLI named `loom`.
+- A CLI named `loom`, including an explicit [Git fallback](docs/git-compatibility-bridge.md) that works in Git-only repositories and preserves Git exit codes.
 - Read-only `loom diff` for worktree changes and comparisons between branch snapshots; `loom diff --staged` and `loom diff --unstaged` show the two sides of the staging boundary independently.
 - `loom review` displays both prepared commit content and remaining uncommitted workspace edits in one view. Text patches use unified diff output; large/binary changes are reported without textual hunks.
 - `loom cat BRANCH PATH` for binary-safe direct access to native snapshot files without checkout.
