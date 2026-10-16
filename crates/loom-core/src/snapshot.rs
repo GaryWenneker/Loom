@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 pub const DEFAULT_SNAPSHOT_CACHE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CACHE_BYTES: usize = 256 * 1024 * 1024;
 const MAX_PAGE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_FRONTIER_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SnapshotStats {
@@ -235,10 +236,14 @@ impl Snapshot {
             pending.insert(key, (id, kind, depth));
         }
         let mut paths = Vec::new();
+        // Bound queued paths as well as returned paths. A compact shared DAG
+        // can otherwise expand into a much larger enumeration frontier.
+        let mut frontier_bytes = pending.keys().map(|p| p.len() + 128).sum::<usize>();
         let mut bytes = 0usize;
         let mut visited = 0usize;
         let mut more = false;
         while let Some((path, (id, kind, depth))) = pending.pop_first() {
+            frontier_bytes -= path.len() + 128;
             visited += 1;
             if visited > 1_000_000 {
                 return Err(Error::Invalid(
@@ -261,6 +266,19 @@ impl Snapshot {
                             "snapshot listing path exceeds query size limit".into(),
                         ));
                     }
+                    if depth >= 256 {
+                        return Err(Error::Invalid(
+                            "snapshot listing nesting limit reached".into(),
+                        ));
+                    }
+                    let weight = child.len().saturating_add(128);
+                    if frontier_bytes.saturating_add(weight) > MAX_FRONTIER_BYTES {
+                        return Err(Error::Invalid(
+                            "snapshot listing frontier exceeds 64 MiB limit; use a narrower prefix"
+                                .into(),
+                        ));
+                    }
+                    frontier_bytes += weight;
                     pending.insert(child, (entry.object, entry.kind, depth + 1));
                 }
             } else if after.is_none_or(|cursor| path.as_str() > cursor) {
@@ -274,5 +292,55 @@ impl Snapshot {
         }
         let next_cursor = if more { paths.last().cloned() } else { None };
         Ok(SnapshotFiles { paths, next_cursor })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn listing_and_reading_enforce_the_same_path_depth_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::Repository::init(dir.path()).unwrap();
+        let store = ObjectStore::new(&dir.path().join(".loom"));
+        let blob = store.put(BLOB, b"deep").unwrap();
+        let write_tree = |name: &str, object, kind| {
+            let encoded = NativeTree {
+                entries: vec![crate::TreeEntry {
+                    name: name.into(),
+                    object,
+                    kind,
+                    executable: false,
+                }],
+            }
+            .encode()
+            .unwrap();
+            let (kind, payload) = decode_object(&encoded).unwrap();
+            store.put(kind, payload).unwrap()
+        };
+        let mut root = write_tree("z", blob, TreeEntryKind::File);
+        for depth in 1..=256 {
+            root = write_tree("a", root, TreeEntryKind::Directory);
+            if depth == 255 {
+                let snapshot =
+                    Snapshot::new(root, store.clone(), DEFAULT_SNAPSHOT_CACHE_BYTES).unwrap();
+                let path = format!("{}z", "a/".repeat(depth));
+                assert_eq!(
+                    snapshot.files(None, None, 1).unwrap().paths.as_slice(),
+                    std::slice::from_ref(&path)
+                );
+                assert_eq!(&*snapshot.read_file(&path).unwrap().unwrap(), b"deep");
+            }
+        }
+        let snapshot = Snapshot::new(root, store, DEFAULT_SNAPSHOT_CACHE_BYTES).unwrap();
+        assert!(snapshot
+            .files(None, None, 1)
+            .unwrap_err()
+            .to_string()
+            .contains("nesting"));
+        assert!(snapshot
+            .read_file(&format!("{}z", "a/".repeat(256)))
+            .is_err());
     }
 }

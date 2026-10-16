@@ -35,7 +35,9 @@ Clients must consume the declared binary length before reading another header.
 (last emitted path when more remain). Prefixes match complete path components,
 including an exact file. Omitted limit is 10,000; accepted limits are 1..=100,000.
 A page contains at most 8 MiB of path bytes. Nesting is limited to 256 and each
-listing traverses at most 1,000,000 entries. Pagination currently restarts tree
+listing traverses at most 1,000,000 entries. The queued traversal frontier has
+a separate 64 MiB accounted limit and fails explicitly if exceeded; use a
+narrower prefix for such trees. Pagination currently restarts tree
 traversal, so many tiny pages are not an efficient full-repository export.
 
 Malformed requests receive an error with `id:null`; valid requests that fail
