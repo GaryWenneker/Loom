@@ -127,6 +127,14 @@ opens; Windows retains the verified filesystem path. All returned envelopes are
 hash/type checked. Retained handles/cached bytes never establish live durability.
 See [framing and resource limits](snapshot-query-protocol.md#native-grouped-file-reads).
 
+An immutable Snapshot also memoizes exact positive/negative file-path answers
+inside its existing budget. These answers belong to one pinned root, are shared
+by scalar/grouped reads, and never enter the provider's publication or integrity
+paths. Cache accounting conservatively includes retained per-path payloads and
+both path-key copies, even when content Arcs are shared. A zero budget disables
+this layer too; misses still use the configured verified reader. See the
+[working-set comparison](../benchmarks/README.md#repeated-immutable-working-sets).
+
 `loom read-pack @REV FILE` can separately prepare an optional local acceleration
 file for any configured provider. Only `query --read-pack FILE` uses it. It is
 not an `ObjectBackend`, does not advertise durability, and cannot acknowledge

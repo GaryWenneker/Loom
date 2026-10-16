@@ -2,6 +2,34 @@
 
 This directory contains a **reproducible benchmark**, not Scion-level performance claims. It works with the Loom binary and Python 3.9+.
 
+## Repeated immutable working sets
+
+```sh
+python3 benchmarks/compare_git.py --loom /absolute/new-loom \
+  --baseline-loom /absolute/previous-loom --baseline-multi --batch --multi \
+  --layout nested --directories 1024 --files 10000 --rounds 100 --repeat 8 \
+  --requests 1000 --output working-set-nested.json
+```
+
+Schema 4's `--rounds` repeats and rotates one working set within each persistent
+process. Both Loom versions and packed Git receive the identical expanded path
+sequence and return every logical answer. No per-file Git processes, omitted
+bytes, read-pack preparation or off-timer query warmup are used. The initial
+group, process startup, parsing/framing and all responses remain in the elapsed
+time. With 100 rounds and 1,000 paths, that is 100,000 logical requests; each
+round uses the same working set. Engine caches warm naturally after the first
+group. This does not represent 100,000 distinct file paths or cold storage.
+
+Timings describe the complete sequence, not per-response p50/p95/p99. Fresh-session
+first-group controls (`git_first_group`, `loom_first_group` and optional
+`baseline_first_group`) run in the same fixture and are reported separately.
+Single CLI/status controls remain one operation each. Inputs are capped at 100
+rounds and 100,000 total requests; the existing per-line query limits still
+apply. Repeat with `--layout sharded --directories 256 --files 10000 100000`.
+Eight modes with the previous binary/no pack use eight rotated runs for a full
+order cycle. With different flags, choose repetitions appropriately. Avoid a
+general speed claim based on a cache-hot operation.
+
 ## Explicit read-pack comparison
 
 ```sh

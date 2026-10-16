@@ -66,18 +66,24 @@ def parse_loom_batch(output, expected):
     assert offset == len(output), 'unconsumed Loom batch output'
 
 
-def parse_loom_multi(output, expected):
-    end = output.index(b'\n'); header = json.loads(output[:end]); offset = end + 1
-    assert header['kind'] == 'blobs' and header['ok'], header
-    assert len(header['entries']) == len(expected), header
-    for entry, wanted in zip(header['entries'], expected):
-        if wanted is None:
-            assert entry is None, entry
-        else:
-            assert entry['size'] == len(wanted), entry
-            assert output[offset:offset+len(wanted)] == wanted
-            offset += len(wanted)
-    assert offset-end-1 == header['size'] and output[offset:] == b'\n'
+def parse_loom_multi(output, expected, rounds=1):
+    offset = 0
+    group_size = len(expected)//rounds
+    for round_id in range(rounds):
+        end = output.index(b'\n', offset); header = json.loads(output[offset:end]); offset = end + 1
+        assert header['kind'] == 'blobs' and header['ok'] and header['id'] == round_id, header
+        wanted_group = expected[round_id*group_size:(round_id+1)*group_size]
+        assert len(header['entries']) == len(wanted_group), header
+        for entry, wanted in zip(header['entries'], wanted_group):
+            if wanted is None:
+                assert entry is None, entry
+            else:
+                assert entry['size'] == len(wanted), entry
+                assert output[offset:offset+len(wanted)] == wanted
+                offset += len(wanted)
+        assert offset-end-1 == header['size'] and output[offset:offset+1] == b'\n'
+        offset += 1
+    assert offset == len(output), 'unconsumed Loom grouped output'
 
 
 def scenario(args, count):
@@ -92,6 +98,10 @@ def scenario(args, count):
     if args.read_pack:
         timings['loom_pack_batch'] = []
         timings['loom_pack_multi'] = []
+    if args.rounds > 1 and args.multi:
+        timings['git_first_group'] = []
+        timings['loom_first_group'] = []
+        if args.baseline_multi: timings['baseline_first_group'] = []
     initializer = args.baseline_loom or args.loom
     def relative(index):
         name = f'{index:08d}.bin'
@@ -160,6 +170,11 @@ def scenario(args, count):
             indices = [rng.randrange(count) if n % 10 else None for n in range(args.requests)]
             paths = [relative(n) if n is not None else 'files/missing.bin' for n in indices]
             expected = [content(n) if n is not None else None for n in indices]
+            # Rotate one fixed working set across groups in the same process.
+            # Git and both Loom versions receive the identical expanded sequence.
+            if args.rounds > 1:
+                paths = [path for n in range(args.rounds) for path in paths[n % len(paths):]+paths[:n % len(paths)]]
+                expected = [value for n in range(args.rounds) for value in expected[n % len(expected):]+expected[:n % len(expected)]]
             git_input = ''.join(git_revision+':'+path+'\n' for path in paths).encode()
             loom_input = ''.join(json.dumps({'id':i,'op':'cat','path':path})+'\n' for i,path in enumerate(paths)).encode()
             modes = [('git_batch', ['git','cat-file','--batch'], git_input, parse_git_batch)]
@@ -168,14 +183,26 @@ def scenario(args, count):
                 if args.baseline_loom:
                     modes.append(('baseline_batch', [args.baseline_loom,'query','--batch','@'+revision], loom_input, parse_loom_batch))
             if args.multi:
-                multi_input = (json.dumps({'id':0,'op':'cat_many','paths':paths})+'\n').encode()
-                modes.append(('loom_multi',[args.loom,'query','--batch','@'+revision],multi_input,parse_loom_multi))
+                multi_input = ''.join(json.dumps({'id':n,'op':'cat_many','paths':paths[n*args.requests:(n+1)*args.requests]})+'\n' for n in range(args.rounds)).encode()
+                verify_multi = lambda output, expected: parse_loom_multi(output, expected, args.rounds)
+                modes.append(('loom_multi',[args.loom,'query','--batch','@'+revision],multi_input,verify_multi))
                 if args.baseline_multi:
-                    modes.append(('baseline_multi',[args.baseline_loom,'query','--batch','@'+revision],multi_input,parse_loom_multi))
+                    modes.append(('baseline_multi',[args.baseline_loom,'query','--batch','@'+revision],multi_input,verify_multi))
                 if args.read_pack:
                     base_command = [args.loom,'query','--batch','@'+revision,'--read-pack','.loom/reads.pack']
                     modes.append(('loom_pack_batch',base_command,loom_input,parse_loom_batch))
-                    modes.append(('loom_pack_multi',base_command,multi_input,parse_loom_multi))
+                    modes.append(('loom_pack_multi',base_command,multi_input,verify_multi))
+                if args.rounds > 1:
+                    first_paths, first_expected = paths[:args.requests], expected[:args.requests]
+                    first_git_input = ''.join(git_revision+':'+path+'\n' for path in first_paths).encode()
+                    first_multi_input = (json.dumps({'id':0,'op':'cat_many','paths':first_paths})+'\n').encode()
+                    modes.append(('git_first_group',['git','cat-file','--batch'],first_git_input,
+                                  lambda output, _: parse_git_batch(output, first_expected)))
+                    modes.append(('loom_first_group',[args.loom,'query','--batch','@'+revision],first_multi_input,
+                                  lambda output, _: parse_loom_multi(output, first_expected)))
+                    if args.baseline_multi:
+                        modes.append(('baseline_first_group',[args.baseline_loom,'query','--batch','@'+revision],first_multi_input,
+                                      lambda output, _: parse_loom_multi(output, first_expected)))
             modes = modes[repeat % len(modes):] + modes[:repeat % len(modes)]
             for name, argv, data, verify in modes:
                 elapsed, output = command(root, argv, data)
@@ -186,6 +213,8 @@ def scenario(args, count):
                   for name in ['cat_cli','files_cli','status_cli','batch']
                   if 'loom_'+name in operations}
         if args.multi: ratios['multi'] = operations['git_batch']['p50_ms']/operations['loom_multi']['p50_ms']
+        if 'loom_first_group' in operations:
+            ratios['first_group'] = operations['git_first_group']['p50_ms']/operations['loom_first_group']['p50_ms']
         if args.read_pack:
             for mode in ['pack_batch', 'pack_multi']:
                 ratios[mode] = operations['git_batch']['p50_ms']/operations['loom_'+mode]['p50_ms']
@@ -198,8 +227,11 @@ def scenario(args, count):
             if args.read_pack:
                 baseline_ratios['pack_multi'] = operations[baseline_group]['p50_ms']/operations['loom_pack_multi']['p50_ms']
                 baseline_ratios['pack_batch'] = operations['baseline_batch']['p50_ms']/operations['loom_pack_batch']['p50_ms']
+        if 'baseline_first_group' in operations:
+            baseline_ratios['first_group'] = operations['baseline_first_group']['p50_ms']/operations['loom_first_group']['p50_ms']
         return {'tracked_files':count, 'history_commits':args.history+1,
                 'requests_per_batch':args.requests, 'git_layout':args.git_layout,
+                'rounds_per_process':args.rounds, 'requests_per_process':args.requests*args.rounds,
                 'fixture_layout':args.layout+'; small binary files; 10% batch misses',
                 'directories':args.directories if args.layout!='wide' else 1,
                 'cache_budget_bytes':64*1024*1024,
@@ -225,6 +257,7 @@ def main():
     parser.add_argument('--history', type=int, default=10)
     parser.add_argument('--repeat', type=int, default=5)
     parser.add_argument('--requests', type=int, default=1000)
+    parser.add_argument('--rounds', type=int, default=1, help='Repeat one rotating working set within each persistent process')
     parser.add_argument('--layout', choices=['wide','sharded','nested'], default='wide',
                         help='one wide directory or files spread over 256 directories')
     parser.add_argument('--git-layout', choices=['loose','packed'], default='packed')
@@ -233,12 +266,14 @@ def main():
     args = parser.parse_args()
     if args.directories < 1 or min(args.files) < 1 or args.repeat < 1 or args.requests < 1 or args.history < 0:
         parser.error('positive sizes/repetitions/requests and nonnegative history are required')
+    if not 1 <= args.rounds <= 100 or args.requests*args.rounds > 100000:
+        parser.error('--rounds must be 1..100, with at most 100000 total logical requests per process')
     if args.multi and (not args.batch or args.requests > 4096):
         parser.error('--multi requires --batch and at most 4096 logical requests')
     if (args.baseline_multi and not args.baseline_loom) or ((args.read_pack or args.baseline_multi) and not args.multi):
         parser.error('--read-pack requires --multi; --baseline-multi requires --multi and --baseline-loom')
     version = subprocess.check_output(['git','--version'],text=True).strip()
-    report = {'schema_version':3, 'git_version':version,
+    report = {'schema_version':4, 'git_version':version,
               'harness_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               'baseline_loom_sha256':hashlib.sha256(Path(args.baseline_loom).read_bytes()).hexdigest() if args.baseline_loom else None,
               'loom_sha256':hashlib.sha256(Path(args.loom).read_bytes()).hexdigest(),
@@ -247,6 +282,7 @@ def main():
                       'filesystem':'overlay (container)' if Path('/.dockerenv').exists() else 'not detected'},
               'conditions':['same tracked bytes; both queries pin immutable revision IDs', 'output verified byte for byte',
                             'process startup included; OS caches warm, not a cold-disk experiment',
+                            'rounds reuse and rotate the same working set; all engines keep one process; timings cover the entire sequence including its first group',
                             'cat_many groups the same paths into one native request; existing line mode is reported separately',
                             'Git cat-file batch compared against Loom batch, not repeated Git launches',
                             'packed Git uses gc and a changed-path commit graph',
