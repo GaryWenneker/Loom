@@ -2,6 +2,29 @@
 
 This directory contains a **reproducible benchmark**, not Scion-level performance claims. It works with the Loom binary and Python 3.9+.
 
+## Durable publication workflows
+
+```sh
+python3 benchmarks/compare_publication.py --loom /absolute/new-loom \
+  --baseline-loom /absolute/previous-loom --files 1000 10000 --repeat 6 \
+  --layout sharded --directories 256 --output publication-sharded.json
+```
+
+This POSIX harness measures complete initial commit workflows in fresh identical
+fixtures, then a commit with eight modified files. Loom uses commit-all; Git uses
+both `add` and `commit` inside the measured workflow. Startup is included.
+Fixture creation, full payload/listing verification and fsck occur outside timing.
+All native roots must match between old/new Loom. Engine order rotates; six
+repeats cover two full three-engine cycles. Try `--layout nested --directories
+1024 --files 10000` and `--files 100000` separately.
+
+`wait4` records per-process CPU and maximum RSS; Git's two commands have summed
+wall/CPU/I-O and maximum RSS. Raw kernel block-I/O counters are retained in their
+OS units, rather than presented as portable byte counts. Metadata size is logical
+file length, not disk allocation. Samples include p50/p95/p99; few samples are
+insufficient for production tail guarantees. This filesystem-provider benchmark
+does not flush OS caches or measure network, power loss or concurrent agents.
+
 ## Repeated immutable working sets
 
 ```sh

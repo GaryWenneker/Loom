@@ -758,13 +758,14 @@ impl Repository {
         persist: bool,
     ) -> Result<Vec<Change>> {
         let mut changes = Vec::new();
+        let mut publication = self.store.publisher();
         for (path, bytes) in files {
             let data = encode_object(BLOB, bytes)?;
             let id = object_id(&data);
             let prior = old.get(path);
             if prior != Some(&id) {
                 if persist {
-                    self.store.put(BLOB, bytes)?;
+                    publication.push(id, data)?;
                 }
                 changes.push(Change {
                     kind: if prior.is_some() {
@@ -777,6 +778,9 @@ impl Repository {
                 });
             }
         }
+        // No tree, changeset or ref can be published while blob workers run.
+        // A failed window is joined before returning; buffered work is dropped.
+        publication.finish()?;
         for path in old.keys() {
             if !files.contains_key(path) {
                 changes.push(Change {

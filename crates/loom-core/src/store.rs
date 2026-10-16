@@ -7,6 +7,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NONCE: AtomicU64 = AtomicU64::new(0);
 
+pub(crate) const MAX_PUBLICATION_OBJECTS: usize = 128;
+pub(crate) const MAX_PUBLICATION_BYTES: usize = 8 * 1024 * 1024;
+
 pub struct FilesystemObjectBackend {
     dir: PathBuf,
 }
@@ -236,6 +239,9 @@ impl FilesystemObjectBackend {
 // The first real provider implementation of the pluggable object contract.
 // Keep canonical envelope validation at the backend boundary, not at callers.
 impl crate::storage_backend::ObjectBackend for FilesystemObjectBackend {
+    fn max_concurrent_writes(&self) -> usize {
+        4
+    }
     fn open_read_session(
         &self,
     ) -> Result<Option<std::sync::Arc<dyn crate::storage_backend::ObjectReadSession>>> {
@@ -387,13 +393,27 @@ impl ObjectStore {
     pub fn put(&self, kind: u8, payload: &[u8]) -> Result<ObjectId> {
         let bytes = encode_object(kind, payload)?;
         let id = object_id(&bytes);
-        self.backend.put_if_absent(id, &bytes)?;
+        self.publish_canonical(id, &bytes)?;
+        Ok(id)
+    }
+
+    fn publish_canonical(&self, id: ObjectId, bytes: &[u8]) -> Result<()> {
+        self.backend.put_if_absent(id, bytes)?;
         if self.get(id)? != bytes {
             return Err(Error::Invalid(format!(
                 "object backend failed publication verification: {id}"
             )));
         }
-        Ok(id)
+        Ok(())
+    }
+
+    pub(crate) fn publisher(&self) -> ObjectPublisher<'_> {
+        ObjectPublisher {
+            store: self,
+            objects: Vec::new(),
+            bytes: 0,
+            workers: None,
+        }
     }
 
     pub fn ids(&self) -> Result<Vec<ObjectId>> {
@@ -484,11 +504,255 @@ impl ObjectStore {
     }
 }
 
+/// Explicit finish: dropping a failed operation never publishes buffered data.
+/// Only this window is bounded; worktree input and backend readback buffers are
+/// additional. A single oversized existing-format object runs serially.
+pub(crate) struct ObjectPublisher<'a> {
+    store: &'a ObjectStore,
+    objects: Vec<(ObjectId, Vec<u8>)>,
+    bytes: usize,
+    workers: Option<usize>,
+}
+impl ObjectPublisher<'_> {
+    pub fn push(&mut self, id: ObjectId, data: Vec<u8>) -> Result<()> {
+        // Validate before flushing even the previous window. Later I/O can
+        // only see these sealed canonical buffers through shared references.
+        if object_id(&data) != id {
+            return Err(Error::Invalid("publication object hash mismatch".into()));
+        }
+        decode_object(&data)?;
+        if self.objects.len() == MAX_PUBLICATION_OBJECTS
+            || self.bytes.saturating_add(data.len()) > MAX_PUBLICATION_BYTES
+        {
+            self.flush()?;
+        }
+        self.bytes += data.len();
+        self.objects.push((id, data));
+        if self.bytes > MAX_PUBLICATION_BYTES {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        let mut unique = std::collections::BTreeMap::new();
+        for (id, data) in &self.objects {
+            if let Some(prior) = unique.insert(*id, data) {
+                if prior != data {
+                    return Err(Error::Invalid("publication object collision".into()));
+                }
+            }
+        }
+        let work: Vec<_> = unique.into_iter().collect();
+        let workers = if work.len() >= 32 {
+            *self.workers.get_or_insert_with(|| {
+                let hint = self.store.backend.max_concurrent_writes().clamp(1, 8);
+                if hint > 1 {
+                    hint.min(std::thread::available_parallelism().map_or(1, usize::from))
+                } else {
+                    1
+                }
+            })
+        } else {
+            1
+        };
+        crate::workers::parallel_map(&work, workers, &|(id, data)| {
+            self.store.publish_canonical(*id, data)
+        })?;
+        self.objects.clear();
+        self.bytes = 0;
+        Ok(())
+    }
+
+    pub fn finish(mut self) -> Result<()> {
+        self.flush()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::format::BLOB;
     use std::sync::Arc;
+
+    #[derive(Default)]
+    struct Recording {
+        values: std::sync::Mutex<std::collections::HashMap<ObjectId, Vec<u8>>>,
+        puts: std::sync::atomic::AtomicUsize,
+        corrupt: std::sync::atomic::AtomicBool,
+        threads: std::sync::Mutex<std::collections::HashSet<std::thread::ThreadId>>,
+    }
+    impl crate::storage_backend::ObjectBackend for Recording {
+        fn capabilities(&self) -> crate::storage_backend::StoreCapabilities {
+            crate::storage_backend::StoreCapabilities {
+                durable_writes: true,
+                conditional_create: true,
+                streaming_reads: false,
+                streaming_writes: false,
+                list_objects: false,
+            }
+        }
+        fn get(&self, id: ObjectId) -> Result<Vec<u8>> {
+            if self.corrupt.load(Ordering::SeqCst) {
+                return encode_object(BLOB, b"wrong readback");
+            }
+            self.values
+                .lock()
+                .unwrap()
+                .get(&id)
+                .cloned()
+                .ok_or_else(|| Error::Io(std::io::Error::from(std::io::ErrorKind::NotFound)))
+        }
+        fn put_if_absent(&self, id: ObjectId, bytes: &[u8]) -> Result<()> {
+            self.threads
+                .lock()
+                .unwrap()
+                .insert(std::thread::current().id());
+            self.puts.fetch_add(1, Ordering::SeqCst);
+            self.values
+                .lock()
+                .unwrap()
+                .entry(id)
+                .or_insert_with(|| bytes.to_vec());
+            Ok(())
+        }
+        fn exists(&self, id: ObjectId) -> Result<bool> {
+            Ok(self.values.lock().unwrap().contains_key(&id))
+        }
+    }
+
+    #[test]
+    fn publication_windows_bound_memory_deduplicate_and_require_explicit_finish() {
+        let backend = Arc::new(Recording::default());
+        let store = ObjectStore::with_backend(backend.clone()).unwrap();
+        let mut publication = store.publisher();
+        for n in 0..MAX_PUBLICATION_OBJECTS {
+            let bytes = encode_object(BLOB, format!("unique {n}").as_bytes()).unwrap();
+            publication.push(object_id(&bytes), bytes).unwrap();
+        }
+        assert_eq!(backend.puts.load(Ordering::SeqCst), 0);
+        let extra = encode_object(BLOB, b"deferred final object").unwrap();
+        publication.push(object_id(&extra), extra).unwrap();
+        assert_eq!(backend.puts.load(Ordering::SeqCst), MAX_PUBLICATION_OBJECTS);
+        drop(publication);
+        assert_eq!(backend.puts.load(Ordering::SeqCst), MAX_PUBLICATION_OBJECTS);
+
+        let mut publication = store.publisher();
+        for _ in 0..64 {
+            let bytes = encode_object(BLOB, b"shared blob").unwrap();
+            publication.push(object_id(&bytes), bytes).unwrap();
+        }
+        publication.finish().unwrap();
+        assert_eq!(
+            backend.puts.load(Ordering::SeqCst),
+            MAX_PUBLICATION_OBJECTS + 1
+        );
+
+        let mut publication = store.publisher();
+        for n in 0..2 {
+            let bytes = encode_object(BLOB, &vec![n; MAX_PUBLICATION_BYTES / 2]).unwrap();
+            publication.push(object_id(&bytes), bytes).unwrap();
+            assert!(publication.bytes <= MAX_PUBLICATION_BYTES);
+        }
+        assert_eq!(
+            backend.puts.load(Ordering::SeqCst),
+            MAX_PUBLICATION_OBJECTS + 2
+        );
+        publication.finish().unwrap();
+        let bytes = encode_object(BLOB, &vec![7; MAX_PUBLICATION_BYTES + 1]).unwrap();
+        let mut publication = store.publisher();
+        publication.push(object_id(&bytes), bytes).unwrap();
+        assert!(publication.objects.is_empty());
+        assert_eq!(
+            backend.puts.load(Ordering::SeqCst),
+            MAX_PUBLICATION_OBJECTS + 4
+        );
+        assert_eq!(backend.threads.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn publication_clamps_provider_hint_and_reuses_cpu_discovery() {
+        use crate::storage_backend::{ObjectBackend, StoreCapabilities};
+        use std::sync::{atomic::AtomicUsize, Barrier};
+        struct Parallel {
+            inner: Recording,
+            active: AtomicUsize,
+            peak: AtomicUsize,
+            calls: AtomicUsize,
+            hints: AtomicUsize,
+            barrier: Barrier,
+            workers: usize,
+        }
+        impl ObjectBackend for Parallel {
+            fn capabilities(&self) -> StoreCapabilities {
+                self.inner.capabilities()
+            }
+            fn get(&self, id: ObjectId) -> Result<Vec<u8>> {
+                self.inner.get(id)
+            }
+            fn exists(&self, id: ObjectId) -> Result<bool> {
+                self.inner.exists(id)
+            }
+            fn max_concurrent_writes(&self) -> usize {
+                self.hints.fetch_add(1, Ordering::SeqCst);
+                usize::MAX
+            }
+            fn put_if_absent(&self, id: ObjectId, bytes: &[u8]) -> Result<()> {
+                let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+                self.peak.fetch_max(active, Ordering::SeqCst);
+                if self.calls.fetch_add(1, Ordering::SeqCst) < self.workers {
+                    self.barrier.wait();
+                }
+                let result = self.inner.put_if_absent(id, bytes);
+                self.active.fetch_sub(1, Ordering::SeqCst);
+                result
+            }
+        }
+        let workers = std::thread::available_parallelism()
+            .map_or(1, usize::from)
+            .min(8);
+        let backend = Arc::new(Parallel {
+            inner: Recording::default(),
+            active: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+            calls: AtomicUsize::new(0),
+            hints: AtomicUsize::new(0),
+            barrier: Barrier::new(workers),
+            workers,
+        });
+        let store = ObjectStore::with_backend(backend.clone()).unwrap();
+        let mut publication = store.publisher();
+        for n in 0..MAX_PUBLICATION_OBJECTS * 2 {
+            let bytes = encode_object(BLOB, n.to_string().as_bytes()).unwrap();
+            publication.push(object_id(&bytes), bytes).unwrap();
+        }
+        publication.finish().unwrap();
+        assert_eq!(backend.active.load(Ordering::SeqCst), 0);
+        assert_eq!(backend.peak.load(Ordering::SeqCst), workers);
+        assert_eq!(backend.hints.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn publication_rejects_invalid_input_before_io_and_verifies_live_readback() {
+        let backend = Arc::new(Recording::default());
+        let store = ObjectStore::with_backend(backend.clone()).unwrap();
+        let valid = encode_object(BLOB, b"valid").unwrap();
+        let mut publication = store.publisher();
+        publication.push(object_id(&valid), valid).unwrap();
+        assert!(publication
+            .push(ObjectId([0; 32]), b"wrong hash".to_vec())
+            .is_err());
+        let malformed = b"not an envelope".to_vec();
+        assert!(publication.push(object_id(&malformed), malformed).is_err());
+        drop(publication);
+        assert_eq!(backend.puts.load(Ordering::SeqCst), 0);
+
+        backend.corrupt.store(true, Ordering::SeqCst);
+        let bytes = encode_object(BLOB, b"must read back exactly").unwrap();
+        let mut publication = store.publisher();
+        publication.push(object_id(&bytes), bytes).unwrap();
+        assert!(publication.finish().is_err());
+    }
 
     fn store() -> (tempfile::TempDir, FilesystemObjectBackend) {
         let dir = tempfile::tempdir().unwrap();

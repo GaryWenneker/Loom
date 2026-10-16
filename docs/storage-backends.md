@@ -49,6 +49,32 @@ The repository verifies every returned object hash/envelope and reads back each 
 
 Full `fsck` requires authoritative enumeration: advertise `list_objects=true` and implement `ObjectBackend::list_ids`. Providers without listing (including the current replicated provider) explicitly reject full-store `fsck`; normal commits and closure validation do not depend on listing. Existing filesystem race/power-loss limitations remain in force.
 
+## Bounded blob publication
+
+Legacy commit-all prepares changed canonical blobs in windows of at most 128
+objects and 8 MiB. A single larger valid object is flushed serially under the
+existing 64 MiB payload cap. Worktree input buffers, the current encoder buffer,
+worker verification buffers and bookkeeping are additional; this is not an RSS
+cap or a streaming worktree scan.
+
+`ObjectBackend::max_concurrent_writes` defaults to one. Filesystem providers
+suggest four; SQLite, replicas and custom providers retain the serial default
+unless explicitly implemented otherwise. The core caps workers at eight and
+available CPUs and only starts scoped workers for 32 or more distinct objects.
+CPU/cgroup discovery is reused across the windows of one operation. This bound
+is per publisher, not a global limit across independent agent workspaces.
+
+Buffers are hash/envelope validated before provider I/O. Equal IDs within a
+window share one physical publication, and ID order improves fanout locality.
+Each publication retains its normal conditional create, sync and verified live
+readback. Every worker is joined on error/panic before returning. All blob
+windows must finish before constructing the native root/changeset or publishing
+the ref. Dropping the publisher never implicitly flushes pending work. Failures
+can leave immutable orphans; the ref stays unchanged and retry is idempotent.
+
+The filesystem sync protocol is unchanged. This is not crash/power-loss
+certification, a multi-agent throughput guarantee, or a universal speed claim.
+
 ## Separate storage roles
 
 1. **Immutable objects:** canonical blobs, manifests, trees and changesets; verify hashes, support conditional create and streaming.

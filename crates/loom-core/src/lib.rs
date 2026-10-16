@@ -17,6 +17,7 @@ mod store;
 mod text_merge;
 mod tree;
 mod tree_index;
+mod workers;
 
 pub use format::{Change, ChangeKind, Changeset, ObjectId};
 pub use read_pack::ReadPackStats;
