@@ -42,19 +42,45 @@ impl SqliteObjectBackend {
         let path = checked_path(path.as_ref())?;
         let conn = Connection::open(&path)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        let mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))?;
+        // Concurrent initializers can need a journal-mode lock upgrade, which
+        // SQLite may reject without invoking its busy handler. Retry the
+        // idempotent bootstrap within one bounded deadline.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mode = loop {
+            let initialized = (|| -> rusqlite::Result<String> {
+                let current: String = conn.query_row("PRAGMA journal_mode", [], |r| r.get(0))?;
+                let mode = if current.eq_ignore_ascii_case("wal") {
+                    current
+                } else {
+                    conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?
+                };
+                conn.execute_batch(
+                    "PRAGMA synchronous=FULL;
+                     CREATE TABLE IF NOT EXISTS loom_storage_objects (
+                         oid TEXT PRIMARY KEY NOT NULL CHECK(length(oid)=64),
+                         envelope BLOB NOT NULL
+                     );",
+                )?;
+                Ok(mode)
+            })();
+            match initialized {
+                Ok(mode) => break mode,
+                Err(rusqlite::Error::SqliteFailure(error, _))
+                    if matches!(
+                        error.code,
+                        rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                    ) && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        };
         if !mode.eq_ignore_ascii_case("wal") {
             return Err(Error::Invalid(
                 "SQLite object backend requires WAL journal mode".into(),
             ));
         }
-        conn.execute_batch(
-            "PRAGMA synchronous=FULL;
-             CREATE TABLE IF NOT EXISTS loom_storage_objects (
-                 oid TEXT PRIMARY KEY NOT NULL CHECK(length(oid)=64),
-                 envelope BLOB NOT NULL
-             );",
-        )?;
         Ok(Self { path })
     }
 
@@ -153,6 +179,36 @@ mod tests {
     use super::*;
     use crate::format::{encode_object, BLOB};
     use std::sync::Arc;
+
+    #[test]
+    fn concurrent_initializers_can_open_one_new_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("objects.sqlite");
+        let barrier = Arc::new(std::sync::Barrier::new(12));
+        let workers: Vec<_> = (0..12)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let backend = SqliteObjectBackend::open(path).unwrap();
+                    let bytes = encode_object(BLOB, b"initialized together").unwrap();
+                    backend.put_if_absent(object_id(&bytes), &bytes).unwrap();
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert_eq!(
+            SqliteObjectBackend::open(path)
+                .unwrap()
+                .list_ids()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
 
     #[test]
     fn concurrent_create_is_immutable_and_survives_reopen() {
