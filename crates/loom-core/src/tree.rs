@@ -387,7 +387,11 @@ pub(crate) fn apply_changes(
                     Some(TreeEntry {
                         name: name.clone(),
                         kind: TreeEntryKind::File,
-                        executable: false,
+                        // Modifying file contents must not silently discard
+                        // the executable metadata stored in the native tree.
+                        executable: existing.as_ref().is_some_and(|entry| {
+                            entry.kind == TreeEntryKind::File && entry.executable
+                        }),
                         object: blob,
                     })
                 }
@@ -1040,6 +1044,45 @@ mod tests {
                 .object,
             original_src
         );
+    }
+
+    #[test]
+    fn modifying_native_file_preserves_executable_metadata() {
+        use crate::format::{Change, ChangeKind, BLOB};
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join(".loom");
+        fs::create_dir(&meta).unwrap();
+        fs::create_dir(meta.join("objects")).unwrap();
+        let store = crate::store::ObjectStore::new(&meta);
+        let old_blob = store.put(BLOB, b"old").unwrap();
+        let new_blob = store.put(BLOB, b"new").unwrap();
+        let root = {
+            let tree = NativeTree {
+                entries: vec![TreeEntry {
+                    name: "tool".into(),
+                    kind: TreeEntryKind::File,
+                    executable: true,
+                    object: old_blob,
+                }],
+            };
+            let envelope = tree.encode().unwrap();
+            let (_, payload) = decode_object(&envelope).unwrap();
+            store.put(TREE, payload).unwrap()
+        };
+        let change = Change {
+            kind: ChangeKind::Modify,
+            path: "tool".into(),
+            blob: Some(new_blob),
+        };
+        let updated = apply_changes(&store, root, &[change.clone()]).unwrap();
+        let entry = NativeTree::decode(&store.get(updated).unwrap()).unwrap().entries.remove(0);
+        assert!(entry.executable);
+        assert_eq!(entry.object, new_blob);
+        assert_eq!(apply_changes(&store, root, &[change]).unwrap(), updated);
+        let original = NativeTree::decode(&store.get(root).unwrap()).unwrap().entries.remove(0);
+        assert!(original.executable);
+        assert_eq!(original.object, old_blob);
     }
 
     #[test]
