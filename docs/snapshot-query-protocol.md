@@ -175,13 +175,15 @@ error. This extends protocol 1; existing `cat`/`files`/`stats` frames are unchan
 Output is buffered within each reply and always flushed before awaiting another
 request, including interactive clients that keep stdin open.
 
-Grouped reads traverse requested components by depth. Each directory object is
-loaded once per depth, sharing ancestors and identical directory DAGs even with
-zero cache. Frontier records contain input-slot indices and byte offsets into
-the already validated input strings; the 4,096-path limit bounds each frontier.
-Directory work is sorted by object ID for filesystem locality and runs serially.
-Each tree is released after routing its queries, so only one active tree, rather
-than a stack or an entire layer of large tree buffers, is needed outside the cache.
+With a nonzero cache budget, grouped reads resolve each requested parent once
+and use retained verified ancestors. With zero cache, they traverse requested
+components by depth instead: each directory object is loaded once per depth,
+sharing ancestors and identical directory DAGs without repeated storage reads.
+Frontier records contain input-slot indices and byte offsets into the already
+validated input strings; the 4,096-path limit bounds each frontier. Directory
+work is sorted by object ID for filesystem locality and runs serially. Each tree
+is released after routing its queries, so only one active tree is needed outside
+the cache, without retaining a stack or a layer of large tree buffers.
 
 Deduplicated blob work is likewise sorted by object ID. Groups of at least 32
 use scoped workers, at most eight and no more than the provider hint/available

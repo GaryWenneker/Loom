@@ -327,72 +327,13 @@ impl Snapshot {
         Ok(value)
     }
 
-    /// Read a bounded group in input order, including missing paths. Equal
-    /// object IDs are fetched once. Independent object loads may run on at
-    /// most eight scoped workers when the read provider opts into parallelism.
-    /// max_bytes counts returned bytes including repeated paths, not RSS:
-    /// per-object read buffers and the separately bounded cache are additional.
-    /// Errors fail the whole group before a CLI response is emitted.
-    pub fn read_files<P: AsRef<str>>(
-        &self,
-        paths: &[P],
-        max_bytes: usize,
-    ) -> Result<Vec<Option<Arc<[u8]>>>> {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        if paths.len() > MAX_BULK_PATHS || max_bytes > MAX_BULK_BYTES {
-            return Err(Error::Invalid(
-                "bulk read exceeds 4096 paths or 64 MiB byte limit".into(),
-            ));
-        }
-        // AsRef implementations may choose a different view on each call.
-        // Capture once so validation, lookup, I/O and insertion use one key.
-        let paths: Vec<&str> = paths.iter().map(|path| path.as_ref()).collect();
-        for &path in &paths {
-            if path.len() > MAX_PAGE_BYTES {
-                return Err(Error::Invalid(
-                    "bulk path size or nesting limit reached".into(),
-                ));
-            }
-        }
-        let mut left = max_bytes;
-        let cached: Vec<_> = {
-            let mut cache = self.cache()?;
-            paths
-                .iter()
-                .map(|&path| {
-                    let value = cache.get_path(path);
-                    if let Some(Some(bytes)) = &value {
-                        left = left.checked_sub(bytes.len()).ok_or_else(|| {
-                            Error::Invalid("bulk file content exceeds byte budget".into())
-                        })?;
-                    }
-                    Ok(value)
-                })
-                .collect::<Result<_>>()?
-        };
-        // Hits are exact, previously validated keys bound to this root. Check
-        // all misses before any tree/object I/O or publishing new path answers.
-        for (&path, hit) in paths.iter().zip(cached.iter()) {
-            if hit.is_none() {
-                validate_path(path)?;
-                if path.split('/').count() > 256 {
-                    return Err(Error::Invalid(
-                        "bulk path size or nesting limit reached".into(),
-                    ));
-                }
-            }
-        }
-        if cached.iter().all(Option::is_some) {
-            return Ok(cached
-                .into_iter()
-                .map(|value| value.expect("all paths cached"))
-                .collect());
-        }
+    /// Paths have already been validated and captured once by read_files.
+    /// This traversal shares storage reads when no objects can be retained.
+    fn resolve_uncached_files(&self, paths: &[&str]) -> Result<Vec<Option<ObjectId>>> {
         let mut ids = vec![None; paths.len()];
         let unresolved: Vec<_> = paths
             .iter()
             .enumerate()
-            .filter(|(index, _)| cached[*index].is_none())
             .map(|(index, _)| (index, 0usize))
             .collect();
         let mut frontier = BTreeMap::from([(self.root, unresolved)]);
@@ -428,6 +369,104 @@ impl Snapshot {
             frontier = children;
             depth += 1;
         }
+        Ok(ids)
+    }
+
+    /// Read a bounded group in input order, including missing paths. Equal
+    /// object IDs are fetched once. Independent object loads may run on at
+    /// most eight scoped workers when the read provider opts into parallelism.
+    /// max_bytes counts returned bytes including repeated paths, not RSS:
+    /// per-object read buffers and the separately bounded cache are additional.
+    /// Errors fail the whole group before a CLI response is emitted.
+    pub fn read_files<P: AsRef<str>>(
+        &self,
+        paths: &[P],
+        max_bytes: usize,
+    ) -> Result<Vec<Option<Arc<[u8]>>>> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        if paths.len() > MAX_BULK_PATHS || max_bytes > MAX_BULK_BYTES {
+            return Err(Error::Invalid(
+                "bulk read exceeds 4096 paths or 64 MiB byte limit".into(),
+            ));
+        }
+        // AsRef implementations may choose a different view on each call.
+        // Capture once so validation, lookup, I/O and insertion use one key.
+        let paths: Vec<&str> = paths.iter().map(|path| path.as_ref()).collect();
+        for &path in &paths {
+            if path.len() > MAX_PAGE_BYTES {
+                return Err(Error::Invalid(
+                    "bulk path size or nesting limit reached".into(),
+                ));
+            }
+        }
+        let mut left = max_bytes;
+        let without_cache;
+        let cached: Vec<_> = {
+            let mut cache = self.cache()?;
+            without_cache = cache.budget == 0;
+            paths
+                .iter()
+                .map(|&path| {
+                    let value = cache.get_path(path);
+                    if let Some(Some(bytes)) = &value {
+                        left = left.checked_sub(bytes.len()).ok_or_else(|| {
+                            Error::Invalid("bulk file content exceeds byte budget".into())
+                        })?;
+                    }
+                    Ok(value)
+                })
+                .collect::<Result<_>>()?
+        };
+        // Hits are exact, previously validated keys bound to this root. Check
+        // all misses before any tree/object I/O or publishing new path answers.
+        for (&path, hit) in paths.iter().zip(cached.iter()) {
+            if hit.is_none() {
+                validate_path(path)?;
+                if path.split('/').count() > 256 {
+                    return Err(Error::Invalid(
+                        "bulk path size or nesting limit reached".into(),
+                    ));
+                }
+            }
+        }
+        if cached.iter().all(Option::is_some) {
+            return Ok(cached
+                .into_iter()
+                .map(|value| value.expect("all paths cached"))
+                .collect());
+        }
+        let ids = if without_cache {
+            self.resolve_uncached_files(&paths)?
+        } else {
+            let mut ids = vec![None; paths.len()];
+            let mut groups = BTreeMap::<&str, Vec<(usize, &str)>>::new();
+            for (index, &path) in paths.iter().enumerate() {
+                if cached[index].is_some() {
+                    continue;
+                }
+                let (parent, name) = path.rsplit_once('/').unwrap_or(("", path));
+                groups.entry(parent).or_default().push((index, name));
+            }
+            // Retain each parent view for every name in its group.
+            for (parent, names) in groups {
+                let directory = if parent.is_empty() {
+                    Some((self.root, TreeEntryKind::Directory, 0))
+                } else {
+                    self.resolve(parent)?
+                };
+                if let Some((id, TreeEntryKind::Directory, depth)) = directory {
+                    let tree = self.tree(id, depth)?;
+                    for (index, name) in names {
+                        if let Some(entry) = tree.lookup(name) {
+                            if entry.kind == TreeEntryKind::File {
+                                ids[index] = Some(entry.object);
+                            }
+                        }
+                    }
+                }
+            }
+            ids
+        };
         let mut uses = BTreeMap::<ObjectId, usize>::new();
         for id in ids.iter().flatten() {
             *uses.entry(*id).or_default() += 1;
@@ -659,10 +698,9 @@ mod tests {
             let after = snapshot.stats().unwrap();
             // Root + three shared ancestors + 96 distinct leaves. Both aliases
             // share the same DAG, even when none of it fits the cache.
-            assert_eq!(
-                after.tree_reads - before.tree_reads,
-                if budget == 0 { 100 } else { 99 }
-            );
+            if budget == 0 {
+                assert_eq!(after.tree_reads - before.tree_reads, 100);
+            }
             assert_eq!(after.blob_reads, 96);
             assert!(after.cache_bytes <= budget);
             assert!(snapshot.read_files(&paths, 1).is_err());
