@@ -2,6 +2,27 @@
 
 This directory contains a **reproducible benchmark**, not Scion-level performance claims. It works with the Loom binary and Python 3.9+.
 
+## Explicit read-pack comparison
+
+```sh
+python3 benchmarks/compare_git.py --loom /absolute/new-loom \
+  --baseline-loom /absolute/previous-loom --baseline-multi --batch --multi --read-pack \
+  --layout sharded --directories 256 --files 1000 10000 100000 \
+  --repeat 7 --requests 1000 --output read-pack-sharded.json
+```
+
+The previous binary initializes the same fixture; `--baseline-multi` requires a
+baseline with `cat_many` support (main #79 or later). Compare identical native
+groups in `baseline_multi`, `loom_multi` and `loom_pack_multi`, and the existing
+line interface separately. The pack is built once; build milliseconds and file
+bytes are reported outside query timing. All live objects remain. Each timed
+query starts a fresh process and loads/checks the index again. Git packing and
+commit-graph preparation are likewise outside its query timing. Schema 3 retains
+unpacked results and all single-command/status controls, including regressions.
+`unpacked_over_packed_p50` compares the same new binary with/without the explicit
+pack. Repeat with `--layout nested --directories 1024 --files 10000` to check
+deeper hierarchies. OS caches are warm; RSS/CPU/network/concurrency remain unmeasured.
+
 ## Build and execute
 
 ```sh

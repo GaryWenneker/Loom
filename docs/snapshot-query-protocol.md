@@ -1,6 +1,6 @@
 # Revision-pinned query sessions
 
-`loom query --batch @CHANGESET_ID [--cache-bytes N]` serves repeated immutable
+`loom query --batch @CHANGESET_ID [--cache-bytes N] [--read-pack FILE]` serves repeated immutable
 reads over stdin/stdout. It opens existing metadata read-only, takes no workspace
 lock, does not recover a pending checkout/merge, and cannot update refs or staging.
 Independent agents can read while another process owns the workspace lock.
@@ -67,10 +67,56 @@ Other providers can opt into the separate `ObjectReadSession` capability, with a
 live-read fallback. The core facade validates envelope/hash even for custom
 readers. These handles cannot acknowledge writes or verify live durability.
 Already verified content may remain readable after external corruption/deletion;
-a retained SQLite handle may also outlive a storage pathname. New sessions,
-publication, recovery and `fsck` continue to use live provider checks. A query
+a retained SQLite handle may also outlive a storage pathname. Sessions without
+an explicit read pack, publication, recovery and `fsck` use live provider checks. A query
 validates requested objects, not every historical object or every replica.
 Strict normal repository discovery still rejects incomplete external history.
+
+## Optional immutable read packs
+
+```sh
+loom read-pack @CHANGESET_ID .loom/reads.pack
+loom query --batch @CHANGESET_ID --read-pack .loom/reads.pack
+```
+
+The preparation command captures that revision's native tree/blob closure in one
+uncompressed file. It checks live objects and their expected types, deduplicates
+IDs, then publishes a complete file with atomic create-if-absent. An existing
+destination is never overwritten. Use a new filename when rebuilding. A failed
+build removes its temporary file; process termination can leave an unused
+`.loom-read-pack-*.tmp` alongside the destination. Queries never discover those
+files. Preparation uses normal repository discovery/recovery and can materialize
+a missing revision tree. Run it explicitly, outside latency-sensitive reads.
+
+Only `--read-pack FILE` opts a query into the pack. The read-only opener still
+checks the live revision changeset and metadata/provider binding. Pack misses
+fall back to the normal read session, so a pack can accelerate later revisions
+too. A missing or malformed explicitly selected pack fails the opener; rebuild
+it from live storage or omit the flag. Corrupt present objects fail their request
+instead of silently falling back. Every fetched envelope is hash/type/length
+checked; the index checksum alone never authenticates content.
+
+Packs are disposable acceleration files. They are **not backups**, do not
+replace loose/SQLite objects, and cannot satisfy fsck, recovery, ref publication,
+replica closure or live-existence checks. Canonical object bytes/IDs and database
+schemas stay unchanged; old binaries can still use the repository. A retained
+pack handle may outlive its pathname, just like other retained immutable readers.
+No remote authorization boundary is introduced.
+
+Each file is capped at 256 MiB and 1,000,000 indexed objects. Its full sorted
+index is loaded and checked at session startup: up to 48,000,000 bytes retained
+in one buffer, without a second decoded-index allocation. `stats` exposes `read_pack_objects`
+and `read_pack_index_bytes` separately from the snapshot cache budget. Pack data
+is read on demand, not all retained in memory. An object envelope buffer, copied
+payload, owned tree parsing during preparation and OS page cache are additional;
+these caps are not a process RSS limit. The pack session requests one object
+worker. Unix uses positioned reads; Windows serializes seek/read pairs.
+
+The disposable format is documented in [read-pack format](read-pack-format.md).
+Unix rejects leaf symlinks, non-regular files and persistent extra hard links.
+Windows checks for pre-existing symlinks. Parent-path substitution races retain
+the existing filesystem contract limits. Replacing or editing a pack concurrently
+may cause a read error; content verification still prevents incorrect bytes.
 
 ## Compatibility and rollback
 

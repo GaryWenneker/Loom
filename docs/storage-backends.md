@@ -126,3 +126,12 @@ On Unix they retain a bounded directory-handle cache and use no-follow relative
 opens; Windows retains the verified filesystem path. All returned envelopes are
 hash/type checked. Retained handles/cached bytes never establish live durability.
 See [framing and resource limits](snapshot-query-protocol.md#native-grouped-file-reads).
+
+`loom read-pack @REV FILE` can separately prepare an optional local acceleration
+file for any configured provider. Only `query --read-pack FILE` uses it. It is
+not an `ObjectBackend`, does not advertise durability, and cannot acknowledge
+publication or make missing live objects pass closure/fsck. The pack stores
+unmodified canonical tree/blob envelopes and verifies each fetched object.
+New objects fall back to the configured read session. Retained index bytes are
+reported separately from the object cache; pack preparation and duplicated disk
+space are explicit costs. See the [read-pack contract](snapshot-query-protocol.md#optional-immutable-read-packs).

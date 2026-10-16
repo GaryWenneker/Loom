@@ -6,6 +6,7 @@ mod filesystem_read;
 mod format;
 mod ignore;
 pub mod memory_storage;
+mod read_pack;
 pub mod replicated_storage;
 mod repository;
 mod snapshot;
@@ -18,6 +19,7 @@ mod tree;
 mod tree_index;
 
 pub use format::{Change, ChangeKind, Changeset, ObjectId};
+pub use read_pack::ReadPackStats;
 pub use repository::{FileDiff, Repository, StatusEntry, StatusKind};
 pub use snapshot::{
     Snapshot, SnapshotFiles, SnapshotStats, DEFAULT_BULK_BYTES, DEFAULT_SNAPSHOT_CACHE_BYTES,

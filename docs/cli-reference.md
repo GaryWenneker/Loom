@@ -5,6 +5,7 @@
 | Command | Current behavior |
 |---|---|
 | `loom init [path]` | Initialize a local repository |
+| `loom read-pack @CHANGESET_ID FILE` | Explicitly prepare an immutable read accelerator; never overwrite FILE or remove live objects |
 | `loom status` | Show current branch, staged and remaining changes |
 | `loom add PATH [PATH ...]` | Capture each selected file as an immutable staged snapshot |
 | `loom unstage PATH [PATH ...]` | Unstage files without deleting worktree contents |
@@ -52,7 +53,7 @@ Initialize with `loom init [path] --object-dir DIRECTORY`, or set `LOOM_OBJECT_D
 
 ## Persistent immutable queries
 
-`loom query --batch @CHANGESET_ID [--cache-bytes N]` reads JSON-line requests
+`loom query --batch @CHANGESET_ID [--cache-bytes N] [--read-pack FILE]` reads JSON-line requests
 and emits framed binary `cat` replies or JSON `files`/`stats` replies. It opens
 existing storage read-only without acquiring the workspace lock. See the
 [protocol and integrity contract](snapshot-query-protocol.md) before implementing

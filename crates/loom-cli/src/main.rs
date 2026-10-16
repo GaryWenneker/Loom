@@ -3,7 +3,7 @@ use loom_core::{FilesystemObjectBackend, ObjectId, Repository, StatusKind};
 use std::{env, path::Path, process};
 
 fn usage() {
-    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path] [--object-dir DIRECTORY | --object-db FILE]\n  loom status\n  loom add PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom merge-bases LEFT_BRANCH RIGHT_BRANCH\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom cat @CHANGESET_ID PATH\n  loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]\n  loom tree @CHANGESET_ID\n  loom tree ls @TREE_ID [DIR]\n  loom tree cat @TREE_ID PATH\n  loom fsck\n  loom git -- GIT_ARGS...\n  loom query --batch @CHANGESET_ID [--cache-bytes N]\n\nExternal object storage: set LOOM_OBJECT_DIR or LOOM_OBJECT_DB for every command.\n");
+    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path] [--object-dir DIRECTORY | --object-db FILE]\n  loom status\n  loom add PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom merge-bases LEFT_BRANCH RIGHT_BRANCH\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom cat @CHANGESET_ID PATH\n  loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]\n  loom tree @CHANGESET_ID\n  loom tree ls @TREE_ID [DIR]\n  loom tree cat @TREE_ID PATH\n  loom fsck\n  loom git -- GIT_ARGS...\n  loom query --batch @CHANGESET_ID [--cache-bytes N] [--read-pack FILE]\n  loom read-pack @CHANGESET_ID FILE\n\nExternal object storage: set LOOM_OBJECT_DIR or LOOM_OBJECT_DB for every command.\n");
 }
 
 fn print_diff(change: &loom_core::FileDiff) {
@@ -152,8 +152,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if cmd == "query" {
-        if args.len() != 3 && args.len() != 5 {
-            return Err("usage: loom query --batch @CHANGESET_ID [--cache-bytes N]".into());
+        if args.len() < 3 {
+            return Err(
+                "usage: loom query --batch @CHANGESET_ID [--cache-bytes N] [--read-pack FILE]"
+                    .into(),
+            );
         }
         if args[1] != "--batch" {
             return Err("query requires --batch".into());
@@ -163,20 +166,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .strip_prefix('@')
                 .ok_or("query requires an immutable @CHANGESET_ID")?,
         )?;
-        let budget = if args.len() == 5 {
-            if args[3] != "--cache-bytes" {
-                return Err("expected --cache-bytes N".into());
+        let mut budget = None;
+        let mut read_pack = None;
+        let mut options = args[3..].iter();
+        while let Some(option) = options.next() {
+            let value = options.next().ok_or("query option requires a value")?;
+            match option.as_str() {
+                "--cache-bytes" if budget.is_none() => budget = Some(value.parse::<usize>()?),
+                "--read-pack" if read_pack.is_none() => read_pack = Some(Path::new(value)),
+                _ => return Err("unknown or duplicate query option".into()),
             }
-            args[4].parse::<usize>()?
-        } else {
-            loom_core::DEFAULT_SNAPSHOT_CACHE_BYTES
-        };
+        }
         let backend = object_backend(
             env::var_os("LOOM_OBJECT_DIR"),
             env::var_os("LOOM_OBJECT_DB"),
             true,
         )?;
-        let snapshot = Repository::query_snapshot(env::current_dir()?, revision, backend, budget)?;
+        let snapshot = Repository::query_snapshot_with_read_pack(
+            env::current_dir()?,
+            revision,
+            backend,
+            budget.unwrap_or(loom_core::DEFAULT_SNAPSHOT_CACHE_BYTES),
+            read_pack,
+        )?;
         batch::serve(
             &snapshot,
             std::io::stdin().lock(),
@@ -194,6 +206,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Repository::discover(env::current_dir()?)?
     };
     match cmd {
+        "read-pack" => {
+            if args.len() != 3 {
+                return Err("usage: loom read-pack @CHANGESET_ID FILE".into());
+            }
+            let revision = ObjectId::parse(
+                args[1]
+                    .strip_prefix('@')
+                    .ok_or("read-pack requires an immutable @CHANGESET_ID")?,
+            )?;
+            let stats = repo.write_read_pack(revision, &args[2])?;
+            println!(
+                "Packed {} objects into {} bytes",
+                stats.objects, stats.bytes
+            );
+        }
         "status" => {
             println!("On branch {}", repo.current_branch()?);
             let staged = repo.staged_status()?;

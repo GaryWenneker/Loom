@@ -60,6 +60,9 @@ pub struct SnapshotStats {
     pub cache_hits: u64,
     pub cache_bytes: usize,
     pub cache_entries: usize,
+    /// Retained read-pack index allocation, separate from cache_bytes/budget.
+    pub read_pack_index_bytes: usize,
+    pub read_pack_objects: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -128,19 +131,38 @@ pub struct Snapshot {
 }
 impl Snapshot {
     pub(crate) fn new(root: ObjectId, store: ObjectStore, budget: usize) -> Result<Self> {
+        Self::with_read_pack(root, store, budget, None)
+    }
+    pub(crate) fn with_read_pack(
+        root: ObjectId,
+        store: ObjectStore,
+        budget: usize,
+        pack: Option<&std::path::Path>,
+    ) -> Result<Self> {
         if budget > MAX_CACHE_BYTES {
             return Err(Error::Invalid(
                 "snapshot cache exceeds 256 MiB limit".into(),
             ));
         }
+        let live = store.read_session()?;
+        let mut stats = SnapshotStats::default();
+        let reader: Arc<dyn crate::storage_backend::ObjectReadSession> = match pack {
+            Some(path) => {
+                let pack = crate::read_pack::ReadPack::open(path)?;
+                stats.read_pack_index_bytes = pack.index_bytes();
+                stats.read_pack_objects = pack.objects();
+                Arc::new(crate::read_pack::PackedSession { pack, live })
+            }
+            None => live,
+        };
         let snapshot = Self {
             root,
-            reader: store.read_session()?,
+            reader,
             cache: Mutex::new(Cache {
                 entries: HashMap::new(),
                 order: VecDeque::new(),
                 budget,
-                stats: SnapshotStats::default(),
+                stats,
             }),
         };
         snapshot.tree(root, 0)?;

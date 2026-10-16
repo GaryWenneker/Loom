@@ -61,6 +61,82 @@ fn header(output: &[u8], offset: &mut usize) -> Value {
     *offset = end + 1;
     value
 }
+
+#[test]
+fn explicit_read_pack_keeps_binary_protocol_and_rejects_duplicate_options() {
+    let (dir, revision) = setup();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_loom"))
+            .current_dir(dir.path())
+            .env_remove("LOOM_OBJECT_DIR")
+            .env_remove("LOOM_OBJECT_DB")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let packed = run(&["read-pack", &format!("@{revision}"), ".loom/read.pack"]);
+    assert!(
+        packed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&packed.stderr)
+    );
+    let before = fs::read(dir.path().join(".loom/read.pack")).unwrap();
+    assert!(
+        !run(&["read-pack", &format!("@{revision}"), ".loom/read.pack"])
+            .status
+            .success()
+    );
+    assert_eq!(
+        fs::read(dir.path().join(".loom/read.pack")).unwrap(),
+        before
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_loom"))
+        .current_dir(dir.path())
+        .env_remove("LOOM_OBJECT_DIR")
+        .env_remove("LOOM_OBJECT_DB")
+        .args([
+            "query",
+            "--batch",
+            &format!("@{revision}"),
+            "--read-pack",
+            ".loom/read.pack",
+            "--cache-bytes",
+            "0",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"{\"id\":1,\"op\":\"cat_many\",\"paths\":[\"binary\",\"missing\",\"plain\"]}\n{\"id\":2,\"op\":\"stats\"}\n").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let mut offset = 0;
+    let bulk = header(&output.stdout, &mut offset);
+    assert_eq!(bulk["size"], 10);
+    assert_eq!(bulk["entries"], json!([{"size":5},null,{"size":5}]));
+    assert_eq!(&output.stdout[offset..offset + 11], b"\0\xff\n\r\0hello\n");
+    offset += 11;
+    let stats = header(&output.stdout, &mut offset);
+    assert_eq!(stats["cache_bytes"], 0);
+    assert!(stats["read_pack_index_bytes"].as_u64().unwrap() > 0);
+    assert_eq!(offset, output.stdout.len());
+    for args in [
+        vec![
+            "--read-pack",
+            ".loom/read.pack",
+            "--read-pack",
+            ".loom/read.pack",
+        ],
+        vec!["--cache-bytes", "0", "--cache-bytes", "0"],
+        vec!["--read-pack"],
+    ] {
+        let mut full = vec!["query", "--batch"];
+        let revision_arg = format!("@{revision}");
+        full.push(&revision_arg);
+        full.extend(args);
+        assert!(!run(&full).status.success());
+    }
+}
 #[test]
 fn batch_is_binary_framed_and_continues_after_request_errors() {
     let (dir, revision) = setup();
