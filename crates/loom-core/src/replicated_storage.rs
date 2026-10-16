@@ -86,7 +86,19 @@ impl ObjectBackend for ReplicatedObjectBackend {
         // Existence on only one replica is insufficient to promise a durable
         // fully replicated object closure for later ref publication.
         for replica in &self.replicas {
-            if !replica.exists(id)? { return Ok(false); }
+            // Verify the actual canonical bytes on every replica. An
+            // existence bit alone cannot establish durable object closure.
+            let bytes = match replica.get(id) {
+                Ok(bytes) => bytes,
+                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(false);
+                }
+                Err(error) => return Err(error),
+            };
+            if object_id(&bytes) != id {
+                return Err(Error::Invalid(format!("replica returned invalid hash for {id}")));
+            }
+            decode_object(&bytes)?;
         }
         Ok(true)
     }
@@ -141,6 +153,29 @@ mod tests {
         store.put_if_absent(id, &bytes).unwrap();
         assert!(store.exists(id).unwrap());
         assert_eq!(store.get(id).unwrap(), bytes);
+    }
+
+    #[test]
+    fn exists_rejects_corrupt_secondary_replica() {
+        let first = Arc::new(FakeDurable::default());
+        let second = Arc::new(FakeDurable::default());
+        let bytes = encode_object(BLOB, b"verified").unwrap();
+        let id = object_id(&bytes);
+        first.bytes.lock().unwrap().insert(id, bytes.clone());
+        second.bytes.lock().unwrap().insert(id, b"corrupt".to_vec());
+        let store = ReplicatedObjectBackend::new(vec![first, second]).unwrap();
+        assert!(store.exists(id).is_err());
+    }
+
+    #[test]
+    fn exists_requires_every_replica_to_hold_object() {
+        let first = Arc::new(FakeDurable::default());
+        let second = Arc::new(FakeDurable::default());
+        let bytes = encode_object(BLOB, b"verified").unwrap();
+        let id = object_id(&bytes);
+        first.bytes.lock().unwrap().insert(id, bytes);
+        let store = ReplicatedObjectBackend::new(vec![first, second]).unwrap();
+        assert!(!store.exists(id).unwrap());
     }
 
     #[test]
