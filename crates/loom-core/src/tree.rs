@@ -382,6 +382,11 @@ pub(crate) fn apply_changes(
                         )));
                     }
                     if let Some(previous) = &existing {
+                        if previous.kind == TreeEntryKind::File && !child.children.is_empty() {
+                            return Err(Error::Invalid(format!(
+                                "native tree deletion beneath a file: {name}"
+                            )));
+                        }
                         if previous.kind == TreeEntryKind::Directory &&
                             apply_dir(store, Some(previous.object), child, depth + 1)?.is_some() {
                             return Err(Error::Invalid(format!(
@@ -397,16 +402,6 @@ pub(crate) fn apply_changes(
                     })
                 }
                 Some(None) => {
-                    // A file cannot contain nested paths. Reject a batch that
-                    // attempts to delete a descendant of an existing file,
-                    // rather than silently treating that deletion as a no-op.
-                    if existing.as_ref().is_some_and(|e| e.kind == TreeEntryKind::File)
-                        && !child.children.is_empty()
-                    {
-                        return Err(Error::Invalid(format!(
-                            "native tree deletion beneath a file: {name}"
-                        )));
-                    }
                     // A directory cannot be deleted as if it were a file
                     // in the v1 changeset model. A removed file can instead
                     // be replaced with a directory in the same batch.
@@ -588,6 +583,19 @@ mod tests {
             blob: None,
         }];
         assert!(apply_changes(&store, root, &changes).is_err());
+        // A replacement at the parent must not shadow a malformed deletion.
+        let mut shadowed = changes.to_vec();
+        shadowed.push(Change {
+            path: "parent".to_owned(), kind: ChangeKind::Modify, blob: Some(blob),
+        });
+        assert!(apply_changes(&store, root, &shadowed).is_err());
+        // Explicit removal of the parent permits a valid file-to-directory transition.
+        let transition = [
+            Change { path: "parent".to_owned(), kind: ChangeKind::Delete, blob: None },
+            Change { path: "parent/child".to_owned(), kind: ChangeKind::Add, blob: Some(blob) },
+        ];
+        let next = apply_changes(&store, root, &transition).unwrap();
+        assert_eq!(lookup_file(&store, next, "parent/child").unwrap(), Some(blob));
         assert_eq!(lookup_file(&store, root, "parent").unwrap(), Some(blob));
     }
 
