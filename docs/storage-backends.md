@@ -101,3 +101,13 @@ This is **target configuration syntax**, not an implemented parser. Future profi
 - Never publish a ref until its complete immutable object closure is durable in the selected authoritative object store.
 
 See issue #26. Git fallback is a separate interoperability layer, not a storage backend.
+
+## Reproduce shared-provider validation
+
+```sh
+cargo build -p loom-cli
+python3 benchmarks/shared_object_stress.py --binary target/debug/loom --backend sqlite --agents 10 --commits 10
+python3 benchmarks/shared_object_stress.py --binary target/debug/loom --backend filesystem --agents 10 --commits 10
+```
+
+The script starts isolated workspace/ref databases concurrently, all using one object provider. It verifies each acknowledged first-parent history, final snapshot and full `fsck`, then prints JSON counts and elapsed time. It does not exercise shared branch contention, a remote server, injected crashes or cloud latency. SQLite bootstrap retries journal-mode lock upgrades within a bounded deadline; this path has a synchronized twelve-initializer regression test.
