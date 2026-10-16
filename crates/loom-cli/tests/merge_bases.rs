@@ -26,7 +26,11 @@ fn command_lists_dag_best_bases_without_touching_worktree() {
     ok(root, &["init"]);
     fs::write(root.join("shared"), b"initial").unwrap();
     let initial = ok(root, &["commit", "-m", "root"]);
-    let initial = initial.trim().strip_prefix("Committed ").unwrap().to_owned();
+    let initial = initial
+        .trim()
+        .strip_prefix("Committed ")
+        .unwrap()
+        .to_owned();
     ok(root, &["branch", "create", "feature"]);
 
     ok(root, &["switch", "feature"]);
@@ -36,12 +40,18 @@ fn command_lists_dag_best_bases_without_touching_worktree() {
     fs::write(root.join("main-only"), b"main").unwrap();
     ok(root, &["commit", "-m", "main"]);
 
-    assert_eq!(ok(root, &["merge-bases", "main", "feature"]),
-               format!("{initial}\n"));
-    assert_eq!(ok(root, &["merge-bases", "feature", "main"]),
-               format!("{initial}\n"));
+    assert_eq!(
+        ok(root, &["merge-bases", "main", "feature"]),
+        format!("{initial}\n")
+    );
+    assert_eq!(
+        ok(root, &["merge-bases", "feature", "main"]),
+        format!("{initial}\n")
+    );
     assert!(!call(root, &["merge-bases", "main"]).status.success());
-    assert!(!call(root, &["merge-bases", "unknown", "main"]).status.success());
+    assert!(!call(root, &["merge-bases", "unknown", "main"])
+        .status
+        .success());
     assert_eq!(fs::read(root.join("main-only")).unwrap(), b"main");
     assert!(!root.join("feature").exists());
 

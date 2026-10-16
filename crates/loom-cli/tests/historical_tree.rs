@@ -4,20 +4,29 @@ fn call(root: &Path, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_loom"))
         .current_dir(root)
         .env("LOOM_AUTHOR", "historical-tree-test")
-        .args(args).output().unwrap()
+        .args(args)
+        .output()
+        .unwrap()
 }
 
 fn ok(root: &Path, args: &[&str]) -> Vec<u8> {
     let result = call(root, args);
-    assert!(result.status.success(),
-        "{args:?}: {}", String::from_utf8_lossy(&result.stderr));
+    assert!(
+        result.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     result.stdout
 }
 
 fn revision(root: &Path, message: &str) -> String {
     let output = ok(root, &["commit", "-m", message]);
-    let id = std::str::from_utf8(&output).unwrap()
-        .trim().strip_prefix("Committed ").unwrap().to_owned();
+    let id = std::str::from_utf8(&output)
+        .unwrap()
+        .trim()
+        .strip_prefix("Committed ")
+        .unwrap()
+        .to_owned();
     assert_eq!(id.len(), 64);
     id
 }
@@ -41,12 +50,12 @@ fn list_exact_historical_trees_without_modifying_workspace() {
     // An immutable revision remains queryable even when its files have been
     // removed from the current worktree.
     for _ in 0..2 {
-        assert_eq!(ok(root, &["files", &old_ref, "src"]),
-                   b"\"src/old.rs\"\n");
-        assert_eq!(ok(root, &["files", &new_ref, "src"]),
-                   b"\"src/new.rs\"\n");
-        assert_eq!(ok(root, &["files", &old_ref, "--null"]),
-                   b"README.md\0src/old.rs\0");
+        assert_eq!(ok(root, &["files", &old_ref, "src"]), b"\"src/old.rs\"\n");
+        assert_eq!(ok(root, &["files", &new_ref, "src"]), b"\"src/new.rs\"\n");
+        assert_eq!(
+            ok(root, &["files", &old_ref, "--null"]),
+            b"README.md\0src/old.rs\0"
+        );
     }
     assert_eq!(ok(root, &["files", "main", "src"]), b"\"src/new.rs\"\n");
     assert_eq!(fs::read(root.join("src/new.rs")).unwrap(), b"new");
@@ -64,6 +73,9 @@ fn historical_tree_null_output_handles_embedded_newlines() {
     fs::write(root.join("a\nmultiline"), b"contents").unwrap();
     let id = revision(root, "newline");
     let reference = format!("@{id}");
-    assert_eq!(ok(root, &["files", &reference, "--null"]), b"a\nmultiline\0");
+    assert_eq!(
+        ok(root, &["files", &reference, "--null"]),
+        b"a\nmultiline\0"
+    );
     assert_eq!(ok(root, &["files", &reference]), b"\"a\\nmultiline\"\n");
 }

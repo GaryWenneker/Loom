@@ -28,20 +28,28 @@ impl CloudObjectLocation {
     pub fn validate(&self) -> Result<()> {
         if self.namespace.is_empty()
             || self.namespace.len() > 255
-            || !self.namespace.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+            || !self
+                .namespace
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
         {
             return Err(Error::Invalid("invalid cloud object namespace".into()));
         }
         if self.prefix.starts_with('/')
             || self.prefix.contains('\\')
-            || self.prefix.split('/').any(|segment| segment == "." || segment == "..")
+            || self
+                .prefix
+                .split('/')
+                .any(|segment| segment == "." || segment == "..")
             || self.prefix.chars().any(char::is_control)
         {
             return Err(Error::Invalid("invalid cloud object prefix".into()));
         }
         if let Some(endpoint) = &self.endpoint {
             if self.provider != CloudProvider::S3Compatible {
-                return Err(Error::Invalid("custom endpoint requires S3-compatible provider".into()));
+                return Err(Error::Invalid(
+                    "custom endpoint requires S3-compatible provider".into(),
+                ));
             }
             if !endpoint.starts_with("https://")
                 || endpoint.contains('@')
@@ -49,11 +57,15 @@ impl CloudObjectLocation {
                 || endpoint.contains('#')
                 || endpoint.chars().any(char::is_whitespace)
             {
-                return Err(Error::Invalid("cloud endpoint must be an unambiguous HTTPS origin".into()));
+                return Err(Error::Invalid(
+                    "cloud endpoint must be an unambiguous HTTPS origin".into(),
+                ));
             }
             let origin = &endpoint["https://".len()..];
             if origin.is_empty() || origin.contains('/') || origin.starts_with(':') {
-                return Err(Error::Invalid("cloud endpoint must be an HTTPS origin without a path".into()));
+                return Err(Error::Invalid(
+                    "cloud endpoint must be an HTTPS origin without a path".into(),
+                ));
             }
         }
         Ok(())

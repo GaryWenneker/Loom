@@ -1,21 +1,23 @@
 //! Loom: an independent content-addressed version control engine.
 //! Native storage and history have no Git runtime dependency.
+pub mod cloud_storage;
 mod format;
-pub mod sqlite_ref_storage;
-pub mod sqlite_object_storage;
+mod ignore;
 pub mod memory_storage;
 pub mod replicated_storage;
-pub mod cloud_storage;
-mod ignore;
 mod repository;
-mod store;
+mod snapshot;
+pub mod sqlite_object_storage;
+pub mod sqlite_ref_storage;
 pub mod storage_backend;
+mod store;
 mod text_merge;
 mod tree;
 
-pub use store::FilesystemObjectBackend;
 pub use format::{Change, ChangeKind, Changeset, ObjectId};
 pub use repository::{FileDiff, Repository, StatusEntry, StatusKind};
+pub use snapshot::{Snapshot, SnapshotFiles, SnapshotStats, DEFAULT_SNAPSHOT_CACHE_BYTES};
+pub use store::FilesystemObjectBackend;
 pub use tree::{NativeTree, TreeEntry, TreeEntryKind};
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -39,8 +41,12 @@ impl std::fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 impl From<std::io::Error> for Error {
-    fn from(e: std::io::Error) -> Self { Self::Io(e) }
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
 }
 impl From<rusqlite::Error> for Error {
-    fn from(e: rusqlite::Error) -> Self { Self::Database(e) }
+    fn from(e: rusqlite::Error) -> Self {
+        Self::Database(e)
+    }
 }

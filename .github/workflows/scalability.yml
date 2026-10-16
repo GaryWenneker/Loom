@@ -16,9 +16,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Build Loom CLI
-        run: cargo build --release -p loom-cli
+        run: cargo build --release --locked -p loom-cli
       - name: Validate harness syntax
-        run: python3 -m py_compile benchmarks/loom_bench.py
+        run: python3 -m py_compile benchmarks/loom_bench.py benchmarks/compare_git.py
       - name: Run deterministic scaling samples
         run: |
           python3 benchmarks/loom_bench.py \
@@ -26,11 +26,22 @@ jobs:
             --files 100 1000 10000 \
             --repeat 20 \
             --output loom-scale-results.json
+      - name: Compare checked immutable queries with packed Git
+        run: |
+          python3 benchmarks/compare_git.py --loom target/release/loom --batch \
+            --files 1000 10000 100000 --repeat 5 --requests 1000 \
+            --output loom-git-compare.json
+          python3 benchmarks/compare_git.py --loom target/release/loom --batch \
+            --layout sharded --files 10000 --repeat 5 --requests 1000 \
+            --output loom-git-sharded.json
       - name: Upload raw timing evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: loom-scale-${{ github.sha }}
-          path: loom-scale-results.json
+          path: |
+            loom-scale-results.json
+            loom-git-compare.json
+            loom-git-sharded.json
           if-no-files-found: warn
           retention-days: 90

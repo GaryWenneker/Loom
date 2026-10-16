@@ -12,7 +12,9 @@ pub struct MemoryObjectBackend {
 }
 
 impl MemoryObjectBackend {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 }
 
 impl ObjectBackend for MemoryObjectBackend {
@@ -27,10 +29,16 @@ impl ObjectBackend for MemoryObjectBackend {
     }
 
     fn get(&self, id: ObjectId) -> Result<Vec<u8>> {
-        let guard = self.objects.read().map_err(|_| Error::Invalid("memory object store lock poisoned".into()))?;
-        let bytes = guard.get(&id).ok_or_else(|| Error::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound, format!("missing object {id}"),
-        )))?;
+        let guard = self
+            .objects
+            .read()
+            .map_err(|_| Error::Invalid("memory object store lock poisoned".into()))?;
+        let bytes = guard.get(&id).ok_or_else(|| {
+            Error::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("missing object {id}"),
+            ))
+        })?;
         if object_id(bytes) != id {
             return Err(Error::Invalid(format!("memory object hash mismatch: {id}")));
         }
@@ -40,23 +48,37 @@ impl ObjectBackend for MemoryObjectBackend {
 
     fn put_if_absent(&self, id: ObjectId, canonical_envelope: &[u8]) -> Result<()> {
         if object_id(canonical_envelope) != id {
-            return Err(Error::Invalid("object ID does not match canonical envelope".into()));
+            return Err(Error::Invalid(
+                "object ID does not match canonical envelope".into(),
+            ));
         }
         decode_object(canonical_envelope)?;
-        let mut guard = self.objects.write().map_err(|_| Error::Invalid("memory object store lock poisoned".into()))?;
+        let mut guard = self
+            .objects
+            .write()
+            .map_err(|_| Error::Invalid("memory object store lock poisoned".into()))?;
         match guard.get(&id) {
-            Some(existing) if existing != canonical_envelope =>
-                Err(Error::Invalid("immutable object ID collision or corrupt existing content".into())),
+            Some(existing) if existing != canonical_envelope => Err(Error::Invalid(
+                "immutable object ID collision or corrupt existing content".into(),
+            )),
             Some(_) => Ok(()),
-            None => { guard.insert(id, canonical_envelope.to_vec()); Ok(()) }
+            None => {
+                guard.insert(id, canonical_envelope.to_vec());
+                Ok(())
+            }
         }
     }
 
     fn exists(&self, id: ObjectId) -> Result<bool> {
-        let guard = self.objects.read().map_err(|_| Error::Invalid("memory object store lock poisoned".into()))?;
+        let guard = self
+            .objects
+            .read()
+            .map_err(|_| Error::Invalid("memory object store lock poisoned".into()))?;
         match guard.get(&id) {
             Some(bytes) => {
-                if object_id(bytes) != id { return Err(Error::Invalid("memory object hash mismatch".into())); }
+                if object_id(bytes) != id {
+                    return Err(Error::Invalid("memory object hash mismatch".into()));
+                }
                 decode_object(bytes)?;
                 Ok(true)
             }
@@ -73,13 +95,18 @@ pub struct MemoryRefBackend {
 }
 
 impl MemoryRefBackend {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 }
 
 impl crate::storage_backend::RefBackend for MemoryRefBackend {
     fn read_ref(&self, name: &str) -> Result<Option<ObjectId>> {
         validate_ref_name(name)?;
-        let guard = self.refs.read().map_err(|_| Error::Invalid("memory ref lock poisoned".into()))?;
+        let guard = self
+            .refs
+            .read()
+            .map_err(|_| Error::Invalid("memory ref lock poisoned".into()))?;
         Ok(guard.get(name).copied())
     }
 
@@ -90,11 +117,20 @@ impl crate::storage_backend::RefBackend for MemoryRefBackend {
         replacement: Option<ObjectId>,
     ) -> Result<bool> {
         validate_ref_name(name)?;
-        let mut guard = self.refs.write().map_err(|_| Error::Invalid("memory ref lock poisoned".into()))?;
-        if guard.get(name).copied() != expected { return Ok(false); }
+        let mut guard = self
+            .refs
+            .write()
+            .map_err(|_| Error::Invalid("memory ref lock poisoned".into()))?;
+        if guard.get(name).copied() != expected {
+            return Ok(false);
+        }
         match replacement {
-            Some(id) => { guard.insert(name.to_owned(), id); }
-            None => { guard.remove(name); }
+            Some(id) => {
+                guard.insert(name.to_owned(), id);
+            }
+            None => {
+                guard.remove(name);
+            }
         }
         Ok(true)
     }
@@ -105,7 +141,9 @@ fn validate_ref_name(name: &str) -> Result<()> {
         || name.len() > 1024
         || name.starts_with('/')
         || name.ends_with('/')
-        || name.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+        || name
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
         || name.chars().any(|c| c.is_control() || c == '\\')
     {
         return Err(Error::Invalid("invalid ref name".into()));
@@ -138,11 +176,23 @@ mod tests {
     fn concurrent_ref_cas_has_one_winner() {
         use crate::storage_backend::RefBackend;
         let refs = Arc::new(MemoryRefBackend::new());
-        let handles: Vec<_> = (1..=12).map(|n| {
-            let refs = Arc::clone(&refs);
-            std::thread::spawn(move || refs.compare_and_swap("main", None, Some(ObjectId([n; 32]))).unwrap())
-        }).collect();
-        assert_eq!(handles.into_iter().map(|h| h.join().unwrap()).filter(|won| *won).count(), 1);
+        let handles: Vec<_> = (1..=12)
+            .map(|n| {
+                let refs = Arc::clone(&refs);
+                std::thread::spawn(move || {
+                    refs.compare_and_swap("main", None, Some(ObjectId([n; 32])))
+                        .unwrap()
+                })
+            })
+            .collect();
+        assert_eq!(
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap())
+                .filter(|won| *won)
+                .count(),
+            1
+        );
         assert!(refs.read_ref("main").unwrap().is_some());
     }
 
@@ -164,12 +214,16 @@ mod tests {
         let store = Arc::new(MemoryObjectBackend::new());
         let bytes = encode_object(BLOB, b"concurrent").unwrap();
         let id = object_id(&bytes);
-        let threads: Vec<_> = (0..8).map(|_| {
-            let store = Arc::clone(&store);
-            let bytes = bytes.clone();
-            std::thread::spawn(move || store.put_if_absent(id, &bytes).unwrap())
-        }).collect();
-        for thread in threads { thread.join().unwrap(); }
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let store = Arc::clone(&store);
+                let bytes = bytes.clone();
+                std::thread::spawn(move || store.put_if_absent(id, &bytes).unwrap())
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
         assert_eq!(store.get(id).unwrap(), bytes);
     }
 }

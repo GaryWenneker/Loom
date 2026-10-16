@@ -5,9 +5,13 @@ fn exec(root: &Path, args: &[&str]) -> String {
         .current_dir(root)
         .env("LOOM_AUTHOR", "review-test")
         .args(args)
-        .output().expect("run loom");
-    assert!(result.status.success(),
-        "{args:?} failed: {}", String::from_utf8_lossy(&result.stderr));
+        .output()
+        .expect("run loom");
+    assert!(
+        result.status.success(),
+        "{args:?} failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     String::from_utf8(result.stdout).unwrap()
 }
 
@@ -22,8 +26,14 @@ fn staged_snapshots_and_later_edits_are_independently_visible() {
     fs::write(root.join("story.txt"), b"staged\n").unwrap();
     exec(root, &["add", "story.txt"]);
     let staged_unchanged = exec(root, &["status"]);
-    assert!(staged_unchanged.contains("staged M story.txt"), "{staged_unchanged}");
-    assert!(!staged_unchanged.contains("\nM story.txt"), "{staged_unchanged}");
+    assert!(
+        staged_unchanged.contains("staged M story.txt"),
+        "{staged_unchanged}"
+    );
+    assert!(
+        !staged_unchanged.contains("\nM story.txt"),
+        "{staged_unchanged}"
+    );
 
     fs::write(root.join("story.txt"), b"working\n").unwrap();
     let status = exec(root, &["status"]);
@@ -47,7 +57,10 @@ fn staged_snapshots_and_later_edits_are_independently_visible() {
     let review = exec(root, &["review"]);
     assert!(review.contains("Ready to commit (staged)"), "{review}");
     assert!(review.contains("Working changes (not staged)"), "{review}");
-    assert!(review.contains("+staged") && review.contains("+working"), "{review}");
+    assert!(
+        review.contains("+staged") && review.contains("+working"),
+        "{review}"
+    );
 
     // Pure read paths cannot alter stage or worktree.
     exec(root, &["commit", "-m", "capture frozen staged version"]);

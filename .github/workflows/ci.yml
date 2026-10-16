@@ -15,6 +15,7 @@ jobs:
   test:
     name: ${{ matrix.os }} / stable
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -24,14 +25,27 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-      - run: cargo fmt --all
-      - run: cargo clippy --workspace --all-targets
-      - run: cargo test --workspace --all-targets
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --all-targets --locked
+      - name: Verify equivalent Git comparison harness
+        if: runner.os == 'Linux'
+        run: |
+          python3 -m py_compile benchmarks/compare_git.py
+          python3 benchmarks/compare_git.py --loom target/debug/loom --batch --files 10 --repeat 1 --requests 10 --history 1 --output /tmp/git-compare-smoke.json
+  msrv:
+    name: Rust 1.85 minimum
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85
+      - run: cargo check --workspace --all-targets --locked
   security:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo install cargo-audit --locked
-      - run: cargo generate-lockfile
-      - run: cargo audit
+      - run: cargo audit --file Cargo.lock

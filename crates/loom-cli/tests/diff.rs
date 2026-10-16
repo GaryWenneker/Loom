@@ -79,7 +79,11 @@ fn cat_reads_snapshot_without_switching_branches_or_losing_binary_data() {
         .args(["cat", "release", "data.bin"])
         .output()
         .unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(output.stdout, [0, 1, 255, 2]);
     assert_eq!(fs::read(root.join("data.bin")).unwrap(), [0, 3, 4, 5]);
     let invalid = Command::new(env!("CARGO_BIN_EXE_loom"))

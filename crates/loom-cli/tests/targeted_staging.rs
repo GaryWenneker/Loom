@@ -2,13 +2,20 @@ use std::{fs, path::Path, process::Command};
 
 fn run(root: &Path, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_loom"))
-        .current_dir(root).env("LOOM_AUTHOR", "targeted-test")
-        .args(args).output().unwrap()
+        .current_dir(root)
+        .env("LOOM_AUTHOR", "targeted-test")
+        .args(args)
+        .output()
+        .unwrap()
 }
 
 fn ok(root: &Path, args: &[&str]) -> Vec<u8> {
     let result = run(root, args);
-    assert!(result.status.success(), "{args:?}: {}", String::from_utf8_lossy(&result.stderr));
+    assert!(
+        result.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     result.stdout
 }
 
@@ -25,9 +32,15 @@ fn staged_commit_does_not_read_unrelated_large_files() {
     // so an unrelated 65 MiB file blocked a small staged commit.
     ok(root, &["add", "selected.txt"]);
     ok(root, &["commit", "-m", "single file"]);
-    assert_eq!(ok(root, &["cat", "main", "selected.txt"]), b"selected version");
+    assert_eq!(
+        ok(root, &["cat", "main", "selected.txt"]),
+        b"selected version"
+    );
     ok(root, &["fsck"]);
-    assert_eq!(fs::metadata(root.join("unrelated.big")).unwrap().len(), 65 * 1024 * 1024);
+    assert_eq!(
+        fs::metadata(root.join("unrelated.big")).unwrap().len(),
+        65 * 1024 * 1024
+    );
 }
 
 #[test]
@@ -59,5 +72,8 @@ fn staging_rejects_symlinked_parent_without_leaking_external_content() {
     let result = run(root, &["add", "linked/secret.txt"]);
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("symlink"));
-    assert_eq!(fs::read(outside.path().join("secret.txt")).unwrap(), b"never stage");
+    assert_eq!(
+        fs::read(outside.path().join("secret.txt")).unwrap(),
+        b"never stage"
+    );
 }

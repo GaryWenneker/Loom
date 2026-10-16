@@ -34,7 +34,11 @@ fn separate_cli_process_waits_for_exclusive_worktree_lock() {
         .write(true)
         .open(root.join(".loom").join("workspace.lock"))
         .or_else(|_| {
-            OpenOptions::new().read(true).write(true).create(true)
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
                 .open(root.join(".loom").join("workspace.lock"))
         })
         .unwrap();
@@ -50,7 +54,10 @@ fn separate_cli_process_waits_for_exclusive_worktree_lock() {
         .unwrap();
 
     thread::sleep(Duration::from_millis(300));
-    assert!(child.try_wait().unwrap().is_none(), "commit bypassed exclusive lock");
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "commit bypassed exclusive lock"
+    );
 
     FileExt::unlock(&lock).unwrap();
     drop(lock);
