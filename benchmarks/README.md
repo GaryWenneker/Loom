@@ -105,3 +105,6 @@ levels beneath `files/`. Single-command and status results remain in the report.
 `--multi` accepts at most 4,096 logical paths and the encoded request must fit the
 protocol's 64 KiB line cap. The existing 100× target flags apply per operation;
 all unfavorable results are retained. No performance gate relies on noisy CI timing.
+
+[Measured multi-directory results](../docs/performance-multidir-20261016.md) compare
+the previous binary, unchanged line API, native grouping, and packed Git.
