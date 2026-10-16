@@ -397,6 +397,16 @@ pub(crate) fn apply_changes(
                     })
                 }
                 Some(None) => {
+                    // A file cannot contain nested paths. Reject a batch that
+                    // attempts to delete a descendant of an existing file,
+                    // rather than silently treating that deletion as a no-op.
+                    if existing.as_ref().is_some_and(|e| e.kind == TreeEntryKind::File)
+                        && !child.children.is_empty()
+                    {
+                        return Err(Error::Invalid(format!(
+                            "native tree deletion beneath a file: {name}"
+                        )));
+                    }
                     // A directory cannot be deleted as if it were a file
                     // in the v1 changeset model. A removed file can instead
                     // be replaced with a directory in the same batch.
@@ -559,6 +569,28 @@ mod tests {
     }
 
     // Ten portable serialization edge cases, kept in one CI-reviewed change.
+    #[test]
+    fn deleting_descendant_of_existing_file_is_rejected() {
+        use crate::format::{BLOB, Change, ChangeKind};
+        use std::{collections::BTreeMap, fs};
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join(".loom");
+        fs::create_dir(&meta).unwrap();
+        fs::create_dir(meta.join("objects")).unwrap();
+        let store = crate::store::ObjectStore::new(&meta);
+        let blob = store.put(BLOB, b"content").unwrap();
+        let root = write_snapshot(&store, &BTreeMap::from([
+            ("parent".to_owned(), blob),
+        ])).unwrap();
+        let changes = [Change {
+            path: "parent/child".to_owned(),
+            kind: ChangeKind::Delete,
+            blob: None,
+        }];
+        assert!(apply_changes(&store, root, &changes).is_err());
+        assert_eq!(lookup_file(&store, root, "parent").unwrap(), Some(blob));
+    }
+
     #[test]
     fn conformance_01_empty_root_roundtrip() {
         let node = NativeTree { entries: vec![] };
