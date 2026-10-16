@@ -88,6 +88,10 @@ def scenario(args, count):
         for operation in ['cat_cli','files_cli','status_cli','batch']:
             timings['baseline_'+operation] = []
     if args.multi: timings['loom_multi'] = []
+    if args.baseline_multi: timings['baseline_multi'] = []
+    if args.read_pack:
+        timings['loom_pack_batch'] = []
+        timings['loom_pack_multi'] = []
     initializer = args.baseline_loom or args.loom
     def relative(index):
         name = f'{index:08d}.bin'
@@ -126,6 +130,11 @@ def scenario(args, count):
             command(root, ['git', 'commit-graph', 'write', '--reachable', '--changed-paths'])
         _, git_revision = command(root, ['git','rev-parse','HEAD'])
         git_revision = git_revision.decode().strip()
+        preparation = None
+        if args.read_pack:
+            elapsed, _ = command(root, [args.loom, 'read-pack', '@'+revision, '.loom/reads.pack'])
+            preparation = {'build_ms':elapsed, 'pack_bytes':(root/'.loom/reads.pack').stat().st_size,
+                           'query_timing_excludes_build':True, 'live_objects_retained':True}
         focus = relative(count//2)
         for repeat in range(args.repeat):
             # Alternate order to reduce systematic warmup/host-load bias.
@@ -161,6 +170,12 @@ def scenario(args, count):
             if args.multi:
                 multi_input = (json.dumps({'id':0,'op':'cat_many','paths':paths})+'\n').encode()
                 modes.append(('loom_multi',[args.loom,'query','--batch','@'+revision],multi_input,parse_loom_multi))
+                if args.baseline_multi:
+                    modes.append(('baseline_multi',[args.baseline_loom,'query','--batch','@'+revision],multi_input,parse_loom_multi))
+                if args.read_pack:
+                    base_command = [args.loom,'query','--batch','@'+revision,'--read-pack','.loom/reads.pack']
+                    modes.append(('loom_pack_batch',base_command,loom_input,parse_loom_batch))
+                    modes.append(('loom_pack_multi',base_command,multi_input,parse_loom_multi))
             modes = modes[repeat % len(modes):] + modes[:repeat % len(modes)]
             for name, argv, data, verify in modes:
                 elapsed, output = command(root, argv, data)
@@ -171,11 +186,18 @@ def scenario(args, count):
                   for name in ['cat_cli','files_cli','status_cli','batch']
                   if 'loom_'+name in operations}
         if args.multi: ratios['multi'] = operations['git_batch']['p50_ms']/operations['loom_multi']['p50_ms']
+        if args.read_pack:
+            for mode in ['pack_batch', 'pack_multi']:
+                ratios[mode] = operations['git_batch']['p50_ms']/operations['loom_'+mode]['p50_ms']
         baseline_ratios = {name:operations['baseline_'+name]['p50_ms']/operations['loom_'+name]['p50_ms']
                            for name in ['cat_cli','files_cli','status_cli','batch']
                            if 'baseline_'+name in operations and 'loom_'+name in operations}
         if args.multi and args.baseline_loom:
-            baseline_ratios['multi'] = operations['baseline_batch']['p50_ms']/operations['loom_multi']['p50_ms']
+            baseline_group = 'baseline_multi' if args.baseline_multi else 'baseline_batch'
+            baseline_ratios['multi'] = operations[baseline_group]['p50_ms']/operations['loom_multi']['p50_ms']
+            if args.read_pack:
+                baseline_ratios['pack_multi'] = operations[baseline_group]['p50_ms']/operations['loom_pack_multi']['p50_ms']
+                baseline_ratios['pack_batch'] = operations['baseline_batch']['p50_ms']/operations['loom_pack_batch']['p50_ms']
         return {'tracked_files':count, 'history_commits':args.history+1,
                 'requests_per_batch':args.requests, 'git_layout':args.git_layout,
                 'fixture_layout':args.layout+'; small binary files; 10% batch misses',
@@ -184,6 +206,10 @@ def scenario(args, count):
                 'repository_logical_bytes':{name:sum(p.stat().st_size for p in (root/name).rglob('*') if p.is_file()) for name in ['.git','.loom']},
                 'operations':operations, 'git_over_loom_p50':ratios,
                 'baseline_over_loom_p50':baseline_ratios,
+                'baseline_grouped_mode':'cat_many' if args.baseline_multi else 'individual cat lines',
+                'read_pack_preparation':preparation,
+                'unpacked_over_packed_p50':{mode:operations['loom_'+mode]['p50_ms']/operations['loom_pack_'+mode]['p50_ms']
+                                            for mode in ['batch','multi']} if args.read_pack else {},
                 'target_100x_met':{key:value >= 100 for key,value in ratios.items()}}
 
 
@@ -192,6 +218,8 @@ def main():
     parser.add_argument('--loom', required=True, type=lambda x:str(Path(x).resolve()))
     parser.add_argument('--baseline-loom', type=lambda x:str(Path(x).resolve()))
     parser.add_argument('--multi', action='store_true', help='Also measure native cat_many on the same path sequence')
+    parser.add_argument('--baseline-multi', action='store_true', help='Baseline binary also supports cat_many')
+    parser.add_argument('--read-pack', action='store_true', help='Prepare and compare an explicit native read pack; retains loose objects')
     parser.add_argument('--directories', type=int, default=256)
     parser.add_argument('--files', nargs='+', type=int, default=[1000,10000])
     parser.add_argument('--history', type=int, default=10)
@@ -207,8 +235,10 @@ def main():
         parser.error('positive sizes/repetitions/requests and nonnegative history are required')
     if args.multi and (not args.batch or args.requests > 4096):
         parser.error('--multi requires --batch and at most 4096 logical requests')
+    if (args.baseline_multi and not args.baseline_loom) or ((args.read_pack or args.baseline_multi) and not args.multi):
+        parser.error('--read-pack requires --multi; --baseline-multi requires --multi and --baseline-loom')
     version = subprocess.check_output(['git','--version'],text=True).strip()
-    report = {'schema_version':2, 'git_version':version,
+    report = {'schema_version':3, 'git_version':version,
               'harness_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               'baseline_loom_sha256':hashlib.sha256(Path(args.baseline_loom).read_bytes()).hexdigest() if args.baseline_loom else None,
               'loom_sha256':hashlib.sha256(Path(args.loom).read_bytes()).hexdigest(),
@@ -220,6 +250,7 @@ def main():
                             'cat_many groups the same paths into one native request; existing line mode is reported separately',
                             'Git cat-file batch compared against Loom batch, not repeated Git launches',
                             'packed Git uses gc and a changed-path commit graph',
+                            'explicit native read-pack build time/size reported separately; live objects retained; fresh session opens pack index each sample',
                             'peak RSS, CPU time, cold disk and multi-client throughput are not measured',
                             'no performance threshold is treated as proven for unmeasured operations'],
               'scenarios':[]}

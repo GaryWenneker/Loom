@@ -28,15 +28,15 @@ jobs:
             --output loom-scale-results.json
       - name: Compare checked immutable queries with packed Git
         run: |
-          python3 benchmarks/compare_git.py --loom target/release/loom --batch --multi \
+          python3 benchmarks/compare_git.py --loom target/release/loom --batch --multi --read-pack \
             --files 1000 10000 100000 --repeat 5 --requests 1000 \
             --output loom-git-compare.json
-          python3 benchmarks/compare_git.py --loom target/release/loom --batch --multi \
+          python3 benchmarks/compare_git.py --loom target/release/loom --batch --multi --read-pack \
             --layout sharded --files 10000 --repeat 5 --requests 1000 \
             --output loom-git-sharded.json
       - name: Compare deeper directory hierarchies
         run: |
-          python3 benchmarks/compare_git.py --loom target/release/loom --batch --multi \
+          python3 benchmarks/compare_git.py --loom target/release/loom --batch --multi --read-pack \
             --layout nested --directories 1024 --files 10000 --repeat 5 --requests 1000 \
             --output loom-git-nested.json
       - name: Upload raw timing evidence

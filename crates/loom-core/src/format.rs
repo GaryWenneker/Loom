@@ -20,20 +20,30 @@ impl ObjectId {
                 "object ID must be 64 ASCII hex digits".into(),
             ));
         }
+        fn nibble(byte: u8) -> Result<u8> {
+            match byte {
+                b'0'..=b'9' => Ok(byte - b'0'),
+                b'a'..=b'f' => Ok(byte - b'a' + 10),
+                b'A'..=b'F' => Ok(byte - b'A' + 10),
+                _ => Err(Error::Invalid("invalid object ID hex".into())),
+            }
+        }
         let mut b = [0u8; 32];
-        for (i, byte) in b.iter_mut().enumerate() {
-            *byte = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16)
-                .map_err(|_| Error::Invalid("invalid object ID hex".into()))?;
+        for (byte, pair) in b.iter_mut().zip(hex.as_bytes().chunks_exact(2)) {
+            *byte = (nibble(pair[0])? << 4) | nibble(pair[1])?;
         }
         Ok(Self(b))
     }
 }
 impl fmt::Display for ObjectId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for b in self.0 {
-            write!(f, "{b:02x}")?;
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut text = [0; 64];
+        for (byte, pair) in self.0.iter().zip(text.chunks_exact_mut(2)) {
+            pair[0] = HEX[(byte >> 4) as usize];
+            pair[1] = HEX[(byte & 15) as usize];
         }
-        Ok(())
+        f.write_str(std::str::from_utf8(&text).expect("ASCII hexadecimal"))
     }
 }
 
@@ -290,5 +300,38 @@ mod tests {
     #[test]
     fn reject_truncated_object() {
         assert!(Changeset::decode(b"LOOM").is_err());
+    }
+    #[test]
+    fn object_id_text_preserves_all_bytes_and_rejects_non_hex_aliases() {
+        let id = ObjectId(std::array::from_fn(|n| n as u8));
+        assert_eq!(
+            id.to_string(),
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+        );
+        for byte in 0..=255 {
+            let id = ObjectId([byte; 32]);
+            let expected = format!("{byte:02x}").repeat(32);
+            assert_eq!(id.to_string(), expected);
+            assert_eq!(ObjectId::parse(&expected).unwrap(), id);
+            assert_eq!(ObjectId::parse(&expected.to_uppercase()).unwrap(), id);
+        }
+        for byte in 0u8..=127 {
+            if byte.is_ascii_hexdigit() {
+                continue;
+            }
+            for position in [0, 31, 63] {
+                let mut text = vec![b'0'; 64];
+                text[position] = byte;
+                assert!(ObjectId::parse(std::str::from_utf8(&text).unwrap()).is_err());
+            }
+        }
+        for invalid in [
+            "+f".repeat(32),
+            "é".repeat(32),
+            "0".repeat(63),
+            "0".repeat(65),
+        ] {
+            assert!(ObjectId::parse(&invalid).is_err());
+        }
     }
 }

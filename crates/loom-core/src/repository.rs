@@ -193,6 +193,18 @@ impl Repository {
         backend: Option<std::sync::Arc<dyn crate::storage_backend::ObjectBackend>>,
         cache_bytes: usize,
     ) -> Result<crate::Snapshot> {
+        Self::query_snapshot_with_read_pack(path, revision, backend, cache_bytes, None)
+    }
+
+    /// A read pack is an explicitly selected, disposable accelerator. Object
+    /// bytes remain hash-verified; publication and fsck use live storage.
+    pub fn query_snapshot_with_read_pack(
+        path: impl AsRef<Path>,
+        revision: ObjectId,
+        backend: Option<std::sync::Arc<dyn crate::storage_backend::ObjectBackend>>,
+        cache_bytes: usize,
+        read_pack: Option<&Path>,
+    ) -> Result<crate::Snapshot> {
         let external = backend.map(ObjectStore::with_backend).transpose()?;
         let start = fs::canonicalize(path)?;
         for dir in start.ancestors() {
@@ -222,9 +234,26 @@ impl Repository {
                     "revision has no materialized tree; run loom tree @{revision} first"
                 ))
             })?;
-            return crate::Snapshot::new(ObjectId::parse(&root)?, store, cache_bytes);
+            return crate::Snapshot::with_read_pack(
+                ObjectId::parse(&root)?,
+                store,
+                cache_bytes,
+                read_pack,
+            );
         }
         Err(Error::Invalid("not in a Loom repository".into()))
+    }
+
+    /// Build an immutable acceleration file for a revision's tree/blob closure.
+    /// Leaves live objects, refs and worktree unchanged. Existing files are
+    /// never replaced; create a new path when rebuilding.
+    pub fn write_read_pack(
+        &self,
+        revision: ObjectId,
+        destination: impl AsRef<Path>,
+    ) -> Result<crate::ReadPackStats> {
+        let root = self.native_tree_root(revision)?;
+        crate::read_pack::write(&self.store, root, destination.as_ref())
     }
 
     fn connect(meta: &Path) -> Result<Connection> {

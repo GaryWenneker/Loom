@@ -13,6 +13,101 @@ fn fixture() -> (tempfile::TempDir, Repository, loom_core::ObjectId) {
 }
 
 #[test]
+fn read_pack_supports_old_and_new_revisions_without_writer_lock_or_cache() {
+    let (dir, repo, revision) = fixture();
+    let path = dir.path().join(".loom/reads.pack");
+    let head = repo.head().unwrap();
+    let stats = repo.write_read_pack(revision, &path).unwrap();
+    assert_eq!(repo.head().unwrap(), head);
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(dir.path().join(".loom/workspace.lock"))
+        .unwrap();
+    fs2::FileExt::lock_exclusive(&lock).unwrap();
+    let (send, receive) = std::sync::mpsc::channel();
+    let query_root = dir.path().to_owned();
+    let query_pack = path.clone();
+    std::thread::spawn(move || {
+        let _ = send.send(Repository::query_snapshot_with_read_pack(
+            query_root,
+            revision,
+            None,
+            0,
+            Some(&query_pack),
+        ));
+    });
+    let result = receive.recv_timeout(std::time::Duration::from_secs(5));
+    fs2::FileExt::unlock(&lock).unwrap();
+    let old = result
+        .expect("pack query blocked on workspace writer")
+        .unwrap();
+    assert_eq!(
+        &*old.read_file("a/file").unwrap().unwrap(),
+        b"nested\0bytes\xff"
+    );
+    assert_eq!(old.stats().unwrap().cache_bytes, 0);
+    assert_eq!(old.stats().unwrap().read_pack_objects, stats.objects);
+    assert_eq!(
+        old.stats().unwrap().read_pack_index_bytes,
+        stats.objects * 48
+    );
+    fs::write(dir.path().join("a/file"), b"changed").unwrap();
+    let next = repo.commit("test", "after pack").unwrap();
+    let new =
+        Repository::query_snapshot_with_read_pack(dir.path(), next, None, 0, Some(&path)).unwrap();
+    let result = new
+        .read_files(&["a/file", "a.txt", "missing", "a/file"], 100)
+        .unwrap();
+    assert_eq!(result[0].as_deref(), Some(b"changed".as_slice()));
+    assert_eq!(result[1].as_deref(), Some(b"first".as_slice()));
+    assert!(result[2].is_none());
+    assert_eq!(result[0], result[3]);
+    assert_eq!(
+        &*old.read_file("a/file").unwrap().unwrap(),
+        b"nested\0bytes\xff"
+    );
+    assert!(repo.fsck().is_ok());
+    fs::remove_file(&path).unwrap();
+    // Dropping an optional accelerator never loses repository data.
+    assert_eq!(
+        &*Repository::query_snapshot(dir.path(), next, None, 0)
+            .unwrap()
+            .read_file("a/file")
+            .unwrap()
+            .unwrap(),
+        b"changed"
+    );
+}
+
+#[test]
+fn read_pack_works_with_sqlite_objects_and_keeps_live_integrity_checks() {
+    let dir = tempfile::tempdir().unwrap();
+    let objects = tempfile::tempdir().unwrap();
+    let backend = Arc::new(
+        loom_core::sqlite_object_storage::SqliteObjectBackend::open(
+            objects.path().join("objects.sqlite"),
+        )
+        .unwrap(),
+    );
+    let repo = Repository::init_with_object_backend(dir.path(), backend.clone()).unwrap();
+    fs::write(dir.path().join("file"), b"SQLite bytes").unwrap();
+    let revision = repo.commit("test", "packed SQLite").unwrap();
+    let path = dir.path().join(".loom/reads.pack");
+    repo.write_read_pack(revision, &path).unwrap();
+    let query = Repository::query_snapshot_with_read_pack(
+        dir.path(),
+        revision,
+        Some(backend),
+        0,
+        Some(&path),
+    )
+    .unwrap();
+    assert_eq!(&*query.read_file("file").unwrap().unwrap(), b"SQLite bytes");
+    assert!(repo.fsck().is_ok());
+}
+
+#[test]
 fn snapshot_is_revision_pinned_and_reuses_verified_decoded_objects() {
     let (dir, repo, revision) = fixture();
     let snapshot = repo.snapshot(revision).unwrap();
