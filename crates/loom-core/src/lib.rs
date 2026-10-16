@@ -2,6 +2,7 @@
 //! Native storage and history have no Git runtime dependency.
 mod format;
 pub mod sqlite_ref_storage;
+pub mod memory_storage;
 pub mod replicated_storage;
 pub mod cloud_storage;
 mod ignore;
