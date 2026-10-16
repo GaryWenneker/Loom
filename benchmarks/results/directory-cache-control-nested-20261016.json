@@ -1,0 +1,327 @@
+{
+  "schema_version": 4,
+  "git_version": "git version 2.51.1",
+  "harness_sha256": "4b0109c4bb6ab33a8bc1f32ab354dce10f6305e96ae81fd3df8f25a8ca1905ec",
+  "baseline_loom_sha256": "e09bcee2121f153faa80717c6c4a25be51dcc8c4ed24ae2cca2c436384a6b4eb",
+  "loom_sha256": "6fe0b40248b9fe502b8939904948295f764b14d239ea480a6e559d609bdaa8b2",
+  "host": {
+    "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+    "machine": "x86_64",
+    "cpus": 9,
+    "cpu_model": "INTEL(R) XEON(R) PLATINUM 8573C",
+    "filesystem": "not detected"
+  },
+  "conditions": [
+    "same tracked bytes; both queries pin immutable revision IDs",
+    "output verified byte for byte",
+    "process startup included; OS caches warm, not a cold-disk experiment",
+    "rounds reuse and rotate the same working set; all engines keep one process; timings cover the entire sequence including its first group",
+    "cat_many groups the same paths into one native request; existing line mode is reported separately",
+    "Git cat-file batch compared against Loom batch, not repeated Git launches",
+    "packed Git uses gc and a changed-path commit graph",
+    "explicit native read-pack build time/size reported separately; live objects retained; fresh session opens pack index each sample",
+    "peak RSS, CPU time, cold disk and multi-client throughput are not measured",
+    "no performance threshold is treated as proven for unmeasured operations"
+  ],
+  "scenarios": [
+    {
+      "tracked_files": 10000,
+      "history_commits": 11,
+      "requests_per_batch": 1000,
+      "git_layout": "packed",
+      "rounds_per_process": 2,
+      "requests_per_process": 2000,
+      "fixture_layout": "nested; small binary files; 10% batch misses",
+      "directories": 1024,
+      "cache_budget_bytes": 67108864,
+      "repository_logical_bytes": {
+        ".git": 2041401,
+        ".loom": 3222843
+      },
+      "operations": {
+        "loom_cat_cli": {
+          "samples_ms": [
+            9.055382,
+            7.790357,
+            11.473665,
+            5.264305,
+            8.27511,
+            26.040589,
+            4.893312,
+            6.771657
+          ],
+          "p50_ms": 8.032733499999999,
+          "p95_ms": 20.942165599999992,
+          "p99_ms": 25.020904319999996
+        },
+        "git_cat_cli": {
+          "samples_ms": [
+            4.94926,
+            4.86201,
+            6.077269,
+            5.088889,
+            6.238312,
+            8.554175,
+            5.158893,
+            12.33634
+          ],
+          "p50_ms": 5.618081,
+          "p95_ms": 11.012582249999998,
+          "p99_ms": 12.071588449999998
+        },
+        "loom_files_cli": {
+          "samples_ms": [
+            15.918216,
+            4.961784,
+            5.624765,
+            11.279803,
+            6.544342,
+            76.422007,
+            7.848182,
+            15.748852
+          ],
+          "p50_ms": 9.5639925,
+          "p95_ms": 55.24568014999996,
+          "p99_ms": 72.18674162999997
+        },
+        "git_files_cli": {
+          "samples_ms": [
+            5.36203,
+            5.937649,
+            4.748353,
+            13.303246,
+            5.384547,
+            9.301532,
+            9.486851,
+            6.943138
+          ],
+          "p50_ms": 6.440393500000001,
+          "p95_ms": 11.967507749999998,
+          "p99_ms": 13.03609835
+        },
+        "loom_status_cli": {
+          "samples_ms": [
+            222.687065,
+            184.024906,
+            141.070621,
+            174.085418,
+            139.154181,
+            367.690341,
+            211.648794,
+            312.164349
+          ],
+          "p50_ms": 197.83685,
+          "p95_ms": 348.2562438,
+          "p99_ms": 363.80352156
+        },
+        "git_status_cli": {
+          "samples_ms": [
+            52.453453,
+            37.002775,
+            34.614626,
+            84.780732,
+            34.342465,
+            62.858683,
+            42.690258,
+            126.677138
+          ],
+          "p50_ms": 47.5718555,
+          "p95_ms": 112.01339589999998,
+          "p99_ms": 123.74438957999999
+        },
+        "git_batch": {
+          "samples_ms": [
+            160.121921,
+            101.386064,
+            150.575949,
+            107.935732,
+            198.909484,
+            142.956875,
+            191.667271,
+            246.91885
+          ],
+          "p50_ms": 155.34893499999998,
+          "p95_ms": 230.11557189999996,
+          "p99_ms": 243.55819437999997
+        },
+        "loom_batch": {
+          "samples_ms": [
+            70.576446,
+            65.038298,
+            68.109481,
+            72.792346,
+            72.227123,
+            37.707302,
+            40.521222,
+            43.402445
+          ],
+          "p50_ms": 66.5738895,
+          "p95_ms": 72.59451795,
+          "p99_ms": 72.75278039
+        },
+        "baseline_cat_cli": {
+          "samples_ms": [
+            4.827622,
+            4.527465,
+            6.764081,
+            18.894299,
+            5.073749,
+            7.415081,
+            7.024242,
+            6.194469
+          ],
+          "p50_ms": 6.4792749999999995,
+          "p95_ms": 14.876572699999993,
+          "p99_ms": 18.090753739999997
+        },
+        "baseline_files_cli": {
+          "samples_ms": [
+            6.138773,
+            6.063473,
+            5.345429,
+            49.36801,
+            8.992384,
+            15.89715,
+            15.011765,
+            19.506973
+          ],
+          "p50_ms": 12.002074499999999,
+          "p95_ms": 38.91664704999998,
+          "p99_ms": 47.277737409999986
+        },
+        "baseline_status_cli": {
+          "samples_ms": [
+            298.032178,
+            186.172893,
+            217.805056,
+            209.072836,
+            138.268411,
+            288.21965,
+            193.196921,
+            217.24702
+          ],
+          "p50_ms": 213.15992799999998,
+          "p95_ms": 294.5977932,
+          "p99_ms": 297.34530104
+        },
+        "baseline_batch": {
+          "samples_ms": [
+            53.2657,
+            49.871511,
+            39.761577,
+            57.697357,
+            72.84887,
+            57.993255,
+            82.724091,
+            83.79961
+          ],
+          "p50_ms": 57.845305999999994,
+          "p95_ms": 83.42317835,
+          "p99_ms": 83.72432367
+        },
+        "loom_multi": {
+          "samples_ms": [
+            41.985486,
+            28.876642,
+            24.272753,
+            48.492983,
+            59.176118,
+            31.859631,
+            38.178117,
+            28.567535
+          ],
+          "p50_ms": 35.018874,
+          "p95_ms": 55.437020749999995,
+          "p99_ms": 58.42829855
+        },
+        "baseline_multi": {
+          "samples_ms": [
+            51.955369,
+            26.994843,
+            76.319616,
+            21.321383,
+            40.938986,
+            34.834966,
+            31.702645,
+            36.406216
+          ],
+          "p50_ms": 35.620591000000005,
+          "p95_ms": 67.79212954999998,
+          "p99_ms": 74.61411870999999
+        },
+        "git_first_group": {
+          "samples_ms": [
+            144.265552,
+            73.768717,
+            129.70132,
+            97.908483,
+            59.676542,
+            89.50411,
+            77.603869,
+            96.279596
+          ],
+          "p50_ms": 92.891853,
+          "p95_ms": 139.1680708,
+          "p99_ms": 143.24605576000002
+        },
+        "loom_first_group": {
+          "samples_ms": [
+            54.181951,
+            25.979802,
+            24.745581,
+            35.071036,
+            27.93791,
+            26.510886,
+            30.02426,
+            65.733499
+          ],
+          "p50_ms": 28.981085,
+          "p95_ms": 61.69045719999999,
+          "p99_ms": 64.92489063999999
+        },
+        "baseline_first_group": {
+          "samples_ms": [
+            35.211397,
+            25.134849,
+            33.212935,
+            22.635862,
+            38.852817,
+            43.147861,
+            27.86488,
+            43.13465
+          ],
+          "p50_ms": 34.212165999999996,
+          "p95_ms": 43.14323715,
+          "p99_ms": 43.14693623
+        }
+      },
+      "git_over_loom_p50": {
+        "cat_cli": 0.699398405287565,
+        "files_cli": 0.6734000993831813,
+        "status_cli": 0.24046003310303413,
+        "batch": 2.333481431935864,
+        "multi": 4.436148775086258,
+        "first_group": 3.205257946691782
+      },
+      "baseline_over_loom_p50": {
+        "cat_cli": 0.8066089831064357,
+        "files_cli": 1.2549230355419037,
+        "status_cli": 1.0774531034031323,
+        "batch": 0.8688887855951392,
+        "multi": 1.017182648419821,
+        "first_group": 1.180499832908257
+      },
+      "baseline_grouped_mode": "cat_many",
+      "read_pack_preparation": null,
+      "unpacked_over_packed_p50": {},
+      "target_100x_met": {
+        "cat_cli": false,
+        "files_cli": false,
+        "status_cli": false,
+        "batch": false,
+        "multi": false,
+        "first_group": false
+      }
+    }
+  ]
+}

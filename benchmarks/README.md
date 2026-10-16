@@ -46,6 +46,20 @@ python3 benchmarks/compare_git.py --loom /absolute/new-loom \
 Five modes with these flags use five rotated repeats for one complete order
 cycle. OS caches remain warm; zero Loom cache does not imply cold storage.
 
+For a higher-sample native confirmation without repeatedly timing CLI status:
+
+```sh
+python3 benchmarks/compare_native_group.py --loom /absolute/new-loom \
+  --baseline-loom /absolute/previous-loom --files 100000 --directories 256 \
+  --repeat 50 --requests 1000 --output native-pairs.json
+```
+
+This creates one fixture with 11 commits, then alternates engine order for
+paired seeds in fresh zero-cache query processes. Every returned byte/slot is
+checked. Raw samples, ratios, host metadata and binary/harness hashes are saved.
+It has no Git comparison and should supplement, rather than replace, the
+equivalent Git controls and their unfavorable results.
+
 ## Explicit read-pack comparison
 
 ```sh
