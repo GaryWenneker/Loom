@@ -39,6 +39,27 @@ fn object_backend(
     }
 }
 
+/// Object-provider files must never become input to their own VCS snapshots.
+fn validate_external_location(
+    workspace: &Path, directory: Option<&std::ffi::OsStr>, database: Option<&std::ffi::OsStr>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let root = std::fs::canonicalize(workspace)?;
+    for value in [directory, database].into_iter().flatten() {
+        let path = Path::new(value);
+        let location = if path.exists() {
+            std::fs::canonicalize(path)?
+        } else {
+            let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+            let name = path.file_name().ok_or("object storage requires a named path")?;
+            std::fs::canonicalize(parent)?.join(name)
+        };
+        if location.starts_with(&root) {
+            return Err("external object storage must be outside the worktree to prevent tracking its own files".into());
+        }
+    }
+    Ok(())
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
     let Some(cmd) = args.first().map(String::as_str) else { usage(); return Err("missing command".into()); };
@@ -63,8 +84,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         let path = path.unwrap_or(".");
-        let backend = object_backend(object_dir, object_db)?;
         if !Path::new(path).exists() { std::fs::create_dir_all(path)?; }
+        validate_external_location(Path::new(path), object_dir.as_deref(), object_db.as_deref())?;
+        let backend = object_backend(object_dir, object_db)?;
         let repo = if let Some(backend) = backend {
             Repository::init_with_object_backend(path, backend)?
         } else {
