@@ -25,6 +25,7 @@
 | `loom cat @CHANGESET_ID PATH` | Read historical file bytes without checkout, using a rebuildable lookup cache. |
 | `loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]` | List tracked native files at a branch tip or exact historical changeset without checkout. An optional prefix selects exact paths or directory descendants. Text mode quotes filenames; `--null` emits NUL-separated paths for scripts. Historical trees are cached, rebuildable derived SQLite views. |
 | `loom tree @CHANGESET_ID` | Build/publish a canonical immutable directory tree for the native revision and print its BLAKE3 root object ID, without modifying the worktree. May leave unused immutable nodes after interruption. |
+| `loom sparse-export @CHANGESET_ID DESTINATION [PREFIX ...]` | Materialize an immutable full or prefix-selected snapshot into a new isolated directory; refuses existing destinations and writes a completion receipt only after synced files. |
 | `loom tree ls @TREE_ID [DIRECTORY]` | List immediate entries of an immutable directory object by its native ID; includes object IDs and file/dir types. |
 | `loom tree cat @TREE_ID PATH` | Read raw binary file bytes by traversing immutable directory objects, without accessing branchrefs, historical caches or the worktree. |
 | `loom fsck` | Verify native objects, tree node references, native revision-to-tree mappings, refs, derived indexes, staging and recovery roots; **not** a backup or full filesystem recovery test |

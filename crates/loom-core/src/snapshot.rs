@@ -6,6 +6,8 @@ use crate::tree_index::IndexedTree;
 use crate::workers::parallel_map;
 use crate::{Error, ObjectId, Result, TreeEntryKind};
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::io::Write;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 pub const DEFAULT_SNAPSHOT_CACHE_BYTES: usize = 64 * 1024 * 1024;
@@ -34,6 +36,12 @@ pub struct SnapshotStats {
 pub struct SnapshotFiles {
     pub paths: Vec<String>,
     pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SparseExportStats {
+    pub files: usize,
+    pub bytes: u64,
 }
 
 enum Cached {
@@ -196,6 +204,99 @@ impl Snapshot {
     }
     pub fn stats(&self) -> Result<SnapshotStats> {
         Ok(self.cache()?.stats)
+    }
+
+    /// Materialize selected immutable snapshot paths into one newly-created
+    /// directory without consulting or changing a branch, stage or worktree.
+    /// A completion marker is written only after every file is synced. If an
+    /// ordinary error occurs the new directory remains explicitly incomplete,
+    /// so callers never confuse a partial export with a usable workspace.
+    pub fn export_sparse(
+        &self,
+        destination: impl AsRef<Path>,
+        prefixes: &[String],
+    ) -> Result<SparseExportStats> {
+        const MARKER: &str = ".loom-sparse-complete";
+        let destination = destination.as_ref();
+        for prefix in prefixes {
+            validate_path(prefix)?;
+        }
+        std::fs::create_dir(destination).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                Error::Invalid("sparse export destination already exists".into())
+            } else {
+                Error::Io(error)
+            }
+        })?;
+
+        let requested: Vec<Option<&str>> = if prefixes.is_empty() {
+            vec![None]
+        } else {
+            prefixes.iter().map(|prefix| Some(prefix.as_str())).collect()
+        };
+        let mut paths = std::collections::BTreeSet::new();
+        for prefix in requested {
+            let mut cursor = None;
+            let mut selected = false;
+            loop {
+                let page = self.files(prefix, cursor.as_deref(), 4096)?;
+                selected |= !page.paths.is_empty();
+                paths.extend(page.paths);
+                let Some(next) = page.next_cursor else {
+                    break;
+                };
+                cursor = Some(next);
+            }
+            if prefix.is_some() && !selected {
+                return Err(Error::Invalid(format!(
+                    "sparse export prefix selects no files: {}",
+                    prefix.expect("checked")
+                )));
+            }
+        }
+        if paths.contains(MARKER)
+            || paths
+                .range(format!("{MARKER}/")..)
+                .next()
+                .is_some_and(|path| path.starts_with(&format!("{MARKER}/")))
+        {
+            return Err(Error::Invalid(
+                "snapshot collides with sparse export completion marker".into(),
+            ));
+        }
+
+        let mut bytes = 0u64;
+        for path in &paths {
+            let content = self.read_file(path)?.ok_or_else(|| {
+                Error::Invalid(format!("listed sparse export file disappeared: {path}"))
+            })?;
+            bytes = bytes
+                .checked_add(content.len() as u64)
+                .ok_or_else(|| Error::Invalid("sparse export byte count overflow".into()))?;
+            let target = destination.join(path);
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut output = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)?;
+            output.write_all(&content)?;
+            output.sync_all()?;
+        }
+        let mut marker = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(destination.join(MARKER))?;
+        writeln!(marker, "LOOM-SPARSE 1")?;
+        writeln!(marker, "root {}", self.root)?;
+        writeln!(marker, "files {}", paths.len())?;
+        writeln!(marker, "bytes {bytes}")?;
+        marker.sync_all()?;
+        Ok(SparseExportStats {
+            files: paths.len(),
+            bytes,
+        })
     }
 
     fn tree(&self, id: ObjectId, depth: usize) -> Result<Arc<IndexedTree>> {
@@ -806,5 +907,67 @@ mod tests {
         assert!(snapshot
             .read_files(&[format!("{}z", "a/".repeat(256))], 4)
             .is_err());
+    }
+
+    #[test]
+    fn sparse_export_is_revision_pinned_deduplicated_and_complete() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::Repository::init(dir.path()).unwrap();
+        let store = ObjectStore::new(&dir.path().join(".loom"));
+        let mut state = BTreeMap::new();
+        for (path, content) in [
+            ("README.md", b"read me".as_slice()),
+            ("src/a.rs", b"fn a() {}".as_slice()),
+            ("src/deep/b.rs", b"fn b() {}".as_slice()),
+            ("tests/t.rs", b"test".as_slice()),
+        ] {
+            state.insert(path.to_owned(), store.put(BLOB, content).unwrap());
+        }
+        let root = crate::tree::write_snapshot(&store, &state).unwrap();
+        let snapshot = Snapshot::new(root, store, 0).unwrap();
+        let destination = dir.path().join("agent-workspace");
+        let stats = snapshot
+            .export_sparse(
+                &destination,
+                &["src".into(), "src/deep".into(), "README.md".into()],
+            )
+            .unwrap();
+
+        assert_eq!(stats.files, 3);
+        assert_eq!(stats.bytes, 7 + 9 + 9);
+        assert_eq!(std::fs::read(destination.join("README.md")).unwrap(), b"read me");
+        assert_eq!(std::fs::read(destination.join("src/a.rs")).unwrap(), b"fn a() {}");
+        assert_eq!(
+            std::fs::read(destination.join("src/deep/b.rs")).unwrap(),
+            b"fn b() {}"
+        );
+        assert!(!destination.join("tests").exists());
+        let marker = std::fs::read_to_string(destination.join(".loom-sparse-complete")).unwrap();
+        assert!(marker.contains(&format!("root {root}")));
+        assert!(marker.contains("files 3"));
+    }
+
+    #[test]
+    fn sparse_export_never_reuses_a_destination_or_completes_a_missing_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::Repository::init(dir.path()).unwrap();
+        let store = ObjectStore::new(&dir.path().join(".loom"));
+        let blob = store.put(BLOB, b"value").unwrap();
+        let root = crate::tree::write_snapshot(&store, &BTreeMap::from([("file".into(), blob)]))
+            .unwrap();
+        let snapshot = Snapshot::new(root, store, 0).unwrap();
+
+        let existing = dir.path().join("existing");
+        std::fs::create_dir(&existing).unwrap();
+        std::fs::write(existing.join("owned"), b"keep").unwrap();
+        assert!(snapshot.export_sparse(&existing, &[]).is_err());
+        assert_eq!(std::fs::read(existing.join("owned")).unwrap(), b"keep");
+
+        let missing = dir.path().join("missing-selection");
+        assert!(snapshot
+            .export_sparse(&missing, &["absent".into()])
+            .is_err());
+        assert!(missing.is_dir());
+        assert!(!missing.join(".loom-sparse-complete").exists());
     }
 }

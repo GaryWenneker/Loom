@@ -24,8 +24,8 @@ pub use format::{Change, ChangeKind, Changeset, ObjectId};
 pub use read_pack::ReadPackStats;
 pub use repository::{FileDiff, Repository, StatusEntry, StatusKind};
 pub use snapshot::{
-    Snapshot, SnapshotFiles, SnapshotStats, DEFAULT_BULK_BYTES, DEFAULT_SNAPSHOT_CACHE_BYTES,
-    MAX_BULK_BYTES, MAX_BULK_PATHS,
+    Snapshot, SnapshotFiles, SnapshotStats, SparseExportStats, DEFAULT_BULK_BYTES,
+    DEFAULT_SNAPSHOT_CACHE_BYTES, MAX_BULK_BYTES, MAX_BULK_PATHS,
 };
 pub use store::FilesystemObjectBackend;
 pub use tree::{NativeTree, TreeEntry, TreeEntryKind};
