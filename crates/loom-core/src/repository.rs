@@ -2004,12 +2004,27 @@ impl Repository {
         theirs: &BTreeMap<String, ObjectId>,
         context: &str,
     ) -> Result<BTreeMap<String, ObjectId>> {
+        self.merge_states_with_workers(base, ours, theirs, context, 0)
+    }
+
+    /// Prepare independent text merges through one bounded read session.
+    /// Results are reassembled in path order and no merged object is published
+    /// until every path is known to be conflict-free.
+    fn merge_states_with_workers(
+        &self,
+        base: &BTreeMap<String, ObjectId>,
+        ours: &BTreeMap<String, ObjectId>,
+        theirs: &BTreeMap<String, ObjectId>,
+        context: &str,
+        requested_workers: usize,
+    ) -> Result<BTreeMap<String, ObjectId>> {
         let mut keys = BTreeSet::new();
         keys.extend(base.keys().cloned());
         keys.extend(ours.keys().cloned());
         keys.extend(theirs.keys().cloned());
         let mut merged = BTreeMap::new();
         let mut conflicts = Vec::new();
+        let mut text_tasks = Vec::new();
         for path in keys {
             let original = base.get(&path);
             let local = ours.get(&path);
@@ -2023,15 +2038,8 @@ impl Repository {
             } else {
                 match (original, local, remote) {
                     (Some(base_id), Some(our_id), Some(their_id)) => {
-                        let b = self.blob_bytes(*base_id)?;
-                        let o = self.blob_bytes(*our_id)?;
-                        let t = self.blob_bytes(*their_id)?;
-                        if let Some(bytes) = crate::text_merge::merge_text(&b, &o, &t) {
-                            Some(self.store.put(BLOB, &bytes)?)
-                        } else {
-                            conflicts.push(path.clone());
-                            continue;
-                        }
+                        text_tasks.push((path.clone(), *base_id, *our_id, *their_id));
+                        continue;
                     }
                     _ => {
                         conflicts.push(path.clone());
@@ -2043,6 +2051,53 @@ impl Repository {
                 merged.insert(path, id);
             }
         }
+
+        let mut publications = Vec::new();
+        if !text_tasks.is_empty() {
+            let reader = self.store.read_session()?;
+            let provider_workers = reader.max_concurrent_reads().clamp(1, 8);
+            let requested_workers = if requested_workers == 0 {
+                provider_workers
+            } else {
+                requested_workers.min(provider_workers)
+            };
+            let workers = requested_workers
+                .min(std::thread::available_parallelism().map_or(1, usize::from))
+                .max(1);
+            let outcomes = crate::workers::parallel_map_min(
+                &text_tasks,
+                workers,
+                2,
+                &|task| {
+                    let load_blob = |id| -> Result<Vec<u8>> {
+                        let raw = reader.get(id)?;
+                        let (kind, payload) = decode_object(&raw)?;
+                        if kind != BLOB {
+                            return Err(Error::Invalid(format!(
+                                "expected blob object: {id}"
+                            )));
+                        }
+                        Ok(payload.to_vec())
+                    };
+                    let base = load_blob(task.1)?;
+                    let ours = load_blob(task.2)?;
+                    let theirs = load_blob(task.3)?;
+                    Ok(crate::text_merge::merge_text(&base, &ours, &theirs))
+                },
+            )?;
+            for (task, outcome) in text_tasks.iter().zip(outcomes) {
+                match outcome {
+                    Some(payload) => {
+                        let envelope = encode_object(BLOB, &payload)?;
+                        let id = object_id(&envelope);
+                        merged.insert(task.0.clone(), id);
+                        publications.push((id, envelope));
+                    }
+                    None => conflicts.push(task.0.clone()),
+                }
+            }
+        }
+
         // No file may also be an ancestor directory of another file.
         for path in merged.keys() {
             for (idx, chr) in path.char_indices() {
@@ -2059,6 +2114,16 @@ impl Repository {
                 conflicts.join(", ")
             )));
         }
+
+        // Publishing follows sorted path order and starts only after all merge
+        // tasks and path-identity checks succeed. The ref remains untouched.
+        if !publications.is_empty() {
+            let mut publisher = self.store.publisher();
+            for (id, envelope) in publications {
+                publisher.push(id, envelope)?;
+            }
+            publisher.finish()?;
+        }
         Ok(merged)
     }
 
@@ -2066,6 +2131,18 @@ impl Repository {
     /// Ambiguous edits are rejected without creating a merge commit or changing the worktree.
     /// This is not yet a complete rename-aware or structured conflict engine.
     pub fn merge_branch(&self, name: &str, author: &str, message: &str) -> Result<ObjectId> {
+        self.merge_branch_with_workers(name, author, message, 0)
+    }
+
+    /// Merge with an explicit bounded worker request for independent text
+    /// paths. The configured read provider's safe hint remains the upper bound.
+    pub fn merge_branch_with_workers(
+        &self,
+        name: &str,
+        author: &str,
+        message: &str,
+        requested_workers: usize,
+    ) -> Result<ObjectId> {
         let _worktree_guard = self.lock_worktree()?;
         self.recover_locked()?;
         if !self.staged_blobs()?.is_empty() {
@@ -2118,7 +2195,13 @@ impl Repository {
         let base = self.virtual_merge_base(&bases, &mut budget)?;
         let our_files = self.state_at(Some(ours))?;
         let their_files = self.state_at(Some(theirs))?;
-        let merged = self.merge_states(&base, &our_files, &their_files, "merge")?;
+        let merged = self.merge_states_with_workers(
+            &base,
+            &our_files,
+            &their_files,
+            "merge",
+            requested_workers,
+        )?;
         if bases.len() > 1 {
             // Some criss-cross histories contain competing resolutions of
             // earlier merges. If one side retains a virtual-base file while
