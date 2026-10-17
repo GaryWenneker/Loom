@@ -4413,4 +4413,69 @@ mod tests {
         assert_eq!(r.head().unwrap(), previous);
         assert_eq!(fs::read(dir.path().join("a")).unwrap(), b"another-side");
     }
+    #[test]
+    fn parallel_text_merge_matches_sequential_and_defers_conflict_publication() {
+        let (_dir, r) = repo();
+        let mut base = BTreeMap::new();
+        let mut ours = BTreeMap::new();
+        let mut theirs = BTreeMap::new();
+        for index in 0..64 {
+            let path = format!("files/{index:04}.txt");
+            let common = format!("left-{index}\nshared\nright-{index}\n");
+            let local = format!("ours-{index}\nshared\nright-{index}\n");
+            let remote = format!("left-{index}\nshared\ntheirs-{index}\n");
+            base.insert(path.clone(), r.store.put(BLOB, common.as_bytes()).unwrap());
+            ours.insert(path.clone(), r.store.put(BLOB, local.as_bytes()).unwrap());
+            theirs.insert(path, r.store.put(BLOB, remote.as_bytes()).unwrap());
+        }
+
+        let sequential = r
+            .merge_states_with_workers(&base, &ours, &theirs, "sequential", 1)
+            .unwrap();
+        let published = r.store.ids().unwrap();
+        let parallel = r
+            .merge_states_with_workers(&base, &ours, &theirs, "parallel", 2)
+            .unwrap();
+        assert_eq!(parallel, sequential);
+        assert_eq!(r.store.ids().unwrap(), published);
+
+        let mut conflict_base = BTreeMap::new();
+        let mut conflict_ours = BTreeMap::new();
+        let mut conflict_theirs = BTreeMap::new();
+        for (path, common, local, remote) in [
+            (
+                "mergeable",
+                b"left\nshared\nright\n".as_slice(),
+                b"ours\nshared\nright\n".as_slice(),
+                b"left\nshared\ntheirs\n".as_slice(),
+            ),
+            (
+                "conflict",
+                b"original\n".as_slice(),
+                b"local\n".as_slice(),
+                b"remote\n".as_slice(),
+            ),
+        ] {
+            conflict_base.insert(path.into(), r.store.put(BLOB, common).unwrap());
+            conflict_ours.insert(path.into(), r.store.put(BLOB, local).unwrap());
+            conflict_theirs.insert(path.into(), r.store.put(BLOB, remote).unwrap());
+        }
+        let before = r.store.ids().unwrap();
+        let error = r
+            .merge_states_with_workers(
+                &conflict_base,
+                &conflict_ours,
+                &conflict_theirs,
+                "checked",
+                2,
+            )
+            .unwrap_err();
+        assert!(format!("{error}").contains("conflict"));
+        assert_eq!(
+            r.store.ids().unwrap(),
+            before,
+            "a rejected merge must not publish successful sibling results"
+        );
+    }
+
 }
