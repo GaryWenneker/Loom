@@ -6,7 +6,16 @@ pub(crate) fn parallel_map<T: Sync, R: Send>(
     workers: usize,
     load: &(impl Fn(&T) -> Result<R> + Sync),
 ) -> Result<Vec<R>> {
-    if workers <= 1 || work.len() < 32 {
+    parallel_map_min(work, workers, 32, load)
+}
+
+pub(crate) fn parallel_map_min<T: Sync, R: Send>(
+    work: &[T],
+    workers: usize,
+    minimum_parallel_items: usize,
+    load: &(impl Fn(&T) -> Result<R> + Sync),
+) -> Result<Vec<R>> {
+    if workers <= 1 || work.len() < minimum_parallel_items.max(2) {
         return work.iter().map(load).collect();
     }
     // A caller may request far more workers than the host can sustain.
