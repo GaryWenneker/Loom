@@ -83,6 +83,32 @@ fn multidir_add_and_unstage_are_atomic_cli_operations() {
     ok(root, &["fsck"]);
 }
 
+#[test]
+fn add_worker_override_is_validated_and_keeps_the_pathset_atomic() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    ok(root, &["init"]);
+    fs::write(root.join("a"), b"first").unwrap();
+    fs::write(root.join("b"), b"second").unwrap();
+
+    assert!(!run(
+        root,
+        &["add", "--scan-workers", "1", "a", "--scan-workers", "2", "b"]
+    )
+    .status
+    .success());
+    assert!(run(root, &["diff", "--staged"]).stdout.is_empty());
+    assert!(!run(root, &["add", "--scan-workers", "invalid", "a"])
+        .status
+        .success());
+
+    ok(root, &["add", "--scan-workers", "1024", "a", "b"]);
+    ok(root, &["commit", "-m", "bounded workers"]);
+    assert_eq!(ok(root, &["cat", "main", "a"]), b"first");
+    assert_eq!(ok(root, &["cat", "main", "b"]), b"second");
+    ok(root, &["fsck"]);
+}
+
 #[cfg(unix)]
 #[test]
 fn staging_rejects_symlinked_parent_without_leaking_external_content() {
