@@ -1,0 +1,34 @@
+{
+  "classification": "paired native scopes and identical explicit worker requests",
+  "measured_source_commit": "91bb55ea7691fa0eaf22af783597a90f79f316d2",
+  "measured_source_tree": "ef8ddc0a802602433bff5d392498ed283ab132a6",
+  "baseline_commit": "6df6411c4262cf8a5e81d7d399b56d462b6b1d63",
+  "baseline_tree": "2389a12d26e4342d6691f3c81dd30f13c01bcd60",
+  "integrated_source_commit": "51b976324cc28e8f3958c5f7b8314486dcc3c111",
+  "integrated_source_tree": "cb288af9ab062a50e87b903218472b916fb529bc",
+  "integrated_main": "3a607fd8a5ded59dbf919a321a50339851b0993a",
+  "integration_note": "Local timings pin source91bb before #95. Final CI rebuilds the combined source against main3a607; do not substitute integrated binary identity for local measured binary.",
+  "candidate_binary_sha256": "d415de39639466ddaa3736bf29f07f20f2c79a29ee87e56b3d69b5cbd01577ef",
+  "baseline_binary_sha256": "79c56ea8bf561d6d62171478488086aca7177a6666101f26f9b6f68eda243857",
+  "raw_sha256": {
+    "nested-subtrees-fair-workers-0-20261017.json": "73b3b7383924ed4ec0222d547e3e047f50e957feb7a7d6902c889c0357c03800",
+    "nested-subtrees-fair-workers-1-20261017.json": "2b68350c7cb8fdcd0ba6e27d69d1c09549294879ab096582c6807833a3712ce1",
+    "nested-subtrees-fair-payload-20261017.json": "dda59b4d60d310ed66d07e05e5ab1e0fa88f30b960fad683582ee74777e150a2"
+  },
+  "harness_sha256": "e252a1d9ce28647cfa25b0ce87380278be267a11983d3654108626924b36d972",
+  "resource_helper_sha256": "e73d044ad6582bca3f876212d5a9a1ed8c3a1c6bd4927f6fe9367205090244bd",
+  "argv_regression_sha256": "23c2f8282c44aa61e1816186ae0376b409c99159674fceb4df4037010d12ca27",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1",
+  "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "cpu_max": "800000 100000",
+  "host": {
+    "platform": "Linux-6.18.55-x86_64-with-glibc2.39",
+    "cpus": 9
+  },
+  "git_version": "git version 2.51.1",
+  "verification": "Every sample full listing/selected bytes/framing/equal roots; final full payloads/history fsck. Equal canonical histories across worker0/1. Actual timed add/commit argv equality test passed with distinct rebuilt binaries.",
+  "historical_expanded_control": "nested-subtrees-provenance-20261017.json; withdrawn as same-input comparison; preserved unchanged",
+  "local_integrated_fmt": "passed",
+  "local_integrated_strict_clippy": "passed",
+  "integrated_validation_note": "Required clean isolated local test build and final-head CI results are recorded in PR #94; reused local build results are excluded from the proof."
+}

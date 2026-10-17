@@ -1,82 +1,84 @@
-> **Withdrawn as a same-workload speed comparison.** These runs gave the baseline an expanded file list although that binary supports directory scopes, and worker requests were not paired. The 1.93× conclusion is withdrawn as a like-for-like improvement. All raw data is retained as a historical expanded-argument control. Replacement measurements give both native engines identical scopes and worker requests.
+# Nested subtree construction — corrected comparison, 2026-10-17
 
-# Nested subtree construction — 2026-10-17
+The same-input 10k-file / 64-directory workflow records 321.27 ms for previous Loom and 247.22 ms for the candidate: **1.30× previous Loom**. Git records 119.65 ms, about **2.07× faster than the candidate**. The serial controls are neutral or slower, and the 100× Git target is not achieved. All measured cases appear below.
 
-Native snapshot construction now follows common prefixes to independent directory edits, instead of limiting workers to at least 32 root entries. Cheap file edits stay serial; descendants of a fork stay serial; the storage provider write hint caps the whole pool. This activates useful work for selections below a shared parent and prevents subtree × replica worker multiplication. Canonical IDs, CAS and staged snapshot semantics are unchanged.
+The earlier **1.93× conclusion is withdrawn** as a like-for-like speedup. That harness expanded the baseline's directory scopes into file arguments despite its native directory support and did not pair worker requests. The [historical report](performance-nested-subtrees-expanded-control-20261017.md), all three original raw files and their original provenance remain available, explicitly labeled as adapted controls. Replacement measurements below use identical native inputs.
 
-## Source and scope
+## Implementation
 
-Local measurements pin [source 71d1cd76](https://github.com/GaryWenneker/Loom/commit/71d1cd76455cab2a5cd390db5767354acf2ad806), tree `544943ee695386f67587bb67c59fdd11bad29625`. Baseline is main `5faf141bad40136c4e87858f1de17af5d8a74642`, tree `abad9544d6f430ca5fa3ba35f4a40effc5521f74`. Candidate release SHA-256 `863470a6815e277bd171a4790bf1d0780df787e29ac812b93d1ccedd4534675b`; baseline `117e876a69759ad566c84defc16ee9aee1f524d7c276992627c6a0af38b49619`. Both use Rust 1.99.1 on the current Intel Xeon Platinum 8573C / Linux 6.18.55 host (nine reported CPUs).
+Native tree construction follows common prefixes to independent changed directories, instead of forking only at the repository root with at least 32 edits. Cheap file-entry edits stay serial; directory tasks are grouped separately. Once a node forks, its descendants run serially, preventing recursive worker multiplication. The same bounded provider write hint caps both subtree construction and buffered object publication. Replicated providers retain their outer one-write hint. Canonical ordering, IDs, staged snapshots and ref CAS remain unchanged.
 
-After these isolated measurements, [integrated source e95cbcc4](https://github.com/GaryWenneker/Loom/commit/e95cbcc4a09d9da1771ae9d75a8b61045e585d19) incorporates the independent adaptive text-merge change from #93 and replaces a timer-based replica overlap test with explicit synchronization. Those changes do not alter the measured add/commit/tree implementation or harness. The local timing data remains attributed to the original measured binary; the final exact-head CI workflow rebuilds and checks the combined candidate at 1k/10k/100k. Do not substitute one binary hash for the other.
+These are per-call bounds, not a global concurrency or RSS budget. Scanning, object publication and subtree construction are joined phases. Failed subtree builds drain workers and preserve the prepared snapshot/ref for retry; unreachable immutable objects can remain after failure.
 
-## Method
+## Source and method
 
-Each run compares complete add-plus-commit workflows, including both startups, against previous Loom and Git on identical files and histories. Sixty-four files change in sixty-four directories below the shared files/ prefix. Files and enclosing directory scopes are measured separately. The baseline receives an equivalent expanded file list computed outside timing, with different argument counts; normal CLI progress output remains enabled. The baseline supports recursive selection but the expanded control is retained.
+Local measurements pin [candidate 91bb55ea](https://github.com/GaryWenneker/Loom/commit/91bb55ea7691fa0eaf22af783597a90f79f316d2), tree `ef8ddc0a802602433bff5d392498ed283ab132a6`. Baseline is main `6df6411c4262cf8a5e81d7d399b56d462b6b1d63`, tree `2389a12d26e4342d6691f3c81dd30f13c01bcd60`. Both include #93's adaptive text merges. Candidate release SHA-256 is `d415de39639466ddaa3736bf29f07f20f2c79a29ee87e56b3d69b5cbd01577ef`; baseline is `79c56ea8bf561d6d62171478488086aca7177a6666101f26f9b6f68eda243857`. Both were rebuilt separately with Rust 1.99.1 on Intel Xeon Platinum 8573C / Linux 6.18.55, nine reported CPUs, eight-core cgroup quota. Cargo core/CLI release products were cleaned between builds to avoid shared-target reuse.
 
-The initial repositories are written by the baseline and initial derived path indexes are absent. One first unchanged add/bootstrap is recorded separately; repeated timings use current indexes. Initial fixture creation, verification and cold-index bootstrap are excluded from incremental distributions. Every sample checks the full path list, all changed bytes/framing and native root equality. Every final byte and complete history/closure fsck are checked after the samples.
+After these measurements, [integrated source 51b97632](https://github.com/GaryWenneker/Loom/commit/51b976324cc28e8f3958c5f7b8314486dcc3c111) incorporates #95's atomic SQLite object batches from main `3a607fd8a5ded59dbf919a321a50339851b0993a`. This adds a batch-provider probe before the filesystem fallback. The local timing numbers remain attributed to source 91bb, not the integrated binary. Final exact-head CI rebuilds and measures the combined source against main 3a607 at 1k/10k/100k, with live replica and SQLite workflow evidence checked separately. Do not substitute source or binary identities.
 
-Six repeats rotate baseline/new/Git through two full engine-order cycles. Worker requests 1 and 8 are separate runs, not interleaved worker trials. They apply to candidate read/hash and subtree preparation; buffered object publication retains its own provider limit. The previous binary keeps its default worker policy. Request 1 therefore does not make the whole engine single-threaded, and request 8 does not bypass the filesystem provider maximum of four subtree writers or the CPU cap.
+Each measurement includes complete add plus commit, including both CLI startups and normal progress output. Sixty-four files change across sixty-four directories below a shared `files/` prefix. Exact files and their enclosing directory scopes are separate phases. Both native executables receive identical paths and identical explicit `--scan-workers` values on **both add and commit**. `--baseline-directories` disables the legacy expanded-file adapter. An executable-wrapper regression compares the actual timed argument lists; it passes with these distinct rebuilt binaries and runs again in CI against both built versions.
 
-No local builds or tests run concurrently with the reported measurements. This is still a shared host with uncontrolled OS caches, device scheduling and CPU scheduling. For example, the unchanged 1k-file baseline file-selection p50 changes from 252.25 to 557.41 ms between worker runs. Do not infer a causal worker-1/worker-8 speedup from separate run medians. Interpret paired engine controls and retain their variation.
+Initial setup/full commits are outside timing. Repositories begin with identical history written by the baseline. The first unchanged add/index bootstrap is recorded separately; repeated samples use current indexes. Each of six repeats rotates baseline/new/Git order. Every sample checks the full listing, changed bytes/framing and equal native roots. Final verification reads every byte and runs full history/closure fsck. Root sequences also match across the worker-0/worker-1 controls.
+
+Worker request 0 selects bounded automatic scheduling; request 1 serializes selected read/hash and tree work. Buffered publication retains its own provider policy, so request 1 is not a whole-engine single-thread claim. These worker runs are separate, not interleaved worker experiments. No local builds/tests overlapped the measured runs, but caches, device and CPU scheduling on this shared host remain uncontrolled. Do not infer causal worker-policy improvements by dividing separate-run medians.
 
 ## Complete add plus commit, p50
 
-| Request | Files | Payload bytes | Selection | Candidate paths | Previous Loom ms | New Loom ms | Git ms | Previous/new | Git/new |
-| ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 1,000 | 256 | files | 64 | 252.25 | 267.82 | 68.93 | 0.94× | 0.26× |
-| 1 | 1,000 | 256 | directories | 256 | 250.81 | 226.23 | 58.34 | 1.11× | 0.26× |
-| 1 | 10,000 | 256 | files | 64 | 250.18 | 299.74 | 128.06 | 0.83× | 0.43× |
-| 1 | 10,000 | 256 | directories | 2,512 | 496.13 | 312.85 | 126.95 | 1.59× | 0.41× |
-| 8 | 1,000 | 256 | files | 64 | 557.41 | 502.34 | 169.76 | 1.11× | 0.34× |
-| 8 | 1,000 | 256 | directories | 256 | 414.65 | 237.83 | 136.92 | 1.74× | 0.58× |
-| 8 | 10,000 | 256 | files | 64 | 272.61 | 179.98 | 167.68 | 1.51× | 0.93× |
-| 8 | 10,000 | 256 | directories | 2,512 | 423.51 | 218.87 | 184.63 | 1.93× | 0.84× |
-| 8 | 1,000 | 65,536 | files | 64 | 346.26 | 320.18 | 267.55 | 1.08× | 0.84× |
-| 8 | 1,000 | 65,536 | directories | 256 | 483.31 | 356.30 | 267.10 | 1.36× | 0.75× |
+| Both requests | Files | Payload bytes | Selection | Previous Loom ms | New Loom ms | Git ms | Previous/new | Git/new |
+| ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 0 | 1,000 | 256 | files | 373.88 | 251.62 | 71.00 | 1.49× | 0.28× |
+| 0 | 1,000 | 256 | directories | 952.41 | 399.22 | 204.61 | 2.39× | 0.51× |
+| 0 | 10,000 | 256 | files | 298.98 | 209.08 | 118.25 | 1.43× | 0.57× |
+| 0 | 10,000 | 256 | directories | 321.27 | 247.22 | 119.65 | 1.30× | 0.48× |
+| 1 | 1,000 | 256 | files | 345.24 | 429.59 | 111.89 | 0.80× | 0.26× |
+| 1 | 1,000 | 256 | directories | 320.29 | 329.49 | 113.50 | 0.97× | 0.34× |
+| 1 | 10,000 | 256 | files | 246.99 | 253.54 | 142.45 | 0.97× | 0.56× |
+| 1 | 10,000 | 256 | directories | 332.42 | 334.32 | 171.52 | 0.99× | 0.51× |
+| 0 | 1,000 | 65,536 | files | 520.28 | 277.15 | 305.00 | 1.88× | 1.10× |
+| 0 | 1,000 | 65,536 | directories | 396.11 | 279.19 | 198.20 | 1.42× | 0.71× |
 
-Ratios above one favor new Loom. The unpaired 10k / 64-directory control recorded 423.51 versus 218.87 ms. This is not a like-for-like speedup claim; Git recorded 184.63 ms. The request-1 exact-file controls regress at both sizes. Every tested Git default case is faster than new Loom. All controls remain in the table; neither 100× Git performance nor a universal improvement is established.
+Ratios above one favor new Loom. All directory cases remain slower than Git. The 64-KiB exact-file case records 1.10× Git in this run; this does not establish a general win or approach 100×. The 1k automatic directory case records 2.39× previous Loom but has pronounced variation (baseline p50 952 ms versus 320 ms in the separate serial run). Six repeats on a shared host do not establish a stable production speedup. The exact-file serial control regresses at both sizes; directory serial controls are nearly unchanged/slower.
 
 ## Add and commit split, p50
 
-| Request | Files | Payload bytes | Selection | Previous add ms | New add ms | Previous commit ms | New commit ms |
+| Both requests | Files | Payload bytes | Selection | Previous add ms | New add ms | Previous commit ms | New commit ms |
 | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: |
-| 1 | 1,000 | 256 | files | 78.04 | 99.72 | 177.32 | 153.93 |
-| 1 | 1,000 | 256 | directories | 90.14 | 76.28 | 165.77 | 153.28 |
-| 1 | 10,000 | 256 | files | 78.10 | 92.50 | 172.31 | 207.01 |
-| 1 | 10,000 | 256 | directories | 312.06 | 150.52 | 212.54 | 158.36 |
-| 8 | 1,000 | 256 | files | 235.73 | 192.46 | 289.13 | 281.89 |
-| 8 | 1,000 | 256 | directories | 141.29 | 113.85 | 261.79 | 131.13 |
-| 8 | 10,000 | 256 | files | 87.88 | 88.40 | 184.90 | 90.59 |
-| 8 | 10,000 | 256 | directories | 236.94 | 125.53 | 187.19 | 94.88 |
-| 8 | 1,000 | 65,536 | files | 125.64 | 143.19 | 203.82 | 127.68 |
-| 8 | 1,000 | 65,536 | directories | 188.51 | 170.38 | 241.42 | 152.75 |
+| 0 | 1,000 | 256 | files | 125.76 | 122.94 | 196.12 | 114.03 |
+| 0 | 1,000 | 256 | directories | 208.08 | 158.33 | 616.87 | 234.35 |
+| 0 | 10,000 | 256 | files | 86.61 | 90.32 | 207.99 | 120.67 |
+| 0 | 10,000 | 256 | directories | 129.03 | 141.60 | 202.82 | 98.11 |
+| 1 | 1,000 | 256 | files | 120.89 | 132.36 | 226.07 | 301.82 |
+| 1 | 1,000 | 256 | directories | 116.77 | 107.40 | 199.07 | 200.75 |
+| 1 | 10,000 | 256 | files | 72.08 | 74.20 | 174.51 | 183.20 |
+| 1 | 10,000 | 256 | directories | 136.78 | 163.47 | 183.12 | 196.30 |
+| 0 | 1,000 | 65,536 | files | 226.90 | 145.66 | 275.39 | 143.82 |
+| 0 | 1,000 | 65,536 | directories | 160.78 | 150.88 | 235.33 | 135.13 |
 
-Split medians need not sum to the complete-workflow median. Complete-workflow comparisons include changes in selection, read/hash worker request and subtree construction; these timings do not isolate one internal function.
+Split medians need not sum to complete-workflow medians. Wall timings alone do not isolate subtree construction from other workflow costs.
 
-## CPU and memory observations
+## CPU and raw memory observations, p50
 
-| Request | Files | Payload bytes | Selection | Previous CPU ms | New CPU ms | Git CPU ms | Previous raw RSS MiB | New raw RSS MiB |
-| ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: |
-| 1 | 1,000 | 256 | files | 105.75 | 98.26 | 63.61 | 19.85 | 19.85 |
-| 1 | 1,000 | 256 | directories | 106.68 | 99.70 | 54.09 | 19.85 | 19.85 |
-| 1 | 10,000 | 256 | files | 107.23 | 120.39 | 154.36 | 20.84 | 20.84 |
-| 1 | 10,000 | 256 | directories | 328.47 | 174.57 | 149.24 | 20.84 | 20.84 |
-| 8 | 1,000 | 256 | files | 405.37 | 364.15 | 162.20 | 19.86 | 19.86 |
-| 8 | 1,000 | 256 | directories | 264.46 | 227.68 | 132.93 | 19.86 | 19.86 |
-| 8 | 10,000 | 256 | files | 165.29 | 186.14 | 195.40 | 20.66 | 20.66 |
-| 8 | 10,000 | 256 | directories | 311.31 | 219.77 | 205.22 | 20.66 | 20.66 |
-| 8 | 1,000 | 65,536 | files | 286.44 | 338.49 | 246.94 | 22.14 | 22.14 |
-| 8 | 1,000 | 65,536 | directories | 392.37 | 381.33 | 261.52 | 22.27 | 22.27 |
+| Both requests | Files | Payload bytes | Selection | Previous CPU ms | New CPU ms | Git CPU ms | Previous raw RSS MiB | New raw RSS MiB | Git raw RSS MiB |
+| ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 1,000 | 256 | files | 148.37 | 166.50 | 67.79 | 19.90 | 19.90 | 19.90 |
+| 0 | 1,000 | 256 | directories | 482.35 | 228.95 | 150.09 | 19.90 | 19.90 | 19.90 |
+| 0 | 10,000 | 256 | files | 120.91 | 132.84 | 137.71 | 20.71 | 20.71 | 20.71 |
+| 0 | 10,000 | 256 | directories | 173.31 | 177.62 | 140.39 | 20.71 | 20.71 | 20.71 |
+| 1 | 1,000 | 256 | files | 173.84 | 215.97 | 107.66 | 19.90 | 19.90 | 19.90 |
+| 1 | 1,000 | 256 | directories | 197.34 | 184.14 | 108.03 | 19.90 | 19.90 | 19.90 |
+| 1 | 10,000 | 256 | files | 150.81 | 151.69 | 158.72 | 20.71 | 20.71 | 20.71 |
+| 1 | 10,000 | 256 | directories | 206.29 | 232.76 | 191.60 | 20.71 | 20.71 | 20.71 |
+| 0 | 1,000 | 65,536 | files | 432.47 | 340.39 | 273.14 | 22.02 | 22.02 | 22.02 |
+| 0 | 1,000 | 65,536 | directories | 312.90 | 310.06 | 192.91 | 22.02 | 22.02 | 22.02 |
 
-Raw JSON retains p50/p95/p99 and individual samples for both command timings, process CPU, raw wait4 maximum RSS and kernel I/O counters, plus first-add/bootstrap observations, canonical roots and final logical metadata bytes. RSS may include the Python fork/pre-exec launcher floor and is not isolated engine memory. Kernel block counters are not portable byte counts; logical metadata bytes are not allocated device blocks. Payload and worker limits are not total RSS caps.
+Raw JSON retains individual samples, p50/p95/p99, wall/CPU, raw wait4 RSS and kernel I/O counters, bootstrap observations, root sequences and final logical metadata bytes. RSS includes a possible Python fork/pre-exec launcher floor and cannot substantiate isolated engine memory savings. Kernel I/O counters are platform units, not portable byte counts. Logical metadata bytes are not allocated device blocks. Six-sample tail quantiles are descriptive, not production SLOs.
 
-The fixtures use normal engine defaults. This comparison does not establish identical power-loss guarantees between Loom and Git. Controlled cold storage, network traffic, remote/cloud providers, sparse workspaces, concurrent agents, sustained load and crash/power-loss recovery are unmeasured. Six samples provide descriptive quantiles, not production tail SLOs.
+Normal engine defaults do not establish identical power-loss contracts between Loom and Git. Controlled cold-disk, network/cloud providers, sparse workspaces, concurrent agents, sustained load and crash/power-loss recovery remain unmeasured.
 
 ## Correctness and remaining work
 
-The isolated source passed 239 local workspace/all-target tests, formatting and strict Clippy. The integrated source passes 240 local tests, including the independent text-merge policy and deterministic replica overlap test. Nested-tree tests require real concurrent writes below a shared prefix, enforce one/two-worker provider limits, rule out recursive pool multiplication, and compare every path and canonical root. A native-tree write failure retains the branch and prepared snapshot, drains workers and succeeds on retry.
+The measured source passed 240 local workspace/all-target tests, formatting and strict Clippy. The final combined source requires a clean isolated local workspace/all-target test build, formatting, strict Clippy, and Linux/macOS/Windows, Rust 1.85 minimum and security CI on the final PR head. PR #94 records the completed exact-head and resulting-main checks; timing evidence alone is not the merge gate. Provider probes require real overlap under a shared prefix, enforce one/two-worker limits, verify canonical roots/full paths and reject recursive pool multiplication. Fault tests preserve prepared snapshots and refs, drain workers and verify successful retries. The former replica overlap test now synchronizes explicitly instead of assuming a 25-ms sleep schedules every worker.
 
-The implementation remains an experimental local alpha. #26/#13, native v2 migration, secure remote authority, sparse isolated agent workspaces, broad fault/soak coverage and the 100× Git target remain open. No overall completion percentage is inferred from passing these checks.
+Loom remains an experimental local alpha. #26/#13, native v2 migration, secure remote authority, isolated sparse agent workspaces, broad fault/soak coverage and the 100× Git performance target remain open. Passing current checks does not establish 100% product completion.
 
-[Subtree contract](subtree-workers.md). Raw results: [request 1](../benchmarks/results/nested-subtrees-workers-1-20261017.json), [request 8](../benchmarks/results/nested-subtrees-workers-8-20261017.json), [larger payload](../benchmarks/results/nested-subtrees-payload-20261017.json). [Source/compiler/binary/data provenance](../benchmarks/results/nested-subtrees-provenance-20261017.json).
+[Subtree contract](subtree-workers.md). Corrected raw results: [both automatic](../benchmarks/results/nested-subtrees-fair-workers-0-20261017.json), [both serial](../benchmarks/results/nested-subtrees-fair-workers-1-20261017.json), [larger payload](../benchmarks/results/nested-subtrees-fair-payload-20261017.json). [Source/compiler/binary/data provenance](../benchmarks/results/nested-subtrees-fair-provenance-20261017.json).
