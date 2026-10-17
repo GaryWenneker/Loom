@@ -19,7 +19,9 @@ Legacy commit-all reads and hashes regular working files, persists changed blob 
 
 The full-content scan implementation in PR #86 adds count/byte windows and capped read/hash workers to commit-all and status. It still reads every working file; it is not incremental change discovery. Revision-pinned query sessions already support direct tree/path reads, verified caches and an optional read pack without checkout. Authoritative v1 changesets remain reconstructable without derived indexes.
 
-The initial engine uses loose objects under `.loom/objects/xx/yyyy...` and local SQLite metadata. Disk writes use temporary files and rename before the reference is committed. On Unix, object directory syncs are included; other OS durability needs targeted audits and fault tests.
+The filesystem engine uses loose objects under `.loom/objects/xx/yyyy...` and local SQLite metadata. Object publication validates temporary bytes, conditionally publishes them, syncs and verifies live readback before reference publication. On Unix, object directory syncs are included; this protocol is not power-loss certification on every filesystem/OS.
+
+[Atomic selected path sets](pathset-staging.md) collect exact paths and directory prefixes using the current branch/staging indexes, prepare bounded immutable blobs, then update selected staging rows in one transaction after checking the captured branch/ref. Index bootstrap can still reconstruct full history. Applications supply their intended selections; legacy commit-all and status retain full discovery.
 
 ## Future layers
 

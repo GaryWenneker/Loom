@@ -24,6 +24,9 @@ after all samples. This is explicit user/agent selection, not an automatic chang
 journal or a speed claim for legacy full scans. POSIX resource measurements share
 the wait4 launcher-floor and kernel-I/O-unit limitations documented below.
 
+[Measured selected-set workflows](../docs/performance-pathsets-20261017.md)
+include all favorable/unfavorable controls and cold-index bootstrap observations.
+
 ## Durable publication workflows
 
 ```sh

@@ -22,8 +22,12 @@ Read/hash preparation reuses the bounded full-content scanner: 1,024 files / 8 M
 
 One SQLite transaction checks the captured branch and ref, enables explicit staging, replaces selected changes and removes selected no-ops. An invalid selection, reader/provider error, moved branch or failed SQL update cannot partially replace the prepared snapshot or newly enable staging. Immutable orphan objects and derived index bootstrap changes can remain after failure; refs and preexisting staged content stay intact. A retry is idempotent. Commit subsequently freezes the prepared bytes, updates its native tree and publishes ref/root/path-index changes atomically under the existing protocol.
 
+Staging remains shared by one workspace. Add and commit are separate locked operations; this API does not isolate independently owned agent staging sets across the gap between commands. Concurrent agents need isolated workspaces until a separate ownership/session protocol is implemented. These benchmarks use one mutation stream per workspace.
+
 ## Limits and verification
 
 Selection metadata scales with candidate paths; the payload window is not a total RSS cap. Parent traversal retains the v1 filesystem race limitations documented in [worktree scans](worktree-scans.md). External edits are not an atomic filesystem snapshot; applications must supply the complete intended set. This is explicit change selection, not an automatic event journal or stat-cache authority. Legacy commit-all/status retain their full scans.
 
 Tests cover multi-directory selection, unrelated oversized files, exact prefix boundaries, deletions, file/directory replacements, duplicate/root/ignored selections, immutable prepared bytes, atomic unstage, invalid-input and SQL rollback, provider/readback faults, moved refs and retry. Full fsck remains the integrity check for stored history.
+
+[Selected-set measurements](performance-pathsets-20261017.md) compare complete native add+commit workflows with previous Loom and Git, recording initial index bootstrap separately.
