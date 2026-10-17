@@ -1076,11 +1076,17 @@ mod tests {
             blob: Some(new_blob),
         };
         let updated = apply_changes(&store, root, &[change.clone()]).unwrap();
-        let entry = NativeTree::decode(&store.get(updated).unwrap()).unwrap().entries.remove(0);
+        let entry = NativeTree::decode(&store.get(updated).unwrap())
+            .unwrap()
+            .entries
+            .remove(0);
         assert!(entry.executable);
         assert_eq!(entry.object, new_blob);
         assert_eq!(apply_changes(&store, root, &[change]).unwrap(), updated);
-        let original = NativeTree::decode(&store.get(root).unwrap()).unwrap().entries.remove(0);
+        let original = NativeTree::decode(&store.get(root).unwrap())
+            .unwrap()
+            .entries
+            .remove(0);
         assert!(original.executable);
         assert_eq!(original.object, old_blob);
     }
