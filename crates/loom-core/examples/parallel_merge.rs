@@ -21,7 +21,10 @@ fn write_files(workspace: &PathBuf, files: usize, side: &str) -> Result<(), Box<
     for index in 0..files {
         let directory = workspace.join(format!("files/{:04x}", index % 64));
         std::fs::create_dir_all(&directory)?;
-        std::fs::write(directory.join(format!("{index:08}.txt")), contents(index, side))?;
+        std::fs::write(
+            directory.join(format!("{index:08}.txt")),
+            contents(index, side),
+        )?;
     }
     Ok(())
 }
