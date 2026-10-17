@@ -4,6 +4,19 @@
 //! never claim durability or atomic ref publication they cannot guarantee.
 use crate::{ObjectId, Result};
 use std::io::{Read, Write};
+use std::sync::Arc;
+
+/// Read-only immutable object session. It cannot acknowledge publication or
+/// establish that an object is still present at its configured storage path.
+/// Consumers must verify the canonical envelope and hash on each cache miss.
+pub trait ObjectReadSession: Send + Sync {
+    fn get(&self, id: ObjectId) -> Result<Vec<u8>>;
+    /// Hint for independent immutable reads; callers still impose their own
+    /// thread and memory bounds. Serial providers need not opt into parallelism.
+    fn max_concurrent_reads(&self) -> usize {
+        1
+    }
+}
 
 /// Capability declaration, not a guarantee inferred from a provider name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,11 +34,24 @@ pub trait ObjectBackend: Send + Sync {
     fn capabilities(&self) -> StoreCapabilities;
     fn get(&self, id: ObjectId) -> Result<Vec<u8>>;
     fn put_if_absent(&self, id: ObjectId, canonical_envelope: &[u8]) -> Result<()>;
+    /// Opt in to independent durable object publications. This is a hint,
+    /// not a durability relaxation: every write must finish its normal sync
+    /// and verification. The core bounds workers and joins them on failure.
+    fn max_concurrent_writes(&self) -> usize {
+        1
+    }
     fn exists(&self, id: ObjectId) -> Result<bool>;
+    /// Optional retained read handle for repeated immutable queries. Never use
+    /// this handle for durability, closure validation, recovery or fsck.
+    fn open_read_session(&self) -> Result<Option<Arc<dyn ObjectReadSession>>> {
+        Ok(None)
+    }
     /// Optional complete enumeration for offline integrity checks. Backends
     /// without authoritative listing must report list_objects=false.
     fn list_ids(&self) -> Result<Vec<ObjectId>> {
-        Err(crate::Error::Invalid("object backend enumeration is unsupported".into()))
+        Err(crate::Error::Invalid(
+            "object backend enumeration is unsupported".into(),
+        ))
     }
 }
 

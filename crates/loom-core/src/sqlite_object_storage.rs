@@ -1,10 +1,11 @@
 //! Immutable canonical objects in a durable SQLite database.
 //! Object transactions finish before the repository publishes local branch refs.
 use crate::format::{decode_object, object_id, MAX_OBJECT_SIZE};
-use crate::storage_backend::{ObjectBackend, StoreCapabilities};
+use crate::storage_backend::{ObjectBackend, ObjectReadSession, StoreCapabilities};
 use crate::{Error, ObjectId, Result};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 pub struct SqliteObjectBackend {
     path: PathBuf,
@@ -38,6 +39,22 @@ fn checked_path(path: &Path) -> Result<PathBuf> {
 }
 
 impl SqliteObjectBackend {
+    /// Open an existing provider without creating a database or schema.
+    pub fn open_existing(path: impl AsRef<Path>) -> Result<Self> {
+        let backend = Self {
+            path: checked_path(path.as_ref())?,
+        };
+        let conn = backend.read_connection()?;
+        let mode: String = conn.query_row("PRAGMA journal_mode", [], |r| r.get(0))?;
+        if !mode.eq_ignore_ascii_case("wal") {
+            return Err(Error::Invalid(
+                "SQLite object backend requires WAL journal mode".into(),
+            ));
+        }
+        conn.prepare("SELECT oid,envelope FROM loom_storage_objects LIMIT 0")?;
+        Ok(backend)
+    }
+
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = checked_path(path.as_ref())?;
         let conn = Connection::open(&path)?;
@@ -96,6 +113,17 @@ impl SqliteObjectBackend {
         Ok(conn)
     }
 
+    fn read_connection(&self) -> Result<Connection> {
+        checked_path(&self.path)?;
+        let conn = Connection::open_with_flags(
+            &self.path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch("PRAGMA query_only=ON;")?;
+        Ok(conn)
+    }
+
     fn read(conn: &Connection, id: ObjectId) -> Result<Vec<u8>> {
         let row: Option<Option<Vec<u8>>> = conn
             .query_row(
@@ -128,6 +156,19 @@ impl SqliteObjectBackend {
 }
 
 impl ObjectBackend for SqliteObjectBackend {
+    fn open_read_session(&self) -> Result<Option<Arc<dyn ObjectReadSession>>> {
+        struct Reader(Mutex<Connection>);
+        impl ObjectReadSession for Reader {
+            fn get(&self, id: ObjectId) -> Result<Vec<u8>> {
+                let conn = self
+                    .0
+                    .lock()
+                    .map_err(|_| Error::Invalid("SQLite reader lock poisoned".into()))?;
+                SqliteObjectBackend::read(&conn, id)
+            }
+        }
+        Ok(Some(Arc::new(Reader(Mutex::new(self.read_connection()?)))))
+    }
     fn capabilities(&self) -> StoreCapabilities {
         StoreCapabilities {
             durable_writes: true,
@@ -271,5 +312,25 @@ mod tests {
         let bytes = encode_object(BLOB, b"never acknowledged").unwrap();
         assert!(backend.put_if_absent(object_id(&bytes), &bytes).is_err());
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn existing_open_never_creates_or_bootstraps_storage() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.sqlite");
+        assert!(SqliteObjectBackend::open_existing(&path).is_err());
+        assert!(!path.exists());
+        Connection::open(&path).unwrap();
+        assert!(SqliteObjectBackend::open_existing(&path).is_err());
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
     }
 }

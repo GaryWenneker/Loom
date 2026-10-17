@@ -36,10 +36,13 @@ impl RefBackend for SqliteRefBackend {
     fn read_ref(&self, name: &str) -> Result<Option<ObjectId>> {
         validate_name(name)?;
         let conn = self.connection()?;
-        let value: Option<String> = conn.query_row(
-            "SELECT oid FROM loom_storage_refs WHERE name=?1",
-            [name], |row| row.get(0),
-        ).optional()?;
+        let value: Option<String> = conn
+            .query_row(
+                "SELECT oid FROM loom_storage_refs WHERE name=?1",
+                [name],
+                |row| row.get(0),
+            )
+            .optional()?;
         value.map(|v| ObjectId::parse(&v)).transpose()
     }
 
@@ -52,12 +55,17 @@ impl RefBackend for SqliteRefBackend {
         validate_name(name)?;
         let mut conn = self.connection()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let current: Option<String> = tx.query_row(
-            "SELECT oid FROM loom_storage_refs WHERE name=?1",
-            [name], |row| row.get(0),
-        ).optional()?;
+        let current: Option<String> = tx
+            .query_row(
+                "SELECT oid FROM loom_storage_refs WHERE name=?1",
+                [name],
+                |row| row.get(0),
+            )
+            .optional()?;
         let parsed = current.map(|v| ObjectId::parse(&v)).transpose()?;
-        if parsed != expected { return Ok(false); }
+        if parsed != expected {
+            return Ok(false);
+        }
         match replacement {
             Some(next) => {
                 tx.execute(
@@ -66,7 +74,9 @@ impl RefBackend for SqliteRefBackend {
                     params![name, next.to_string()],
                 )?;
             }
-            None => { tx.execute("DELETE FROM loom_storage_refs WHERE name=?1", [name])?; }
+            None => {
+                tx.execute("DELETE FROM loom_storage_refs WHERE name=?1", [name])?;
+            }
         }
         tx.commit()?;
         Ok(true)
@@ -74,9 +84,13 @@ impl RefBackend for SqliteRefBackend {
 }
 
 fn validate_name(name: &str) -> Result<()> {
-    if name.is_empty() || name.len() > 1024
-        || name.starts_with('/') || name.ends_with('/')
-        || name.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+    if name.is_empty()
+        || name.len() > 1024
+        || name.starts_with('/')
+        || name.ends_with('/')
+        || name
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
         || name.chars().any(|c| c.is_control() || c == '\\')
     {
         return Err(Error::Invalid("invalid reference name".into()));
@@ -110,13 +124,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = Arc::new(dir.path().join("refs.sqlite"));
         SqliteRefBackend::open(path.as_path()).unwrap();
-        let workers: Vec<_> = (1..=8).map(|n| {
-            let path = Arc::clone(&path);
-            std::thread::spawn(move || {
-                let refs = SqliteRefBackend::open(path.as_path()).unwrap();
-                refs.compare_and_swap("main", None, Some(ObjectId([n; 32]))).unwrap()
+        let workers: Vec<_> = (1..=8)
+            .map(|n| {
+                let path = Arc::clone(&path);
+                std::thread::spawn(move || {
+                    let refs = SqliteRefBackend::open(path.as_path()).unwrap();
+                    refs.compare_and_swap("main", None, Some(ObjectId([n; 32])))
+                        .unwrap()
+                })
             })
-        }).collect();
-        assert_eq!(workers.into_iter().map(|w| w.join().unwrap()).filter(|won| *won).count(), 1);
+            .collect();
+        assert_eq!(
+            workers
+                .into_iter()
+                .map(|w| w.join().unwrap())
+                .filter(|won| *won)
+                .count(),
+            1
+        );
     }
 }

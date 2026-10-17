@@ -49,6 +49,32 @@ The repository verifies every returned object hash/envelope and reads back each 
 
 Full `fsck` requires authoritative enumeration: advertise `list_objects=true` and implement `ObjectBackend::list_ids`. Providers without listing (including the current replicated provider) explicitly reject full-store `fsck`; normal commits and closure validation do not depend on listing. Existing filesystem race/power-loss limitations remain in force.
 
+## Bounded blob publication
+
+Legacy commit-all prepares changed canonical blobs in windows of at most 128
+objects and 8 MiB. A single larger valid object is flushed serially under the
+existing 64 MiB payload cap. Worktree input buffers, the current encoder buffer,
+worker verification buffers and bookkeeping are additional; this is not an RSS
+cap or a streaming worktree scan.
+
+`ObjectBackend::max_concurrent_writes` defaults to one. Filesystem providers
+suggest four; SQLite, replicas and custom providers retain the serial default
+unless explicitly implemented otherwise. The core caps workers at eight and
+available CPUs and only starts scoped workers for 32 or more distinct objects.
+CPU/cgroup discovery is reused across the windows of one operation. This bound
+is per publisher, not a global limit across independent agent workspaces.
+
+Buffers are hash/envelope validated before provider I/O. Equal IDs within a
+window share one physical publication, and ID order improves fanout locality.
+Each publication retains its normal conditional create, sync and verified live
+readback. Every worker is joined on error/panic before returning. All blob
+windows must finish before constructing the native root/changeset or publishing
+the ref. Dropping the publisher never implicitly flushes pending work. Failures
+can leave immutable orphans; the ref stays unchanged and retry is idempotent.
+
+The filesystem sync protocol is unchanged. This is not crash/power-loss
+certification, a multi-agent throughput guarantee, or a universal speed claim.
+
 ## Separate storage roles
 
 1. **Immutable objects:** canonical blobs, manifests, trees and changesets; verify hashes, support conditional create and streaming.
@@ -113,3 +139,33 @@ python3 benchmarks/shared_object_stress.py --binary target/debug/loom --backend 
 ```
 
 The script starts isolated workspace/ref databases concurrently, all using one object provider. It verifies each acknowledged first-parent history, final snapshot and full `fsck`, then prints JSON counts and elapsed time. It does not exercise shared branch contention, a remote server, injected crashes or cloud latency. SQLite bootstrap retries journal-mode lock upgrades within a bounded deadline; this path has a synchronized twelve-initializer regression test.
+
+
+## Grouped immutable reads
+
+`Snapshot::read_files` and `query`'s `cat_many` operation use the same configured
+provider, without requiring an object migration or an optimization command.
+`ObjectReadSession::max_concurrent_reads` defaults to one; a provider can advertise
+a larger hint while the core still caps concurrency at eight and available CPUs.
+SQLite keeps its single query-only connection. Filesystem sessions suggest two.
+On Unix they retain a bounded directory-handle cache and use no-follow relative
+opens; Windows retains the verified filesystem path. All returned envelopes are
+hash/type checked. Retained handles/cached bytes never establish live durability.
+See [framing and resource limits](snapshot-query-protocol.md#native-grouped-file-reads).
+
+An immutable Snapshot also memoizes exact positive/negative file-path answers
+inside its existing budget. These answers belong to one pinned root, are shared
+by scalar/grouped reads, and never enter the provider's publication or integrity
+paths. Cache accounting conservatively includes retained per-path payloads and
+both path-key copies, even when content Arcs are shared. A zero budget disables
+this layer too; misses still use the configured verified reader. See the
+[working-set comparison](../benchmarks/README.md#repeated-immutable-working-sets).
+
+`loom read-pack @REV FILE` can separately prepare an optional local acceleration
+file for any configured provider. Only `query --read-pack FILE` uses it. It is
+not an `ObjectBackend`, does not advertise durability, and cannot acknowledge
+publication or make missing live objects pass closure/fsck. The pack stores
+unmodified canonical tree/blob envelopes and verifies each fetched object.
+New objects fall back to the configured read session. Retained index bytes are
+reported separately from the object cache; pack preparation and duplicated disk
+space are explicit costs. See the [read-pack contract](snapshot-query-protocol.md#optional-immutable-read-packs).

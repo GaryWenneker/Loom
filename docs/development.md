@@ -31,3 +31,17 @@ Current CI needs `cargo fmt --all -- --check` rather than merely `cargo fmt --al
 The large `repository.rs` should be modularized by storage, refs, graph, staging, merge, and worktree responsibilities after correctness contracts are explicit. Refactoring alone is not proof of durability.
 
 See [code review](code-review.md), [Scion architecture assessment](scion-architecture-review.md), and [release gates](release-gates.md).
+## Reproducible Rust checks
+
+Commit `Cargo.lock` for the shipped CLI. Repository Cargo configuration prefers
+versions compatible with the workspace's declared Rust minimum. The CI matrix
+uses `--locked`, checks formatting without changing source, denies Clippy
+warnings, and verifies Rust 1.85. A newer dependency is not automatically a
+compatible dependency: the initial minimum-version check caught globset 0.4.20
+requiring Rust 1.88; the lock selects compatible 0.4.19.
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --all-targets --locked
+```

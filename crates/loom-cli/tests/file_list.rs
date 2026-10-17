@@ -49,7 +49,8 @@ fn files_query_lists_indexed_and_unindexed_branch_trees_without_checkout() {
         all,
         b"read me.txt\0src/deep/nested.rs\0src/entry.rs\0src2/other.rs\0"
     );
-    assert!(!String::from_utf8(ok(root, &["files", "main", "src"])).unwrap()
+    assert!(!String::from_utf8(ok(root, &["files", "main", "src"]))
+        .unwrap()
         .contains("src2"));
     ok(root, &["fsck"]);
 }
@@ -67,13 +68,17 @@ fn indexed_file_list_handles_deletion_and_branch_isolation() {
     fs::write(root.join("feature-only.txt"), b"feature").unwrap();
     ok(root, &["add", "feature-only.txt"]);
     ok(root, &["commit", "-m", "feature"]);
-    assert_eq!(ok(root, &["files", "feature", "feature-only.txt"]),
-               b"\"feature-only.txt\"\n");
+    assert_eq!(
+        ok(root, &["files", "feature", "feature-only.txt"]),
+        b"\"feature-only.txt\"\n"
+    );
 
     ok(root, &["switch", "main"]);
     assert_eq!(ok(root, &["files", "main", "feature-only.txt"]), b"");
-    assert_eq!(ok(root, &["files", "feature", "feature-only.txt"]),
-               b"\"feature-only.txt\"\n");
+    assert_eq!(
+        ok(root, &["files", "feature", "feature-only.txt"]),
+        b"\"feature-only.txt\"\n"
+    );
 
     fs::remove_file(root.join("shared")).unwrap();
     ok(root, &["add", "shared"]);

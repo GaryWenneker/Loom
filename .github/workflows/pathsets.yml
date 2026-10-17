@@ -1,0 +1,81 @@
+name: Selected-set worker evidence
+
+on:
+  pull_request:
+    paths:
+      - 'crates/loom-core/src/tree.rs'
+      - 'crates/loom-core/src/repository.rs'
+      - 'crates/loom-core/src/worktree_scan.rs'
+      - 'benchmarks/pathsets.py'
+      - '.github/workflows/pathsets.yml'
+  workflow_dispatch:
+    inputs:
+      baseline_ref:
+        description: Baseline commit or ref in this repository
+        required: true
+        default: 57c0aa5a26c743b3e1ed250e82029b495095d854
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  pathset-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: candidate
+      - name: Check out baseline
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.baseline_ref || '57c0aa5a26c743b3e1ed250e82029b495095d854' }}
+          path: baseline
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build baseline and candidate in separate targets
+        run: |
+          CARGO_TARGET_DIR="${{ github.workspace }}/baseline-target" cargo build --release --locked -p loom-cli --manifest-path baseline/Cargo.toml
+          CARGO_TARGET_DIR="${{ github.workspace }}/candidate-target" cargo build --release --locked -p loom-cli --manifest-path candidate/Cargo.toml
+      - name: Record resolved commits, compiler and binary identities
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, subprocess
+          from pathlib import Path
+          def output(*args):
+              return subprocess.check_output(args, text=True).strip()
+          provenance = {
+              'candidate_commit': output('git', '-C', 'candidate', 'rev-parse', 'HEAD'),
+              'baseline_commit': output('git', '-C', 'baseline', 'rev-parse', 'HEAD'),
+              'candidate_tree': output('git', '-C', 'candidate', 'rev-parse', 'HEAD^{tree}'),
+              'baseline_tree': output('git', '-C', 'baseline', 'rev-parse', 'HEAD^{tree}'),
+              'rustc': output('rustc', '--version', '--verbose'),
+              'cargo': output('cargo', '--version'),
+              'candidate_sha256': hashlib.sha256(Path('candidate-target/release/loom').read_bytes()).hexdigest(),
+              'baseline_sha256': hashlib.sha256(Path('baseline-target/release/loom').read_bytes()).hexdigest(),
+          }
+          Path('candidate/pathset-provenance.json').write_text(json.dumps(provenance, indent=2)+'\n')
+          PY
+      - name: Compare complete selected-set workflows at each worker request
+        working-directory: candidate
+        run: |
+          for workers in 1 8; do
+            python3 benchmarks/pathsets.py \
+              --loom "${{ github.workspace }}/candidate-target/release/loom" \
+              --baseline-loom "${{ github.workspace }}/baseline-target/release/loom" \
+              --files 1000 10000 100000 --directories 256 --changed-paths 64 --repeat 6 \
+              --scan-workers "$workers" --output "pathsets-workers-$workers.json"
+          done
+      - name: Upload checked raw evidence and provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: loom-pathsets-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            candidate/pathset-provenance.json
+            candidate/pathsets-workers-1.json
+            candidate/pathsets-workers-8.json
+          if-no-files-found: error
+          retention-days: 90

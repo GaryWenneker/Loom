@@ -4,12 +4,17 @@ fn call(root: &Path, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_loom"))
         .current_dir(root)
         .env("LOOM_AUTHOR", "fast-forward-test")
-        .args(args).output().unwrap()
+        .args(args)
+        .output()
+        .unwrap()
 }
 fn ok(root: &Path, args: &[&str]) -> String {
     let out = call(root, args);
-    assert!(out.status.success(),
-            "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8(out.stdout).unwrap()
 }
 fn commit_id(text: &str) -> String {
@@ -32,7 +37,10 @@ fn fast_forward_multiple_changesets_updates_branch_without_merge_commit() {
     ok(root, &["switch", "main"]);
     assert!(!root.join("new").exists());
     let result = ok(root, &["merge", "feature"]);
-    assert!(result.starts_with("Fast-forwarded to feature ("), "{result}");
+    assert!(
+        result.starts_with("Fast-forwarded to feature ("),
+        "{result}"
+    );
     assert!(result.contains(&target));
     assert_eq!(fs::read(root.join("new")).unwrap(), b"v2");
     let log = ok(root, &["log", "1"]);

@@ -1,0 +1,70 @@
+name: Replica publication evidence
+
+on:
+  pull_request:
+    paths:
+      - "crates/loom-core/src/replicated_storage.rs"
+      - "crates/loom-core/src/workers.rs"
+      - "crates/loom-core/examples/replication_publication.rs"
+      - "benchmarks/replica_writes.py"
+      - "benchmarks/compare_publication.py"
+      - "docs/bounded-replica-publication.md"
+      - ".github/workflows/replica-writes.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    name: checked replica writes
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact candidate
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build benchmark target
+        run: cargo build --release --locked -p loom-core --example replication_publication
+      - name: Run checked worker comparison
+        run: |
+          mkdir -p artifacts
+          python3 benchmarks/replica_writes.py \
+            --binary target/release/examples/replication_publication \
+            --files 100 1000 --workers 1 0 2 4 --replicas 4 --repeat 7 \
+            --output artifacts/replica-writes.json
+      - name: Record provenance
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          export TREE_SHA="$(git rev-parse HEAD^{tree})"
+          export RUSTC_VERSION="$(rustc --version)"
+          export CARGO_VERSION="$(cargo --version)"
+          export BINARY_SHA256="$(sha256sum target/release/examples/replication_publication | cut -d' ' -f1)"
+          export HARNESS_SHA256="$(sha256sum benchmarks/replica_writes.py | cut -d' ' -f1)"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          Path("artifacts/provenance.json").write_text(json.dumps({
+              "candidate_commit": os.environ["CANDIDATE_SHA"],
+              "candidate_tree": os.environ["TREE_SHA"],
+              "rustc": os.environ["RUSTC_VERSION"],
+              "cargo": os.environ["CARGO_VERSION"],
+              "binary_sha256": os.environ["BINARY_SHA256"],
+              "harness_sha256": os.environ["HARNESS_SHA256"],
+          }, indent=2) + "\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: replica-writes-${{ github.event.pull_request.head.sha || github.sha }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 90

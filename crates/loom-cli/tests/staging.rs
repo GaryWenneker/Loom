@@ -14,7 +14,8 @@ fn ok(root: &Path, args: &[&str]) -> Vec<u8> {
     assert!(
         output.status.success(),
         "loom {:?} failed: {}",
-        args, String::from_utf8_lossy(&output.stderr)
+        args,
+        String::from_utf8_lossy(&output.stderr)
     );
     output.stdout
 }
@@ -38,16 +39,26 @@ fn staged_snapshot_is_immutable_and_only_selected_paths_are_committed() {
     assert_eq!(ok(root, &["cat", "main", "a.txt"]), b"first\n");
     assert!(!cmd(root, &["cat", "main", "b.txt"]).status.success());
 
-    assert_eq!(fs::read(root.join("a.txt")).unwrap(), b"edited after staging\n");
+    assert_eq!(
+        fs::read(root.join("a.txt")).unwrap(),
+        b"edited after staging\n"
+    );
     assert_eq!(fs::read(root.join("b.txt")).unwrap(), b"not selected\n");
     assert!(!cmd(root, &["commit", "-m", "should fail"]).status.success());
-    assert!(String::from_utf8(ok(root, &["status"])).unwrap().contains("No changes staged"));
+    assert!(String::from_utf8(ok(root, &["status"]))
+        .unwrap()
+        .contains("No changes staged"));
 
     ok(root, &["add", "a.txt", "b.txt"]);
     ok(root, &["commit", "-m", "both"]);
-    assert_eq!(ok(root, &["cat", "main", "a.txt"]), b"edited after staging\n");
+    assert_eq!(
+        ok(root, &["cat", "main", "a.txt"]),
+        b"edited after staging\n"
+    );
     assert_eq!(ok(root, &["cat", "main", "b.txt"]), b"not selected\n");
-    assert!(String::from_utf8(ok(root, &["status"])).unwrap().contains("Working tree clean"));
+    assert!(String::from_utf8(ok(root, &["status"]))
+        .unwrap()
+        .contains("Working tree clean"));
     ok(root, &["fsck"]);
 }
 
@@ -61,9 +72,13 @@ fn stage_tracked_deletion_and_unstage_without_losing_working_files() {
     ok(root, &["commit", "-m", "initial legacy commit"]);
     fs::remove_file(root.join("delete")).unwrap();
     ok(root, &["add", "delete"]);
-    assert!(String::from_utf8(ok(root, &["status"])).unwrap().contains("staged D delete"));
+    assert!(String::from_utf8(ok(root, &["status"]))
+        .unwrap()
+        .contains("staged D delete"));
     ok(root, &["unstage", "delete"]);
-    assert!(!cmd(root, &["commit", "-m", "nothing staged"]).status.success());
+    assert!(!cmd(root, &["commit", "-m", "nothing staged"])
+        .status
+        .success());
 
     ok(root, &["add", "delete"]);
     ok(root, &["commit", "-m", "removed"]);

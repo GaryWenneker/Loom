@@ -1,0 +1,536 @@
+{
+  "schema_version": 1,
+  "git_version": "git version 2.51.1",
+  "host": {
+    "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+    "cpus": 9,
+    "cpu_model": "AMD EPYC 9V74 80-Core Processor"
+  },
+  "loom_sha256": "30de638e576f1764a8722c703084d8a7ac402a5d163c496a8b3fc2acd11d46c0",
+  "baseline_loom_sha256": "6fe0b40248b9fe502b8939904948295f764b14d239ea480a6e559d609bdaa8b2",
+  "harness_sha256": "7249d9388e8bed2bd3c4977184c81167035ee7b4cb2f2b29b3656a426ee403d7",
+  "metric_units": {
+    "wall_ms": "milliseconds",
+    "user_cpu_ms": "milliseconds",
+    "system_cpu_ms": "milliseconds",
+    "cpu_ms": "milliseconds",
+    "max_rss_kib": "KiB",
+    "rusage_inblock": "kernel counter units, not bytes",
+    "rusage_oublock": "kernel counter units, not bytes"
+  },
+  "conditions": [
+    "filesystem object backend; fresh repositories per engine/sample; identical bytes and changes",
+    "Loom commit-all vs Git add+commit; both full workflows measured, including process startup",
+    "engine order rotates; fixture creation, full byte verification, listings and fsck outside timing",
+    "initial commit then eight changed files; incremental control rescans same tracked fixture",
+    "POSIX wait4 per-process user/system CPU, max RSS and raw kernel block-I/O counters",
+    "Git RSS is max of two sequential commands; CPU/I-O/wall are summed",
+    "metadata bytes are logical file lengths, not allocated disk blocks",
+    "OS caches not flushed; no controlled cold disk, network or multi-agent evidence",
+    "publication durability protocol retained; no power-loss certification"
+  ],
+  "scenarios": [
+    {
+      "files": 100000,
+      "file_bytes": 256,
+      "layout": "sharded",
+      "leaf_directories": 256,
+      "changed_files": 8,
+      "operations": {
+        "baseline": {
+          "initial": {
+            "wall_ms": {
+              "samples": [
+                6030.624077,
+                17218.761768,
+                17388.406045
+              ],
+              "p50": 17218.761768,
+              "p95": 17371.4416173,
+              "p99": 17385.01315946
+            },
+            "user_cpu_ms": {
+              "samples": [
+                1137.515,
+                1313.1979999999999,
+                1289.1650000000002
+              ],
+              "p50": 1289.1650000000002,
+              "p95": 1310.7947,
+              "p99": 1312.71734
+            },
+            "system_cpu_ms": {
+              "samples": [
+                4845.568,
+                15688.632,
+                15904.045999999998
+              ],
+              "p50": 15688.632,
+              "p95": 15882.504599999998,
+              "p99": 15899.73772
+            },
+            "cpu_ms": {
+              "samples": [
+                5983.0830000000005,
+                17001.829999999998,
+                17193.211
+              ],
+              "p50": 17001.829999999998,
+              "p95": 17174.0729,
+              "p99": 17189.38338
+            },
+            "max_rss_kib": {
+              "samples": [
+                50864.0,
+                219448.0,
+                229616.0
+              ],
+              "p50": 219448.0,
+              "p95": 228599.2,
+              "p99": 229412.64
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                896112,
+                880752,
+                880400
+              ],
+              "p50": 880752,
+              "p95": 894576.0,
+              "p99": 895804.8
+            }
+          },
+          "incremental": {
+            "wall_ms": {
+              "samples": [
+                742.655896,
+                722.490698,
+                741.977033
+              ],
+              "p50": 741.977033,
+              "p95": 742.5880096999999,
+              "p99": 742.64231874
+            },
+            "user_cpu_ms": {
+              "samples": [
+                311.317,
+                270.512,
+                282.908
+              ],
+              "p50": 282.908,
+              "p95": 308.47610000000003,
+              "p99": 310.74882
+            },
+            "system_cpu_ms": {
+              "samples": [
+                430.90999999999997,
+                451.55899999999997,
+                458.77799999999996
+              ],
+              "p50": 451.55899999999997,
+              "p95": 458.05609999999996,
+              "p99": 458.63361999999995
+            },
+            "cpu_ms": {
+              "samples": [
+                742.227,
+                722.0709999999999,
+                741.6859999999999
+              ],
+              "p50": 741.6859999999999,
+              "p95": 742.1728999999999,
+              "p99": 742.21618
+            },
+            "max_rss_kib": {
+              "samples": [
+                136328.0,
+                219448.0,
+                229616.0
+              ],
+              "p50": 219448.0,
+              "p95": 228599.2,
+              "p99": 229412.64
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                528,
+                536,
+                528
+              ],
+              "p50": 528,
+              "p95": 535.2,
+              "p99": 535.84
+            }
+          }
+        },
+        "loom": {
+          "initial": {
+            "wall_ms": {
+              "samples": [
+                7832.756619,
+                9800.624977,
+                8258.670642
+              ],
+              "p50": 8258.670642,
+              "p95": 9646.429543499999,
+              "p99": 9769.7858903
+            },
+            "user_cpu_ms": {
+              "samples": [
+                1053.0459999999998,
+                1368.4959999999999,
+                1177.8809999999999
+              ],
+              "p50": 1177.8809999999999,
+              "p95": 1349.4344999999998,
+              "p99": 1364.6836999999998
+            },
+            "system_cpu_ms": {
+              "samples": [
+                15177.752999999999,
+                20910.972999999998,
+                15753.807
+              ],
+              "p50": 15753.807,
+              "p95": 20395.2564,
+              "p99": 20807.82968
+            },
+            "cpu_ms": {
+              "samples": [
+                16230.798999999997,
+                22279.468999999997,
+                16931.688000000002
+              ],
+              "p50": 16931.688000000002,
+              "p95": 21744.690899999998,
+              "p99": 22172.513379999997
+            },
+            "max_rss_kib": {
+              "samples": [
+                137968.0,
+                211608.0,
+                229616.0
+              ],
+              "p50": 211608.0,
+              "p95": 227815.2,
+              "p99": 229255.84
+            },
+            "rusage_inblock": {
+              "samples": [
+                152,
+                88,
+                0
+              ],
+              "p50": 88,
+              "p95": 145.6,
+              "p99": 150.72
+            },
+            "rusage_oublock": {
+              "samples": [
+                835552,
+                851680,
+                835848
+              ],
+              "p50": 835848,
+              "p95": 850096.8,
+              "p99": 851363.36
+            }
+          },
+          "incremental": {
+            "wall_ms": {
+              "samples": [
+                664.653562,
+                738.441665,
+                769.077487
+              ],
+              "p50": 738.441665,
+              "p95": 766.0139048,
+              "p99": 768.46477056
+            },
+            "user_cpu_ms": {
+              "samples": [
+                291.51899999999995,
+                263.974,
+                310.71099999999996
+              ],
+              "p50": 291.51899999999995,
+              "p95": 308.79179999999997,
+              "p99": 310.32715999999994
+            },
+            "system_cpu_ms": {
+              "samples": [
+                372.73,
+                474.0319999999999,
+                457.16499999999996
+              ],
+              "p50": 457.16499999999996,
+              "p95": 472.34529999999995,
+              "p99": 473.69465999999994
+            },
+            "cpu_ms": {
+              "samples": [
+                664.249,
+                738.006,
+                767.876
+              ],
+              "p50": 738.006,
+              "p95": 764.889,
+              "p99": 767.2786
+            },
+            "max_rss_kib": {
+              "samples": [
+                166180.0,
+                211608.0,
+                229616.0
+              ],
+              "p50": 211608.0,
+              "p95": 227815.2,
+              "p99": 229255.84
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                736,
+                760,
+                912
+              ],
+              "p50": 760,
+              "p95": 896.8,
+              "p99": 908.96
+            }
+          }
+        },
+        "git": {
+          "initial": {
+            "wall_ms": {
+              "samples": [
+                15624.830362,
+                16250.408593999999,
+                15420.59146
+              ],
+              "p50": 15624.830362,
+              "p95": 16187.8507708,
+              "p99": 16237.89702936
+            },
+            "user_cpu_ms": {
+              "samples": [
+                1338.835,
+                1468.352,
+                1291.435
+              ],
+              "p50": 1338.835,
+              "p95": 1455.4003,
+              "p99": 1465.7616600000001
+            },
+            "system_cpu_ms": {
+              "samples": [
+                14184.956999999999,
+                14682.833999999999,
+                14034.793999999998
+              ],
+              "p50": 14184.956999999999,
+              "p95": 14633.046299999998,
+              "p99": 14672.87646
+            },
+            "cpu_ms": {
+              "samples": [
+                15523.792,
+                16151.186000000002,
+                15326.229
+              ],
+              "p50": 15523.792,
+              "p95": 16088.446600000001,
+              "p99": 16138.638120000001
+            },
+            "max_rss_kib": {
+              "samples": [
+                166272.0,
+                211608.0,
+                219448.0
+              ],
+              "p50": 211608.0,
+              "p95": 218664.0,
+              "p99": 219291.2
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                844880,
+                847088,
+                844584
+              ],
+              "p50": 844880,
+              "p95": 846867.2,
+              "p99": 847043.84
+            }
+          },
+          "incremental": {
+            "wall_ms": {
+              "samples": [
+                192.910036,
+                182.29455000000002,
+                184.153717
+              ],
+              "p50": 184.153717,
+              "p95": 192.0344041,
+              "p99": 192.73490962
+            },
+            "user_cpu_ms": {
+              "samples": [
+                123.314,
+                108.38399999999999,
+                104.50399999999999
+              ],
+              "p50": 108.38399999999999,
+              "p95": 121.821,
+              "p99": 123.0154
+            },
+            "system_cpu_ms": {
+              "samples": [
+                302.318,
+                319.115,
+                310.08599999999996
+              ],
+              "p50": 310.08599999999996,
+              "p95": 318.2121,
+              "p99": 318.93442
+            },
+            "cpu_ms": {
+              "samples": [
+                425.63200000000006,
+                427.49899999999997,
+                414.59
+              ],
+              "p50": 425.63200000000006,
+              "p95": 427.3123,
+              "p99": 427.46166
+            },
+            "max_rss_kib": {
+              "samples": [
+                184304.0,
+                211608.0,
+                219448.0
+              ],
+              "p50": 211608.0,
+              "p95": 218664.0,
+              "p99": 219291.2
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                35112,
+                35248,
+                35240
+              ],
+              "p50": 35240,
+              "p95": 35247.2,
+              "p99": 35247.84
+            }
+          }
+        }
+      },
+      "canonical_roots": {
+        "baseline": [
+          [
+            "62feaf84a83d1ce9ed24af085e60bdc8a09828ceccdf313efc33851a6bf7ed66",
+            "11eee5606b471957de189b8500839e4c156328b3d1d1e906a17dd083eb0d5aa4"
+          ],
+          [
+            "62feaf84a83d1ce9ed24af085e60bdc8a09828ceccdf313efc33851a6bf7ed66",
+            "11eee5606b471957de189b8500839e4c156328b3d1d1e906a17dd083eb0d5aa4"
+          ],
+          [
+            "62feaf84a83d1ce9ed24af085e60bdc8a09828ceccdf313efc33851a6bf7ed66",
+            "11eee5606b471957de189b8500839e4c156328b3d1d1e906a17dd083eb0d5aa4"
+          ]
+        ],
+        "loom": [
+          [
+            "62feaf84a83d1ce9ed24af085e60bdc8a09828ceccdf313efc33851a6bf7ed66",
+            "11eee5606b471957de189b8500839e4c156328b3d1d1e906a17dd083eb0d5aa4"
+          ],
+          [
+            "62feaf84a83d1ce9ed24af085e60bdc8a09828ceccdf313efc33851a6bf7ed66",
+            "11eee5606b471957de189b8500839e4c156328b3d1d1e906a17dd083eb0d5aa4"
+          ],
+          [
+            "62feaf84a83d1ce9ed24af085e60bdc8a09828ceccdf313efc33851a6bf7ed66",
+            "11eee5606b471957de189b8500839e4c156328b3d1d1e906a17dd083eb0d5aa4"
+          ]
+        ]
+      },
+      "metadata_logical_bytes_after_both_commits": {
+        "baseline": [
+          93134889,
+          93126697,
+          93134889
+        ],
+        "loom": [
+          93126697,
+          93134889,
+          93134889
+        ],
+        "git": [
+          16802816,
+          16802816,
+          16802816
+        ]
+      },
+      "baseline_over_loom_p50": {
+        "initial": 2.0849314029346178,
+        "incremental": 1.0047876063439622
+      },
+      "git_over_loom_p50": {
+        "initial": 1.8919304376347112,
+        "incremental": 0.24938153645488031
+      }
+    }
+  ]
+}

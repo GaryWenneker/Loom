@@ -11,8 +11,11 @@ fn call(root: &Path, args: &[&str]) -> std::process::Output {
 
 fn ok(root: &Path, args: &[&str]) -> String {
     let out = call(root, args);
-    assert!(out.status.success(),
-        "{args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8(out.stdout).unwrap()
 }
 
@@ -33,8 +36,10 @@ fn immutable_tree_roots_are_repeatable_and_do_not_change_v1_revisions() {
     assert_eq!(first.trim().len(), 64);
     let second = ok(root, &["tree", &reference]);
     assert_eq!(first, second, "canonical object ID must be stable");
-    assert_eq!(ok(root, &["files", &reference, "src"]),
-               "\"src/deep/lib.rs\"\n");
+    assert_eq!(
+        ok(root, &["files", &reference, "src"]),
+        "\"src/deep/lib.rs\"\n"
+    );
     assert_eq!(fs::read(root.join("README.md")).unwrap(), b"README");
 
     ok(root, &["fsck"]);
