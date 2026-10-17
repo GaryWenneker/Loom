@@ -26,9 +26,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     std::fs::create_dir_all(&workspace)?;
     let mut replicas: Vec<Arc<dyn ObjectBackend>> = Vec::new();
+    let mut copies = Vec::new();
     for path in &replica_paths {
         std::fs::create_dir_all(path)?;
-        replicas.push(Arc::new(FilesystemObjectBackend::open(path)?));
+        let replica = Arc::new(FilesystemObjectBackend::open(path)?);
+        replicas.push(replica.clone());
+        copies.push(replica);
     }
     let backend = Arc::new(ReplicatedObjectBackend::with_workers(replicas, workers)?);
     let repository = Repository::init_with_object_backend(&workspace, backend)?;
@@ -43,7 +46,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     let started = Instant::now();
     let revision = repository.commit("benchmark", "replicated publication")?;
     let elapsed = started.elapsed();
-    let checked = repository.fsck()?;
+    drop(repository);
+
+    let mut checked = Vec::with_capacity(copies.len());
+    for copy in copies {
+        let replica = Repository::discover_with_object_backend(&workspace, copy)?;
+        if replica.head()?.as_ref() != Some(&revision) {
+            return Err("replica did not expose the acknowledged revision".into());
+        }
+        checked.push(replica.fsck()?);
+    }
+    let checked = checked
+        .iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
     println!("{}\t{}\t{}", elapsed.as_nanos(), revision, checked);
     Ok(())
 }
