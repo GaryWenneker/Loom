@@ -57,13 +57,14 @@ fn usage() {
     eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path] [--object-dir DIRECTORY | --object-db FILE]\n  loom status [--scan-workers N]\n  loom add [--scan-workers N] [--] PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME] [--scan-workers N]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom merge-bases LEFT_BRANCH RIGHT_BRANCH\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom cat @CHANGESET_ID PATH\n  loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]\n  loom tree @CHANGESET_ID\n  loom tree ls @TREE_ID [DIR]\n  loom tree cat @TREE_ID PATH\n  loom fsck\n  loom git -- GIT_ARGS...\n  loom query --batch @CHANGESET_ID [--cache-bytes N] [--read-pack FILE]\n  loom read-pack @CHANGESET_ID FILE\n\nExternal object storage: set LOOM_OBJECT_DIR or LOOM_OBJECT_DB for every command.\n");
     eprintln!("  loom sparse-export @CHANGESET_ID DESTINATION [PREFIX ...]");
     eprintln!("  loom portable-manifest regular|executable|symlink PATH");
-    eprintln!("  loom portable-tree DIRECTORY");
+    eprintln!("  loom portable-tree DIRECTORY [--workers N]");
 }
 
 fn publish_portable_directory(
     repo: &Repository,
     directory: &Path,
     depth: usize,
+    workers: usize,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     if depth > 256 {
         return Err("portable tree nesting limit reached".into());
@@ -83,8 +84,12 @@ fn publish_portable_directory(
     }
     discovered.sort_by(|left, right| left.0.cmp(&right.0));
     let names_before: Vec<_> = discovered.iter().map(|(name, _)| name.clone()).collect();
-    let mut entries = Vec::with_capacity(discovered.len());
-    for (name, path) in discovered {
+    let mut entries: Vec<Option<loom_core::PortableTreeEntry>> = std::iter::repeat_with(|| None)
+        .take(discovered.len())
+        .collect();
+    let mut files = Vec::new();
+    let mut file_slots = Vec::new();
+    for (slot, (name, path)) in discovered.into_iter().enumerate() {
         let metadata = std::fs::symlink_metadata(&path)?;
         let (kind, object) = if metadata.file_type().is_symlink() {
             let target_path = std::fs::read_link(&path)?;
@@ -105,30 +110,24 @@ fn publish_portable_directory(
         } else if metadata.is_dir() {
             (
                 loom_core::PortableTreeEntryKind::Directory,
-                publish_portable_directory(repo, &path, depth + 1)?,
+                publish_portable_directory(repo, &path, depth + 1, workers)?,
             )
         } else if metadata.is_file() {
-            let mut input = std::fs::File::open(&path)?;
-            let opened = input.metadata()?;
-            if !same_open_file(&metadata, &opened) {
-                return Err("portable tree input changed before reading".into());
-            }
-            let file_kind = portable_file_kind(&opened);
-            let object =
-                repo.publish_portable_blob_from_reader(file_kind, opened.len(), &mut input)?;
-            let opened_after = input.metadata()?;
-            let after = std::fs::symlink_metadata(&path)?;
-            if !same_open_file(&opened, &opened_after)
-                || !same_open_file(&opened_after, &after)
-                || portable_file_kind(&opened) != portable_file_kind(&after)
-            {
-                return Err("portable tree input changed while reading".into());
-            }
-            (loom_core::PortableTreeEntryKind::File, object)
+            files.push((portable_file_kind(&metadata), path));
+            file_slots.push((slot, name));
+            continue;
         } else {
             return Err(format!("unsupported portable tree entry: {}", path.display()).into());
         };
-        entries.push(loom_core::PortableTreeEntry { name, kind, object });
+        entries[slot] = Some(loom_core::PortableTreeEntry { name, kind, object });
+    }
+    let file_ids = repo.publish_portable_files_from_paths(&files, workers)?;
+    for ((slot, name), object) in file_slots.into_iter().zip(file_ids) {
+        entries[slot] = Some(loom_core::PortableTreeEntry {
+            name,
+            kind: loom_core::PortableTreeEntryKind::File,
+            object,
+        });
     }
     let mut names_after = Vec::new();
     for item in std::fs::read_dir(directory)? {
@@ -144,6 +143,10 @@ fn publish_portable_directory(
     if names_after != names_before || !same_directory(&before, &after) {
         return Err("portable tree directory changed while reading".into());
     }
+    let entries = entries
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        .ok_or("portable tree entry preparation was incomplete")?;
     repo.publish_portable_tree(&loom_core::PortableTree { entries })
         .map_err(Into::into)
 }
@@ -778,10 +781,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             println!("{id}");
         }
         "portable-tree" => {
-            let [_, raw_path] = args.as_slice() else {
-                return Err("usage: loom portable-tree DIRECTORY".into());
+            if args.len() != 2 && args.len() != 4 {
+                return Err("usage: loom portable-tree DIRECTORY [--workers N]".into());
+            }
+            let raw_path = &args[1];
+            let workers = if args.len() == 4 {
+                if args[2] != "--workers" {
+                    return Err("usage: loom portable-tree DIRECTORY [--workers N]".into());
+                }
+                args[3]
+                    .parse::<usize>()
+                    .map_err(|_| "--workers requires a nonnegative integer")?
+            } else {
+                0
             };
-            let id = publish_portable_directory(&repo, Path::new(raw_path), 0)?;
+            let id = publish_portable_directory(&repo, Path::new(raw_path), 0, workers)?;
             println!("{id}");
         }
         _ => {

@@ -36,6 +36,53 @@ pub struct FileDiff {
 static STAGE_NONCE: AtomicU64 = AtomicU64::new(0);
 const AUTO_PARALLEL_TEXT_MERGE_MIN: usize = 128;
 const AUTO_PARALLEL_TEXT_MERGE_MAX: usize = 2;
+const PORTABLE_PREPARE_WINDOW_BYTES: u64 = 8 * 1024 * 1024;
+const PORTABLE_PREPARE_WINDOW_FILES: usize = 128;
+
+fn same_portable_file(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+    if !left.is_file()
+        || left.file_type().is_symlink()
+        || !right.is_file()
+        || right.file_type().is_symlink()
+        || left.len() != right.len()
+        || left.modified().ok() != right.modified().ok()
+    {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        left.dev() == right.dev() && left.ino() == right.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn portable_kind(_metadata: &std::fs::Metadata) -> crate::PortableFileKind {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if _metadata.permissions().mode() & 0o111 != 0 {
+            return crate::PortableFileKind::Executable;
+        }
+    }
+    crate::PortableFileKind::Regular
+}
+
+struct PreparedPortableFile {
+    chunks: Vec<(ObjectId, Vec<u8>)>,
+    manifest: crate::PortableBlobManifest,
+    manifest_id: ObjectId,
+    manifest_bytes: Vec<u8>,
+}
+
+struct PortableFileWork {
+    kind: crate::PortableFileKind,
+    path: PathBuf,
+    expected: std::fs::Metadata,
+}
 
 fn bounded_text_merge_workers(
     task_count: usize,
@@ -375,6 +422,205 @@ impl Repository {
             ));
         }
         Ok(id)
+    }
+
+    fn prepare_portable_file(work: &PortableFileWork) -> Result<PreparedPortableFile> {
+        if work.kind == crate::PortableFileKind::Symlink {
+            return Err(Error::Invalid(
+                "parallel portable input must be a regular file".into(),
+            ));
+        }
+        let before = std::fs::symlink_metadata(&work.path)?;
+        if !same_portable_file(&work.expected, &before) || portable_kind(&before) != work.kind {
+            return Err(Error::Invalid(format!(
+                "portable tree input changed before reading: {}",
+                work.path.display()
+            )));
+        }
+        if before.len() > PORTABLE_PREPARE_WINDOW_BYTES {
+            return Err(Error::Invalid(
+                "parallel portable file exceeds preparation window".into(),
+            ));
+        }
+        let mut input = std::fs::File::open(&work.path)?;
+        let opened = input.metadata()?;
+        if !same_portable_file(&before, &opened) {
+            return Err(Error::Invalid(format!(
+                "portable tree input changed before reading: {}",
+                work.path.display()
+            )));
+        }
+        let mut remaining = opened.len();
+        let mut chunks = Vec::with_capacity(
+            usize::try_from(remaining.div_ceil(crate::PORTABLE_CHUNK_BYTES as u64))
+                .map_err(|_| Error::Invalid("portable manifest is too large".into()))?,
+        );
+        let mut chunk_ids = Vec::with_capacity(chunks.capacity());
+        while remaining != 0 {
+            let wanted = remaining.min(crate::PORTABLE_CHUNK_BYTES as u64) as usize;
+            let mut chunk = vec![0; wanted];
+            let mut filled = 0;
+            while filled < wanted {
+                let read = std::io::Read::read(&mut input, &mut chunk[filled..])?;
+                if read == 0 {
+                    return Err(Error::Invalid(
+                        "portable manifest input ended before its declared length".into(),
+                    ));
+                }
+                filled += read;
+            }
+            let encoded = encode_object(BLOB, &chunk)?;
+            let id = object_id(&encoded);
+            chunks.push((id, encoded));
+            chunk_ids.push(id);
+            remaining -= wanted as u64;
+        }
+        let mut trailing = [0; 1];
+        if std::io::Read::read(&mut input, &mut trailing)? != 0 {
+            return Err(Error::Invalid(
+                "portable manifest input exceeds its declared length".into(),
+            ));
+        }
+        let opened_after = input.metadata()?;
+        let after = std::fs::symlink_metadata(&work.path)?;
+        if !same_portable_file(&opened, &opened_after)
+            || !same_portable_file(&opened_after, &after)
+            || portable_kind(&after) != work.kind
+        {
+            return Err(Error::Invalid(format!(
+                "portable tree input changed while reading: {}",
+                work.path.display()
+            )));
+        }
+        let manifest = crate::PortableBlobManifest {
+            kind: work.kind,
+            logical_bytes: opened.len(),
+            chunks: chunk_ids,
+        };
+        let manifest_bytes = manifest.encode()?;
+        let manifest_id = object_id(&manifest_bytes);
+        Ok(PreparedPortableFile {
+            chunks,
+            manifest,
+            manifest_id,
+            manifest_bytes,
+        })
+    }
+
+    fn publish_portable_file_window(
+        &self,
+        work: &[PortableFileWork],
+        requested_workers: usize,
+    ) -> Result<Vec<ObjectId>> {
+        let workers = crate::worktree_scan::worker_limit(
+            requested_workers,
+            std::thread::available_parallelism().map_or(1, usize::from),
+        );
+        let prepared =
+            crate::workers::parallel_map_min(work, workers, 2, &Self::prepare_portable_file)?;
+        let mut chunks = self.store.publisher();
+        let mut manifest_work = Vec::with_capacity(prepared.len());
+        for file in prepared {
+            for (id, bytes) in file.chunks {
+                chunks.push(id, bytes)?;
+            }
+            manifest_work.push((file.manifest_id, file.manifest_bytes, file.manifest));
+        }
+        chunks.finish()?;
+        let mut manifests = self.store.publisher();
+        for (id, bytes, _) in &mut manifest_work {
+            manifests.push(*id, std::mem::take(bytes))?;
+        }
+        manifests.finish()?;
+        let mut ids = Vec::with_capacity(manifest_work.len());
+        for (id, _, manifest) in manifest_work {
+            if self.portable_blob_manifest(id)? != manifest {
+                return Err(Error::Invalid(
+                    "portable manifest live verification disagrees".into(),
+                ));
+            }
+            ids.push(id);
+        }
+        Ok(ids)
+    }
+
+    /// Prepare independent regular files through bounded read/hash windows,
+    /// then enter the existing bounded canonical publication phase only after
+    /// every preparation worker has joined. The result order equals the input
+    /// order. Files larger than the byte window retain the streaming path, so
+    /// memory never scales with their size.
+    pub fn publish_portable_files_from_paths(
+        &self,
+        files: &[(crate::PortableFileKind, PathBuf)],
+        requested_workers: usize,
+    ) -> Result<Vec<ObjectId>> {
+        let mut ids = Vec::with_capacity(files.len());
+        let mut window = Vec::new();
+        let mut window_bytes = 0u64;
+        for (kind, path) in files {
+            if *kind == crate::PortableFileKind::Symlink {
+                return Err(Error::Invalid(
+                    "parallel portable input must be a regular file".into(),
+                ));
+            }
+            let expected = std::fs::symlink_metadata(path)?;
+            if !expected.is_file()
+                || expected.file_type().is_symlink()
+                || portable_kind(&expected) != *kind
+            {
+                return Err(Error::Invalid(format!(
+                    "portable tree input changed before reading: {}",
+                    path.display()
+                )));
+            }
+            if expected.len() > PORTABLE_PREPARE_WINDOW_BYTES {
+                if !window.is_empty() {
+                    ids.extend(self.publish_portable_file_window(&window, requested_workers)?);
+                    window.clear();
+                    window_bytes = 0;
+                }
+                let mut input = std::fs::File::open(path)?;
+                let opened = input.metadata()?;
+                if !same_portable_file(&expected, &opened) {
+                    return Err(Error::Invalid(format!(
+                        "portable tree input changed before reading: {}",
+                        path.display()
+                    )));
+                }
+                let id = self.publish_portable_blob_from_reader(*kind, opened.len(), &mut input)?;
+                let opened_after = input.metadata()?;
+                let after = std::fs::symlink_metadata(path)?;
+                if !same_portable_file(&opened, &opened_after)
+                    || !same_portable_file(&opened_after, &after)
+                    || portable_kind(&after) != *kind
+                {
+                    return Err(Error::Invalid(format!(
+                        "portable tree input changed while reading: {}",
+                        path.display()
+                    )));
+                }
+                ids.push(id);
+                continue;
+            }
+            if !window.is_empty()
+                && (window.len() == PORTABLE_PREPARE_WINDOW_FILES
+                    || window_bytes.saturating_add(expected.len()) > PORTABLE_PREPARE_WINDOW_BYTES)
+            {
+                ids.extend(self.publish_portable_file_window(&window, requested_workers)?);
+                window.clear();
+                window_bytes = 0;
+            }
+            window_bytes += expected.len();
+            window.push(PortableFileWork {
+                kind: *kind,
+                path: path.clone(),
+                expected,
+            });
+        }
+        if !window.is_empty() {
+            ids.extend(self.publish_portable_file_window(&window, requested_workers)?);
+        }
+        Ok(ids)
     }
 
     /// Read and live-verify a portable manifest plus every referenced chunk.
@@ -4792,6 +5038,35 @@ mod tests {
                 &mut long,
             )
             .is_err());
+    }
+
+    #[test]
+    fn portable_file_windows_are_parallel_canonical_and_ref_independent() {
+        let input = tempfile::tempdir().unwrap();
+        let mut files = Vec::new();
+        for index in 0..257usize {
+            let path = input.path().join(format!("file-{index:03}"));
+            std::fs::write(&path, vec![index as u8; 4096 + index]).unwrap();
+            files.push((crate::PortableFileKind::Regular, path));
+        }
+        let serial_dir = tempfile::tempdir().unwrap();
+        let parallel_dir = tempfile::tempdir().unwrap();
+        let serial = Repository::init(serial_dir.path()).unwrap();
+        let parallel = Repository::init(parallel_dir.path()).unwrap();
+        let expected = serial.publish_portable_files_from_paths(&files, 1).unwrap();
+        let actual = parallel
+            .publish_portable_files_from_paths(&files, usize::MAX)
+            .unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(parallel.head().unwrap(), None);
+        assert!(parallel.status().unwrap().is_empty());
+        parallel.fsck().unwrap();
+
+        let symlink = vec![(crate::PortableFileKind::Symlink, files[0].1.clone())];
+        assert!(parallel
+            .publish_portable_files_from_paths(&symlink, 8)
+            .is_err());
+        assert_eq!(parallel.head().unwrap(), None);
     }
 
     #[test]

@@ -68,11 +68,16 @@ fn portable_tree_is_canonical_typed_and_repository_independent() {
     fs::write(root.join("portable/sub/b"), b"beta").unwrap();
     let status_before = ok(root, &["status"]);
 
-    let first = ok(root, &["portable-tree", "portable"]);
-    let retry = ok(root, &["portable-tree", "portable"]);
+    let first = ok(root, &["portable-tree", "portable", "--workers", "1"]);
+    let retry = ok(root, &["portable-tree", "portable", "--workers", "8"]);
     assert_eq!(first, retry);
     assert_eq!(String::from_utf8(first).unwrap().trim().len(), 64);
     assert_eq!(ok(root, &["status"]), status_before);
+    assert!(
+        !call(root, &["portable-tree", "portable", "--workers", "bad"])
+            .status
+            .success()
+    );
     ok(root, &["fsck"]);
 }
 

@@ -7,7 +7,7 @@ history or repository format selection:
 loom portable-manifest regular path/to/file
 loom portable-manifest executable path/to/tool
 loom portable-manifest symlink path/to/link
-loom portable-tree path/to/directory
+loom portable-tree path/to/directory --workers 0
 ```
 
 The object records regular, executable or symbolic-link identity, the exact
@@ -46,6 +46,17 @@ input may leave unreachable immutable chunks, but never a manifest that claims
 the incomplete stream. The 64 MiB v1 object limit therefore no longer limits
 this additive command; the canonical manifest bound is 16,384 chunks (64 GiB).
 
+For each directory, `--workers N` prepares independent regular files in
+input-order-preserving worker batches. Zero automatically selects at most four
+workers; explicit requests are bounded by available CPUs and the existing
+eight-worker hard cap. Each preparation window is limited to 128 files and 8
+MiB of input. Files larger than that retain the one-chunk-at-a-time streaming
+path. Workers only read, hash and encode immutable data: durable chunk and
+manifest publication, live closure verification and canonical parent-tree
+publication occur after every worker has joined. This prevents a worker from
+sharing repository SQLite state and provides backpressure independent of tree
+size.
+
 ## Benchmark classification
 
 `benchmarks/portable_manifest.py` builds the exact candidate and base in
@@ -57,8 +68,10 @@ but does not provide Loom's typed metadata, fixed chunk closure or necessarily
 the same durability. Consequently its timing is not a pure product comparison.
 
 `benchmarks/portable_tree.py` measures complete publication of identical native
-directory arguments for candidate and previous Loom. An older binary without
-the command is classified unsupported and receives no version factor. Git
+directory arguments for candidate worker requests 1, 2, 4 and 0. The previous
+Loom receives those exact argument lists; a binary without `--workers` is
+classified unsupported for the version comparison. Its legacy no-worker
+command is retained only as a non-equivalent diagnostic control. Git
 `add --all payload` plus `write-tree` is only a diagnostic subset because its
 metadata, live-verification and durability contracts differ.
 
