@@ -27,7 +27,7 @@ jobs:
       - name: Check out exact candidate
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: candidate
       - name: Check out baseline
         uses: actions/checkout@v4
@@ -72,7 +72,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: loom-pathsets-${{ github.sha }}
+          name: loom-pathsets-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
             candidate/pathset-provenance.json
             candidate/pathsets-workers-1.json
