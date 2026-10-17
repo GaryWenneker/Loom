@@ -283,12 +283,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if args.len() < 2 {
                 return Err(format!("usage: loom {cmd} PATH [PATH ...]").into());
             }
+            if cmd == "add" {
+                repo.add_paths(&args[1..])?;
+            } else {
+                repo.unstage_paths(&args[1..])?;
+            }
             for path in &args[1..] {
-                if cmd == "add" {
-                    repo.add(path)?;
-                } else {
-                    repo.unstage(path)?;
-                }
                 println!(
                     "{} {path}",
                     if cmd == "add" { "Staged" } else { "Unstaged" }
