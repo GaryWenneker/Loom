@@ -7,11 +7,12 @@ This directory contains a **reproducible benchmark**, not Scion-level performanc
 ```sh
 python3 benchmarks/pathsets.py --loom /absolute/new-loom \
   --baseline-loom /absolute/previous-loom --files 1000 10000 100000 \
-  --directories 256 --repeat 6 --scan-workers 8 --output pathsets.json
+  --directories 256 --changed-paths 64 --repeat 6 --scan-workers 8 \
+  --output pathsets.json
 ```
 
-This checks complete add+commit commands, both startups included, for eight
-modified files and eight selected subtrees. Initial repository creation is
+This checks complete add+commit commands, both startups included, for the
+requested number of modified files and independent top-level subtrees. Initial repository creation is
 outside timing. The first unchanged add records cold index bootstrap separately;
 incremental samples then use current native path indexes. Existing repositories
 are reused with identical history depth, and engine order rotates. The baseline
@@ -19,18 +20,22 @@ receives an equivalent file list expanded before timing, supporting older Loom
 without recursive add and favoring the baseline. Git receives the same
 file/directory selections as new Loom.
 Run the harness with `--scan-workers 1` and `--scan-workers 8` (or omit the
-option for up to four read/hash workers) to compare identical sequential and
-bounded-parallel selected-set data paths. The worker request applies only to the candidate Loom.
+option for up to four workers) to compare identical sequential and
+bounded-parallel selected-set data paths. The worker request applies to candidate
+Loom reads/hashes and commit-time independent subtree construction; the phases
+do not overlap and therefore share one bounded request. It does not change the
+separately bounded immutable-object publisher.
 
-`Selected-set worker evidence` is a manual GitHub Actions workflow for the larger
-1k/10k/100k experiments. It builds the selected candidate and resolved baseline
+`Selected-set worker evidence` runs for relevant pull requests and can also be
+dispatched manually for the larger 1k/10k/100k experiments. It builds the selected candidate and resolved baseline
 commit in separate target directories, retains their commit/tree/compiler/binary
 identities and uploads the checked raw results. Ordinary Rust CI uses small
 one/eight-worker correctness runs. The large workflow runs the two requests in
 sequence on one runner, with fresh repositories and uncontrolled caches; compare
 each candidate with its paired baseline/Git samples and do not infer a worker
-speedup from separate runs alone. The option controls reads and hashes, not the
-independent object publication scheduler. No speedup is claimed by exposing it.
+speedup from separate runs alone. The measurements retain p50/p95/p99 wall, CPU, raw wait4 RSS and kernel I/O
+counters. They do not isolate cold cache, allocated disk blocks, network use or
+per-process peak RSS. No speedup is claimed by exposing the worker control.
 
 Each sample checks every listed path, selected payload bytes/framing and old/new
 native root equality. Full final payloads and full history/closure fsck are checked
