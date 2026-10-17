@@ -4670,8 +4670,7 @@ mod tests {
             fn read(&mut self, destination: &mut [u8]) -> std::io::Result<usize> {
                 self.max_request = self.max_request.max(destination.len());
                 let count = destination.len().min(self.bytes.len() - self.offset);
-                destination[..count]
-                    .copy_from_slice(&self.bytes[self.offset..self.offset + count]);
+                destination[..count].copy_from_slice(&self.bytes[self.offset..self.offset + count]);
                 self.offset += count;
                 Ok(count)
             }

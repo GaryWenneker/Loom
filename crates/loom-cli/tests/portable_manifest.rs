@@ -49,10 +49,7 @@ fn portable_manifest_streams_files_beyond_the_legacy_cli_cap() {
     let payload = fs::File::create(root.join("large-payload")).unwrap();
     payload.set_len(64 * 1024 * 1024 + 1).unwrap();
 
-    let id = ok(
-        root,
-        &["portable-manifest", "regular", "large-payload"],
-    );
+    let id = ok(root, &["portable-manifest", "regular", "large-payload"]);
     assert_eq!(String::from_utf8(id).unwrap().trim().len(), 64);
     ok(root, &["fsck"]);
 }

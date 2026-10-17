@@ -650,8 +650,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let id = repo.publish_portable_blob_from_reader(kind, opened.len(), &mut input)?;
                 let opened_after = input.metadata()?;
                 let after = std::fs::symlink_metadata(path)?;
-                if !same_open_file(&opened, &opened_after)
-                    || !same_open_file(&opened_after, &after)
+                if !same_open_file(&opened, &opened_after) || !same_open_file(&opened_after, &after)
                 {
                     return Err("portable manifest input changed while reading".into());
                 }
