@@ -5,6 +5,8 @@ use crate::format::{
 use crate::store::ObjectStore;
 use crate::{Error, Result};
 use rusqlite::{params, Connection, OptionalExtension};
+#[path = "staging.rs"]
+mod staging;
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -699,58 +701,6 @@ impl Repository {
         Ok(result)
     }
 
-    /// Read a single user-selected path, without scanning unrelated files.
-    /// Missing or directory paths are represented as None for staged deletion.
-    /// This is an alpha safeguard, not a race-free handle-relative traversal.
-    fn read_staging_path(&self, path: &str) -> Result<Option<Vec<u8>>> {
-        validate_path(path)?;
-        let mut ancestor = self.root.clone();
-        let mut parts = path.split('/').peekable();
-        while let Some(component) = parts.next() {
-            ancestor.push(component);
-            let metadata = match fs::symlink_metadata(&ancestor) {
-                Ok(value) => value,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-                Err(e) => return Err(e.into()),
-            };
-            if metadata.file_type().is_symlink() {
-                return Err(Error::Invalid(format!(
-                    "symlinks unsupported in staged path: {path}"
-                )));
-            }
-            if parts.peek().is_some() {
-                if !metadata.is_dir() {
-                    return Ok(None);
-                }
-                continue;
-            }
-            if metadata.is_dir() {
-                return Ok(None);
-            }
-            if !metadata.is_file() {
-                return Err(Error::Invalid(format!(
-                    "unsupported staged file type: {path}"
-                )));
-            }
-            if metadata.len() > MAX_OBJECT_SIZE as u64 {
-                return Err(Error::Invalid(format!("file exceeds 64 MiB: {path}")));
-            }
-            use std::io::Read;
-            let file = fs::File::open(&ancestor)?;
-            if !file.metadata()?.is_file() {
-                return Err(Error::Invalid(format!("staged path changed type: {path}")));
-            }
-            let mut bytes = Vec::new();
-            file.take((MAX_OBJECT_SIZE + 1) as u64)
-                .read_to_end(&mut bytes)?;
-            if bytes.len() > MAX_OBJECT_SIZE {
-                return Err(Error::Invalid(format!("file exceeds 64 MiB: {path}")));
-            }
-            return Ok(Some(bytes));
-        }
-        Ok(None)
-    }
-
     fn make_delta(
         &self,
         old: &BTreeMap<String, ObjectId>,
@@ -855,58 +805,6 @@ impl Repository {
             changes.push(StatusEntry { path, kind });
         }
         Ok(changes)
-    }
-
-    /// Capture the exact bytes currently on disk for one path; later edits do
-    /// not alter the staged snapshot. Missing tracked paths become deletions.
-    pub fn add(&self, path: &str) -> Result<()> {
-        validate_path(path)?;
-        let _guard = self.lock_worktree()?;
-        self.recover_locked()?;
-        let branch = self.current_branch()?;
-        let tip = self.branch_tip(&branch)?;
-        // Lazily rebuild a missing or stale derived index once. Subsequent
-        // adds only need one indexed lookup, irrespective of history depth.
-        self.ensure_branch_path_index(&branch, tip)?;
-        let prior = self.indexed_blob(&branch, path)?;
-        if prior.is_none() && crate::ignore::IgnoreRules::load(&self.root)?.ignores(path) {
-            return Err(Error::Invalid(format!("ignored untracked path: {path}")));
-        }
-        let blob_id = match self.read_staging_path(path)? {
-            Some(bytes) => Some(self.store.put(BLOB, &bytes)?),
-            None if prior.is_some() => None,
-            None => {
-                return Err(Error::Invalid(format!(
-                    "file is neither tracked nor present: {path}"
-                )))
-            }
-        };
-        let tx = self.db.unchecked_transaction()?;
-        tx.execute(
-            "INSERT INTO meta(key,value) VALUES ('staging_mode','enabled')
-             ON CONFLICT(key) DO UPDATE SET value='enabled'",
-            [],
-        )?;
-        if prior == blob_id {
-            tx.execute("DELETE FROM stage_index WHERE path=?1", [path])?;
-        } else {
-            tx.execute(
-                "INSERT INTO stage_index(path,blob_id) VALUES(?1,?2)
-                 ON CONFLICT(path) DO UPDATE SET blob_id=excluded.blob_id",
-                params![path, blob_id.map(|id| id.to_string())],
-            )?;
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    pub fn unstage(&self, path: &str) -> Result<()> {
-        validate_path(path)?;
-        let _guard = self.lock_worktree()?;
-        self.recover_locked()?;
-        self.db
-            .execute("DELETE FROM stage_index WHERE path=?1", [path])?;
-        Ok(())
     }
 
     /// A rebuildable derived index. First use on a legacy/stale branch

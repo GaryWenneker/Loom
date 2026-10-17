@@ -25,6 +25,101 @@ struct Work {
     prior: Option<ObjectId>,
 }
 
+/// Validate every selected ancestor without reading unrelated file contents.
+/// Like other v1 traversal, this is not race-free against parent substitution.
+pub(crate) fn inspect_selected(root: &Path, path: &str) -> Result<Option<(PathBuf, fs::Metadata)>> {
+    validate_path(path)?;
+    let mut absolute = root.to_path_buf();
+    let mut parts = path.split('/').peekable();
+    while let Some(part) = parts.next() {
+        absolute.push(part);
+        let metadata = match fs::symlink_metadata(&absolute) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        if metadata.file_type().is_symlink() {
+            return Err(Error::Invalid(format!("symlink in selected path: {path}")));
+        }
+        if parts.peek().is_some() {
+            if !metadata.is_dir() {
+                return Ok(None);
+            }
+        } else {
+            if !metadata.is_file() && !metadata.is_dir() {
+                return Err(Error::Invalid(format!(
+                    "unsupported selected file type: {path}"
+                )));
+            }
+            if metadata.is_file() && metadata.len() > MAX_OBJECT_SIZE as u64 {
+                return Err(Error::Invalid(format!("file exceeds 64 MiB: {path}")));
+            }
+            return Ok(Some((absolute, metadata)));
+        }
+    }
+    Ok(None)
+}
+
+pub(crate) fn selected_changes(
+    root: &Path,
+    selected: &BTreeMap<String, Option<ObjectId>>,
+    options: WorktreeScanOptions,
+    mut publish: impl FnMut(ObjectId, Vec<u8>) -> Result<()>,
+) -> Result<Vec<Change>> {
+    let mut pending = Vec::new();
+    let mut window_bytes = 0;
+    let mut workers = None;
+    let mut changes = Vec::new();
+    for (path, prior) in selected {
+        let input = inspect_selected(root, path)?;
+        if let Some((absolute, metadata)) = input.filter(|(_, metadata)| metadata.is_file()) {
+            let length = metadata.len() as usize;
+            if pending.len() == WINDOW_FILES || window_bytes + length > WINDOW_BYTES {
+                flush(
+                    &mut pending,
+                    options,
+                    &mut workers,
+                    &mut changes,
+                    &mut publish,
+                )?;
+                window_bytes = 0;
+            }
+            pending.push(Work {
+                path: path.clone(),
+                absolute,
+                length,
+                prior: *prior,
+            });
+            window_bytes += length;
+            if length > WINDOW_BYTES {
+                flush(
+                    &mut pending,
+                    options,
+                    &mut workers,
+                    &mut changes,
+                    &mut publish,
+                )?;
+                window_bytes = 0;
+            }
+        } else if prior.is_some() {
+            changes.push(Change {
+                kind: ChangeKind::Delete,
+                path: path.clone(),
+                blob: None,
+            });
+        }
+    }
+    flush(
+        &mut pending,
+        options,
+        &mut workers,
+        &mut changes,
+        &mut publish,
+    )?;
+    changes.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(changes)
+}
+
 /// Read at most the discovered length plus one byte. Growing/shrinking files
 /// fail instead of escaping the payload window. This is not an atomic snapshot
 /// against external writers, or handle-relative traversal of parent directories.

@@ -59,6 +59,30 @@ fn staged_deletion_does_not_need_unrelated_worktree_access() {
     ok(root, &["fsck"]);
 }
 
+#[test]
+fn multidir_add_and_unstage_are_atomic_cli_operations() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    ok(root, &["init"]);
+    for path in ["src/a", "docs/a", "other/a"] {
+        fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+        fs::write(root.join(path), b"first").unwrap();
+    }
+    assert!(!run(root, &["add", "src", "missing"]).status.success());
+    assert!(run(root, &["diff", "--staged"]).stdout.is_empty());
+    ok(root, &["add", "src", "docs"]);
+    ok(root, &["unstage", "docs"]);
+    ok(root, &["commit", "-m", "source only"]);
+    assert_eq!(ok(root, &["cat", "main", "src/a"]), b"first");
+    assert!(!run(root, &["cat", "main", "docs/a"]).status.success());
+    assert!(!run(root, &["cat", "main", "other/a"]).status.success());
+    fs::remove_dir_all(root.join("src")).unwrap();
+    ok(root, &["add", "src"]);
+    ok(root, &["commit", "-m", "remove subtree"]);
+    assert!(!run(root, &["cat", "main", "src/a"]).status.success());
+    ok(root, &["fsck"]);
+}
+
 #[cfg(unix)]
 #[test]
 fn staging_rejects_symlinked_parent_without_leaking_external_content() {

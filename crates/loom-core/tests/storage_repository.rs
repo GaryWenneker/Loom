@@ -3,13 +3,16 @@ use loom_core::storage_backend::{ObjectBackend, StoreCapabilities};
 use loom_core::{Error, FilesystemObjectBackend, ObjectId, Repository, Result};
 use std::fs;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+type WriteHook = Box<dyn Fn() + Send>;
 
 struct Controlled {
     inner: FilesystemObjectBackend,
     fail: AtomicBool,
     corrupt: AtomicBool,
     writes: AtomicUsize,
+    hook: Mutex<Option<WriteHook>>,
 }
 impl Controlled {
     fn open(path: &std::path::Path) -> Self {
@@ -18,6 +21,7 @@ impl Controlled {
             fail: AtomicBool::new(false),
             corrupt: AtomicBool::new(false),
             writes: AtomicUsize::new(0),
+            hook: Mutex::new(None),
         }
     }
 }
@@ -37,6 +41,9 @@ impl ObjectBackend for Controlled {
             return Err(Error::Io(std::io::Error::other("injected storage outage")));
         }
         self.writes.fetch_add(1, Ordering::SeqCst);
+        if let Some(hook) = self.hook.lock().unwrap().as_ref() {
+            hook();
+        }
         self.inner.put_if_absent(id, bytes)
     }
     fn exists(&self, id: ObjectId) -> Result<bool> {
@@ -45,6 +52,92 @@ impl ObjectBackend for Controlled {
     fn list_ids(&self) -> Result<Vec<ObjectId>> {
         self.inner.list_ids()
     }
+}
+
+#[test]
+fn selected_set_provider_failure_preserves_prepared_snapshot_and_retries() {
+    let root = tempfile::tempdir().unwrap();
+    let objects = tempfile::tempdir().unwrap();
+    let backend = Arc::new(Controlled::open(objects.path()));
+    let repo = Repository::init_with_object_backend(root.path(), backend.clone()).unwrap();
+    fs::write(root.path().join("a"), b"base").unwrap();
+    let base = repo.commit("test", "base").unwrap();
+    fs::write(root.path().join("retained"), b"frozen").unwrap();
+    repo.add("retained").unwrap();
+    let before = repo.diff_staged().unwrap();
+    fs::write(root.path().join("a"), b"changed").unwrap();
+    fs::write(root.path().join("b"), b"new").unwrap();
+    for corrupt in [false, true] {
+        backend.fail.store(!corrupt, Ordering::SeqCst);
+        backend.corrupt.store(corrupt, Ordering::SeqCst);
+        assert!(repo.add_paths(&["a", "b"]).is_err());
+        backend.fail.store(false, Ordering::SeqCst);
+        backend.corrupt.store(false, Ordering::SeqCst);
+        assert_eq!(repo.diff_staged().unwrap(), before);
+        assert_eq!(repo.head().unwrap(), Some(base));
+    }
+    repo.add_paths(&["a", "b"]).unwrap();
+    let tip = repo.commit("test", "retry").unwrap();
+    assert_eq!(
+        repo.read_revision_file(tip, "a").unwrap(),
+        Some(b"changed".to_vec())
+    );
+    assert_eq!(
+        repo.read_revision_file(tip, "b").unwrap(),
+        Some(b"new".to_vec())
+    );
+    assert_eq!(
+        repo.read_revision_file(tip, "retained").unwrap(),
+        Some(b"frozen".to_vec())
+    );
+    repo.fsck().unwrap();
+}
+
+#[test]
+fn preparation_rejects_a_ref_moved_during_provider_io() {
+    let root = tempfile::tempdir().unwrap();
+    let objects = tempfile::tempdir().unwrap();
+    let backend = Arc::new(Controlled::open(objects.path()));
+    let repo = Repository::init_with_object_backend(root.path(), backend.clone()).unwrap();
+    fs::write(root.path().join("a"), b"base").unwrap();
+    let base = repo.commit("test", "base").unwrap();
+    fs::write(root.path().join("retained"), b"frozen").unwrap();
+    repo.add("retained").unwrap();
+    let before = repo.diff_staged().unwrap();
+    fs::write(root.path().join("a"), b"changed").unwrap();
+    let database = root.path().join(".loom/index.sqlite");
+    let hook_database = database.clone();
+    *backend.hook.lock().unwrap() = Some(Box::new(move || {
+        rusqlite::Connection::open(&hook_database)
+            .unwrap()
+            .execute("UPDATE refs SET oid=NULL WHERE name='main'", [])
+            .unwrap();
+    }));
+    assert!(matches!(repo.add_paths(&["a"]), Err(Error::Conflict(_))));
+    *backend.hook.lock().unwrap() = None;
+    rusqlite::Connection::open(database)
+        .unwrap()
+        .execute(
+            "UPDATE refs SET oid=?1 WHERE name='main'",
+            [base.to_string()],
+        )
+        .unwrap();
+    assert_eq!(repo.diff_staged().unwrap(), before);
+    repo.fsck().unwrap();
+}
+
+#[test]
+fn unchanged_selected_files_do_not_republish_objects() {
+    let root = tempfile::tempdir().unwrap();
+    let objects = tempfile::tempdir().unwrap();
+    let backend = Arc::new(Controlled::open(objects.path()));
+    let repo = Repository::init_with_object_backend(root.path(), backend.clone()).unwrap();
+    fs::write(root.path().join("a"), b"base").unwrap();
+    repo.commit("test", "base").unwrap();
+    let writes = backend.writes.load(Ordering::SeqCst);
+    repo.add_paths(&["a"]).unwrap();
+    assert_eq!(backend.writes.load(Ordering::SeqCst), writes);
+    assert!(repo.staged_status().unwrap().is_empty());
 }
 
 #[test]
