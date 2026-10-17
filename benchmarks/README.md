@@ -11,12 +11,20 @@ python3 benchmarks/compare_publication.py --loom /absolute/new-loom \
 ```
 
 This POSIX harness measures complete initial commit workflows in fresh identical
-fixtures, then a commit with eight modified files. Loom uses commit-all; Git uses
+fixtures, then a commit with eight modified files. It also checks changed status
+before that commit and clean status after full verification. Loom uses commit-all; Git uses
 both `add` and `commit` inside the measured workflow. Startup is included.
 Fixture creation, full payload/listing verification and fsck occur outside timing.
 All native roots must match between old/new Loom. Engine order rotates; six
 repeats cover two full three-engine cycles. Try `--layout nested --directories
 1024 --files 10000` and `--files 100000` separately.
+
+`--scan-workers N` applies only to the new Loom binary; omit it for automatic
+selection. Compare 1/2/4/8/16/32/1024 separately; requests above eight are capped,
+and small windows remain serial. These complete workflows also include the
+unchanged publication-worker policy, so this is scan scheduling evidence, not
+an isolated worker microbenchmark. All file bytes, statuses and native roots
+are checked regardless of the requested limit.
 
 `wait4` records per-process CPU and maximum RSS; Git's two commands have summed
 wall/CPU/I-O and maximum RSS. Raw kernel block-I/O counters are retained in their
