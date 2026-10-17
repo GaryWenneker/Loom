@@ -4,6 +4,7 @@ use std::{env, path::Path, process};
 
 fn usage() {
     eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path] [--object-dir DIRECTORY | --object-db FILE]\n  loom status [--scan-workers N]\n  loom add [--scan-workers N] [--] PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME] [--scan-workers N]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom merge-bases LEFT_BRANCH RIGHT_BRANCH\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom cat @CHANGESET_ID PATH\n  loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]\n  loom tree @CHANGESET_ID\n  loom tree ls @TREE_ID [DIR]\n  loom tree cat @TREE_ID PATH\n  loom fsck\n  loom git -- GIT_ARGS...\n  loom query --batch @CHANGESET_ID [--cache-bytes N] [--read-pack FILE]\n  loom read-pack @CHANGESET_ID FILE\n\nExternal object storage: set LOOM_OBJECT_DIR or LOOM_OBJECT_DB for every command.\n");
+    eprintln!("  loom sparse-export @CHANGESET_ID DESTINATION [PREFIX ...]");
 }
 
 fn print_diff(change: &loom_core::FileDiff) {
@@ -218,6 +219,35 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             std::io::stdin().lock(),
             std::io::BufWriter::with_capacity(64 * 1024, std::io::stdout().lock()),
         )?;
+        return Ok(());
+    }
+    if cmd == "sparse-export" {
+        if args.len() < 3 {
+            return Err("usage: loom sparse-export @CHANGESET_ID DESTINATION [PREFIX ...]".into());
+        }
+        let revision = ObjectId::parse(
+            args[1]
+                .strip_prefix('@')
+                .ok_or("sparse-export requires an immutable @CHANGESET_ID")?,
+        )?;
+        let backend = object_backend(
+            env::var_os("LOOM_OBJECT_DIR"),
+            env::var_os("LOOM_OBJECT_DB"),
+            true,
+        )?;
+        let snapshot = Repository::query_snapshot(
+            env::current_dir()?,
+            revision,
+            backend,
+            loom_core::DEFAULT_SNAPSHOT_CACHE_BYTES,
+        )?;
+        let stats = snapshot.export_sparse(Path::new(&args[2]), &args[3..])?;
+        println!(
+            "Exported {} files ({} bytes) from {}",
+            stats.files,
+            stats.bytes,
+            snapshot.root()
+        );
         return Ok(());
     }
     let repo = if let Some(backend) = object_backend(
