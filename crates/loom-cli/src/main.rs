@@ -3,7 +3,7 @@ use loom_core::{FilesystemObjectBackend, ObjectId, Repository, StatusKind, Workt
 use std::{env, path::Path, process};
 
 fn usage() {
-    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path] [--object-dir DIRECTORY | --object-db FILE]\n  loom status [--scan-workers N]\n  loom add PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME] [--scan-workers N]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom merge-bases LEFT_BRANCH RIGHT_BRANCH\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom cat @CHANGESET_ID PATH\n  loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]\n  loom tree @CHANGESET_ID\n  loom tree ls @TREE_ID [DIR]\n  loom tree cat @TREE_ID PATH\n  loom fsck\n  loom git -- GIT_ARGS...\n  loom query --batch @CHANGESET_ID [--cache-bytes N] [--read-pack FILE]\n  loom read-pack @CHANGESET_ID FILE\n\nExternal object storage: set LOOM_OBJECT_DIR or LOOM_OBJECT_DB for every command.\n");
+    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path] [--object-dir DIRECTORY | --object-db FILE]\n  loom status [--scan-workers N]\n  loom add [--scan-workers N] [--] PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME] [--scan-workers N]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom merge-bases LEFT_BRANCH RIGHT_BRANCH\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom cat @CHANGESET_ID PATH\n  loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]\n  loom tree @CHANGESET_ID\n  loom tree ls @TREE_ID [DIR]\n  loom tree cat @TREE_ID PATH\n  loom fsck\n  loom git -- GIT_ARGS...\n  loom query --batch @CHANGESET_ID [--cache-bytes N] [--read-pack FILE]\n  loom read-pack @CHANGESET_ID FILE\n\nExternal object storage: set LOOM_OBJECT_DIR or LOOM_OBJECT_DB for every command.\n");
 }
 
 fn print_diff(change: &loom_core::FileDiff) {
@@ -279,20 +279,48 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 println!("{flag} {}", change.path);
             }
         }
-        "add" | "unstage" => {
+        "add" => {
+            let mut workers = None;
+            let mut paths = Vec::new();
+            let mut rest = args[1..].iter();
+            while let Some(arg) = rest.next() {
+                if arg == "--" {
+                    paths.extend(rest.map(String::as_str));
+                    break;
+                } else if arg == "--scan-workers" {
+                    if workers.is_some() {
+                        return Err("duplicate --scan-workers".into());
+                    }
+                    let value = rest.next().ok_or("--scan-workers requires an integer")?;
+                    workers = Some(
+                        value
+                            .parse::<usize>()
+                            .map_err(|_| "--scan-workers requires a nonnegative integer")?,
+                    );
+                } else {
+                    paths.push(arg.as_str());
+                }
+            }
+            if paths.is_empty() {
+                return Err("usage: loom add [--scan-workers N] [--] PATH [PATH ...]".into());
+            }
+            repo.add_paths_with_scan_options(
+                &paths,
+                WorktreeScanOptions {
+                    workers: workers.unwrap_or(0),
+                },
+            )?;
+            for path in paths {
+                println!("Staged {path}");
+            }
+        }
+        "unstage" => {
             if args.len() < 2 {
-                return Err(format!("usage: loom {cmd} PATH [PATH ...]").into());
+                return Err("usage: loom unstage PATH [PATH ...]".into());
             }
-            if cmd == "add" {
-                repo.add_paths(&args[1..])?;
-            } else {
-                repo.unstage_paths(&args[1..])?;
-            }
+            repo.unstage_paths(&args[1..])?;
             for path in &args[1..] {
-                println!(
-                    "{} {path}",
-                    if cmd == "add" { "Staged" } else { "Unstaged" }
-                );
+                println!("Unstaged {path}");
             }
         }
         "commit" => {

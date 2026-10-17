@@ -83,6 +83,75 @@ fn multidir_add_and_unstage_are_atomic_cli_operations() {
     ok(root, &["fsck"]);
 }
 
+#[test]
+fn add_worker_override_is_validated_and_keeps_the_pathset_atomic() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    ok(root, &["init"]);
+    fs::write(root.join("a"), b"first").unwrap();
+    fs::write(root.join("b"), b"second").unwrap();
+    fs::write(root.join("kept"), b"already prepared").unwrap();
+    ok(root, &["add", "kept"]);
+    let staged_before = ok(root, &["diff", "--staged"]);
+
+    for args in [
+        vec![
+            "add",
+            "--scan-workers",
+            "1",
+            "a",
+            "--scan-workers",
+            "2",
+            "b",
+        ],
+        vec!["add", "a", "--scan-workers", "invalid"],
+        vec!["add", "a", "--scan-workers", "-1"],
+        vec!["add", "a", "--scan-workers", "18446744073709551616"],
+        vec!["add", "a", "--scan-workers"],
+        vec!["add", "--scan-workers", "1"],
+        vec!["add", "--"],
+    ] {
+        let result = run(root, &args);
+        assert!(!result.status.success(), "{args:?}");
+        assert!(
+            result.stdout.is_empty(),
+            "failed add printed success: {args:?}"
+        );
+        assert_eq!(ok(root, &["diff", "--staged"]), staged_before);
+    }
+
+    ok(root, &["add", "--scan-workers", "1", "a"]);
+    ok(root, &["add", "--scan-workers", "0", "b"]);
+    ok(root, &["add", "--scan-workers", "1024", "a", "b"]);
+    ok(root, &["commit", "-m", "bounded workers"]);
+    assert_eq!(ok(root, &["cat", "main", "a"]), b"first");
+    assert_eq!(ok(root, &["cat", "main", "b"]), b"second");
+    assert_eq!(ok(root, &["cat", "main", "kept"]), b"already prepared");
+    ok(root, &["fsck"]);
+}
+
+#[test]
+fn add_option_terminator_preserves_literal_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    ok(root, &["init"]);
+    fs::write(root.join("--scan-workers"), b"literal option name").unwrap();
+    fs::write(root.join("--"), b"literal terminator").unwrap();
+    fs::write(root.join("unselected"), b"leave unselected").unwrap();
+    ok(
+        root,
+        &["add", "--scan-workers", "8", "--", "--scan-workers", "--"],
+    );
+    ok(root, &["commit", "-m", "literal selected paths"]);
+    assert_eq!(
+        ok(root, &["cat", "main", "--scan-workers"]),
+        b"literal option name"
+    );
+    assert_eq!(ok(root, &["cat", "main", "--"]), b"literal terminator");
+    assert!(!run(root, &["cat", "main", "unselected"]).status.success());
+    ok(root, &["fsck"]);
+}
+
 #[cfg(unix)]
 #[test]
 fn staging_rejects_symlinked_parent_without_leaking_external_content() {
