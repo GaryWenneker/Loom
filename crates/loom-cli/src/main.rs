@@ -279,20 +279,45 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 println!("{flag} {}", change.path);
             }
         }
-        "add" | "unstage" => {
+        "add" => {
+            let mut workers = None;
+            let mut paths = Vec::new();
+            let mut rest = args[1..].iter();
+            while let Some(arg) = rest.next() {
+                if arg == "--scan-workers" {
+                    if workers.is_some() {
+                        return Err("duplicate --scan-workers".into());
+                    }
+                    let value = rest.next().ok_or("--scan-workers requires an integer")?;
+                    workers = Some(
+                        value
+                            .parse::<usize>()
+                            .map_err(|_| "--scan-workers requires a nonnegative integer")?,
+                    );
+                } else {
+                    paths.push(arg.as_str());
+                }
+            }
+            if paths.is_empty() {
+                return Err("usage: loom add [--scan-workers N] PATH [PATH ...]".into());
+            }
+            repo.add_paths_with_scan_options(
+                &paths,
+                WorktreeScanOptions {
+                    workers: workers.unwrap_or(0),
+                },
+            )?;
+            for path in paths {
+                println!("Staged {path}");
+            }
+        }
+        "unstage" => {
             if args.len() < 2 {
-                return Err(format!("usage: loom {cmd} PATH [PATH ...]").into());
+                return Err("usage: loom unstage PATH [PATH ...]".into());
             }
-            if cmd == "add" {
-                repo.add_paths(&args[1..])?;
-            } else {
-                repo.unstage_paths(&args[1..])?;
-            }
+            repo.unstage_paths(&args[1..])?;
             for path in &args[1..] {
-                println!(
-                    "{} {path}",
-                    if cmd == "add" { "Staged" } else { "Unstaged" }
-                );
+                println!("Unstaged {path}");
             }
         }
         "commit" => {
