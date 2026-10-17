@@ -1075,7 +1075,7 @@ mod tests {
             path: "tool".into(),
             blob: Some(new_blob),
         };
-        let updated = apply_changes(&store, root, &[change.clone()]).unwrap();
+        let updated = apply_changes(&store, root, std::slice::from_ref(&change)).unwrap();
         let entry = NativeTree::decode(&store.get(updated).unwrap())
             .unwrap()
             .entries
