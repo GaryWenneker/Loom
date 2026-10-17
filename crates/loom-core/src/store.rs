@@ -544,6 +544,24 @@ impl ObjectPublisher<'_> {
             }
         }
         let work: Vec<_> = unique.into_iter().collect();
+        let batch: Vec<_> = work
+            .iter()
+            .map(|(id, data)| (*id, data.as_slice()))
+            .collect();
+        if self.store.backend.put_batch_if_absent(&batch)? {
+            // The provider transaction is complete, but ref publication still
+            // requires a fresh live read rather than trusting its acknowledgement.
+            for (id, data) in &work {
+                if self.store.get(*id)? != data.as_slice() {
+                    return Err(Error::Invalid(format!(
+                        "object backend failed batch publication verification: {id}"
+                    )));
+                }
+            }
+            self.objects.clear();
+            self.bytes = 0;
+            return Ok(());
+        }
         let workers = if work.len() >= 32 {
             *self.workers.get_or_insert_with(|| {
                 let hint = self.store.backend.max_concurrent_writes().clamp(1, 8);
@@ -752,6 +770,66 @@ mod tests {
         let mut publication = store.publisher();
         publication.push(object_id(&bytes), bytes).unwrap();
         assert!(publication.finish().is_err());
+    }
+
+    #[test]
+    fn publication_uses_one_backend_batch_and_still_live_verifies_every_object() {
+        use crate::storage_backend::{ObjectBackend, StoreCapabilities};
+        #[derive(Default)]
+        struct Batched {
+            values: std::sync::Mutex<std::collections::HashMap<ObjectId, Vec<u8>>>,
+            batches: std::sync::atomic::AtomicUsize,
+            scalar_calls: std::sync::atomic::AtomicUsize,
+            reads: std::sync::atomic::AtomicUsize,
+        }
+        impl ObjectBackend for Batched {
+            fn capabilities(&self) -> StoreCapabilities {
+                StoreCapabilities {
+                    durable_writes: true,
+                    conditional_create: true,
+                    streaming_reads: false,
+                    streaming_writes: false,
+                    list_objects: false,
+                }
+            }
+            fn get(&self, id: ObjectId) -> Result<Vec<u8>> {
+                self.reads.fetch_add(1, Ordering::SeqCst);
+                self.values
+                    .lock()
+                    .unwrap()
+                    .get(&id)
+                    .cloned()
+                    .ok_or_else(|| Error::Io(std::io::ErrorKind::NotFound.into()))
+            }
+            fn put_if_absent(&self, _: ObjectId, _: &[u8]) -> Result<()> {
+                self.scalar_calls.fetch_add(1, Ordering::SeqCst);
+                unreachable!("batch-capable provider must not receive scalar fallback")
+            }
+            fn put_batch_if_absent(&self, objects: &[(ObjectId, &[u8])]) -> Result<bool> {
+                self.batches.fetch_add(1, Ordering::SeqCst);
+                let mut values = self.values.lock().unwrap();
+                for (id, bytes) in objects {
+                    values.entry(*id).or_insert_with(|| bytes.to_vec());
+                }
+                Ok(true)
+            }
+            fn exists(&self, id: ObjectId) -> Result<bool> {
+                Ok(self.values.lock().unwrap().contains_key(&id))
+            }
+        }
+
+        let backend = Arc::new(Batched::default());
+        let store = ObjectStore::with_backend(backend.clone()).unwrap();
+        let mut publication = store.publisher();
+        for index in 0..64 {
+            let bytes = encode_object(BLOB, format!("batch object {index}").as_bytes()).unwrap();
+            publication.push(object_id(&bytes), bytes).unwrap();
+        }
+        publication.finish().unwrap();
+        assert_eq!(backend.batches.load(Ordering::SeqCst), 1);
+        assert_eq!(backend.scalar_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(backend.reads.load(Ordering::SeqCst), 64);
+        assert_eq!(backend.values.lock().unwrap().len(), 64);
     }
 
     fn store() -> (tempfile::TempDir, FilesystemObjectBackend) {
