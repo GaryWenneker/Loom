@@ -441,7 +441,9 @@ impl Repository {
         let (_, payload) = decode_object(&encoded)?;
         let id = self.store.put(crate::format::PORTABLE_TREE, payload)?;
         if self.portable_tree(id)? != *tree {
-            return Err(Error::Invalid("portable tree live verification disagrees".into()));
+            return Err(Error::Invalid(
+                "portable tree live verification disagrees".into(),
+            ));
         }
         Ok(id)
     }

@@ -109,9 +109,11 @@ impl PortableTree {
         let mut cursor = 4usize;
         let mut entries = Vec::with_capacity(count.min(4096));
         for _ in 0..count {
-            let entry_kind = PortableTreeEntryKind::decode(*payload.get(cursor).ok_or_else(|| {
-                Error::Invalid("truncated portable tree entry".into())
-            })?)?;
+            let entry_kind = PortableTreeEntryKind::decode(
+                *payload
+                    .get(cursor)
+                    .ok_or_else(|| Error::Invalid("truncated portable tree entry".into()))?,
+            )?;
             cursor += 1;
             let raw_len = payload
                 .get(cursor..cursor + 2)
@@ -168,20 +170,31 @@ mod tests {
     #[test]
     fn portable_tree_rejects_cross_platform_collisions_and_reserved_names() {
         for name in ["CON", "aux.txt", "trail.", "trail ", ".git", "a/b"] {
-            assert!(PortableTree {
-                entries: vec![PortableTreeEntry {
-                    name: name.into(),
-                    kind: PortableTreeEntryKind::File,
-                    object: ObjectId([1; 32]),
-                }],
-            }
-            .encode()
-            .is_err(), "{name}");
+            assert!(
+                PortableTree {
+                    entries: vec![PortableTreeEntry {
+                        name: name.into(),
+                        kind: PortableTreeEntryKind::File,
+                        object: ObjectId([1; 32]),
+                    }],
+                }
+                .encode()
+                .is_err(),
+                "{name}"
+            );
         }
         let collision = PortableTree {
             entries: vec![
-                PortableTreeEntry { name: "A".into(), kind: PortableTreeEntryKind::File, object: ObjectId([1; 32]) },
-                PortableTreeEntry { name: "a".into(), kind: PortableTreeEntryKind::File, object: ObjectId([2; 32]) },
+                PortableTreeEntry {
+                    name: "A".into(),
+                    kind: PortableTreeEntryKind::File,
+                    object: ObjectId([1; 32]),
+                },
+                PortableTreeEntry {
+                    name: "a".into(),
+                    kind: PortableTreeEntryKind::File,
+                    object: ObjectId([2; 32]),
+                },
             ],
         };
         assert!(collision.encode().is_err());

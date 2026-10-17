@@ -55,7 +55,10 @@ pub(crate) fn object_header(kind: u8, length: usize) -> Result<[u8; 15]> {
     if length > MAX_OBJECT_SIZE {
         return Err(Error::Invalid("object exceeds 64 MiB v1 cap".into()));
     }
-    if !matches!(kind, BLOB | CHANGESET | TREE | BLOB_MANIFEST | PORTABLE_TREE) {
+    if !matches!(
+        kind,
+        BLOB | CHANGESET | TREE | BLOB_MANIFEST | PORTABLE_TREE
+    ) {
         return Err(Error::Invalid("unknown object kind".into()));
     }
     let mut header = [0; 15];
@@ -83,8 +86,7 @@ pub(crate) fn decode_object(b: &[u8]) -> Result<(u8, &[u8])> {
     let kind = b[6];
     if !matches!(
         (b[5], kind),
-        (VERSION, BLOB | CHANGESET)
-            | (TREE_VERSION, TREE | BLOB_MANIFEST | PORTABLE_TREE)
+        (VERSION, BLOB | CHANGESET) | (TREE_VERSION, TREE | BLOB_MANIFEST | PORTABLE_TREE)
     ) {
         return Err(Error::Invalid("unsupported object version or kind".into()));
     }

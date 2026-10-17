@@ -35,7 +35,11 @@ fn portable_file_kind(metadata: &std::fs::Metadata) -> loom_core::PortableFileKi
 }
 
 fn same_directory(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool {
-    if !before.is_dir() || !after.is_dir() || before.file_type().is_symlink() || after.file_type().is_symlink() {
+    if !before.is_dir()
+        || !after.is_dir()
+        || before.file_type().is_symlink()
+        || after.file_type().is_symlink()
+    {
         return false;
     }
     #[cfg(unix)]
@@ -83,8 +87,8 @@ fn publish_portable_directory(
     for (name, path) in discovered {
         let metadata = std::fs::symlink_metadata(&path)?;
         let (kind, object) = if metadata.file_type().is_symlink() {
-            let target = std::fs::read_link(&path)?;
-            let target = target
+            let target_path = std::fs::read_link(&path)?;
+            let target = target_path
                 .to_str()
                 .ok_or("portable symlink target must be UTF-8")?;
             let published = (
@@ -94,7 +98,7 @@ fn publish_portable_directory(
                     target.as_bytes(),
                 )?,
             );
-            if std::fs::read_link(&path)? != target {
+            if std::fs::read_link(&path)? != target_path {
                 return Err("portable symlink changed while reading".into());
             }
             published
@@ -110,7 +114,8 @@ fn publish_portable_directory(
                 return Err("portable tree input changed before reading".into());
             }
             let file_kind = portable_file_kind(&opened);
-            let object = repo.publish_portable_blob_from_reader(file_kind, opened.len(), &mut input)?;
+            let object =
+                repo.publish_portable_blob_from_reader(file_kind, opened.len(), &mut input)?;
             let opened_after = input.metadata()?;
             let after = std::fs::symlink_metadata(&path)?;
             if !same_open_file(&opened, &opened_after)
