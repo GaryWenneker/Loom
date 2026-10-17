@@ -3,14 +3,14 @@
 `loom add src docs/file` prepares one atomic set of regular files, directories and tracked deletions. `loom add .` explicitly selects the whole repository. Directory selections recurse only inside those directories; missing tracked descendants become deletions. Tracked file/directory replacements include both sides. Overlapping scopes are deduplicated, while explicit invalid or ignored file arguments still reject the operation.
 
 ```sh
-loom add src/module-a src/module-b/config.json removed-directory
+loom add --scan-workers 8 src/module-a src/module-b/config.json removed-directory
 loom diff --staged
 loom commit -m "update selected modules"
 loom unstage src/module-a
 loom unstage .
 ```
 
-`Repository::add_paths` and `add_paths_with_scan_options` provide the same operation to agents. The return value counts selected candidate paths, including unchanged paths. `unstage_paths` removes selected exact paths/subtrees in one transaction without reading working contents. Unstage keeps explicit staging mode enabled. Empty directories are not stored. Scope syntax supports `.`/`./`, relative canonical paths and trailing directory slashes; it does not implement Git pathspec wildcards, exclusions or force-add. Input scopes and candidate paths share the existing one-million-path ceiling; prefix deduplication uses indexed ancestor checks rather than pairwise comparisons.
+`loom add --scan-workers N` selects a fixed bounded worker request for reproducible tests; zero or omission uses adaptive selection, and the engine caps excessive requests. `Repository::add_paths` and `add_paths_with_scan_options` provide the same operation to agents. The return value counts selected candidate paths, including unchanged paths. `unstage_paths` removes selected exact paths/subtrees in one transaction without reading working contents. Unstage keeps explicit staging mode enabled. Empty directories are not stored. Scope syntax supports `.`/`./`, relative canonical paths and trailing directory slashes; it does not implement Git pathspec wildcards, exclusions or force-add. Input scopes and candidate paths share the existing one-million-path ceiling; prefix deduplication uses indexed ancestor checks rather than pairwise comparisons.
 
 ## Data path
 
