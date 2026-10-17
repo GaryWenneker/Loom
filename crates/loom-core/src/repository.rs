@@ -60,11 +60,11 @@ fn same_portable_file(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bo
     }
 }
 
-fn portable_kind(metadata: &std::fs::Metadata) -> crate::PortableFileKind {
+fn portable_kind(_metadata: &std::fs::Metadata) -> crate::PortableFileKind {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o111 != 0 {
+        if _metadata.permissions().mode() & 0o111 != 0 {
             return crate::PortableFileKind::Executable;
         }
     }
