@@ -35,6 +35,24 @@ Samples include p50/p95/p99; few samples are insufficient for production tail
 guarantees. This filesystem-provider benchmark
 does not flush OS caches or measure network, power loss or concurrent agents.
 
+## Full-content scan worker scaling
+
+```sh
+python3 benchmarks/scan_workers.py --loom /absolute/new-loom \
+  --files 1000 10000 100000 --workers 1 2 4 8 16 32 1024 --repeat 7 \
+  --directories 256 --output scan-workers.json
+```
+
+This measures complete status commands over clean, eight-file-modified and
+all-files-modified worktrees. Each size uses one fresh committed fixture. Exact
+sorted status output, working bytes and unchanged HEAD are checked, with fsck
+after each phase. Worker order rotates; seven repeats give one complete cycle.
+This is Loom sequential/parallel scan evidence; use the workflow harness above
+for Git comparisons. It shares the POSIX resource-accounting limitations above.
+
+[Measured scan results](../docs/performance-worktree-scans-20261017.md) retain all
+default-worker, larger-payload, nested-directory and worker-scaling controls.
+
 ## Repeated immutable working sets
 
 ```sh
