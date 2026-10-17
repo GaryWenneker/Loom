@@ -73,9 +73,11 @@ fn portable_tree_is_canonical_typed_and_repository_independent() {
     assert_eq!(first, retry);
     assert_eq!(String::from_utf8(first).unwrap().trim().len(), 64);
     assert_eq!(ok(root, &["status"]), status_before);
-    assert!(!call(root, &["portable-tree", "portable", "--workers", "bad"])
-        .status
-        .success());
+    assert!(
+        !call(root, &["portable-tree", "portable", "--workers", "bad"])
+            .status
+            .success()
+    );
     ok(root, &["fsck"]);
 }
 

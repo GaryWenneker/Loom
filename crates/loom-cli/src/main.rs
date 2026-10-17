@@ -84,8 +84,9 @@ fn publish_portable_directory(
     }
     discovered.sort_by(|left, right| left.0.cmp(&right.0));
     let names_before: Vec<_> = discovered.iter().map(|(name, _)| name.clone()).collect();
-    let mut entries: Vec<Option<loom_core::PortableTreeEntry>> =
-        std::iter::repeat_with(|| None).take(discovered.len()).collect();
+    let mut entries: Vec<Option<loom_core::PortableTreeEntry>> = std::iter::repeat_with(|| None)
+        .take(discovered.len())
+        .collect();
     let mut files = Vec::new();
     let mut file_slots = Vec::new();
     for (slot, (name, path)) in discovered.into_iter().enumerate() {

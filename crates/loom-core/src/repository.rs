@@ -516,12 +516,8 @@ impl Repository {
             requested_workers,
             std::thread::available_parallelism().map_or(1, usize::from),
         );
-        let prepared = crate::workers::parallel_map_min(
-            work,
-            workers,
-            2,
-            &Self::prepare_portable_file,
-        )?;
+        let prepared =
+            crate::workers::parallel_map_min(work, workers, 2, &Self::prepare_portable_file)?;
         let mut chunks = self.store.publisher();
         let mut manifest_work = Vec::with_capacity(prepared.len());
         for file in prepared {
@@ -608,8 +604,7 @@ impl Repository {
             }
             if !window.is_empty()
                 && (window.len() == PORTABLE_PREPARE_WINDOW_FILES
-                    || window_bytes.saturating_add(expected.len())
-                        > PORTABLE_PREPARE_WINDOW_BYTES)
+                    || window_bytes.saturating_add(expected.len()) > PORTABLE_PREPARE_WINDOW_BYTES)
             {
                 ids.extend(self.publish_portable_file_window(&window, requested_workers)?);
                 window.clear();
@@ -5058,9 +5053,7 @@ mod tests {
         let parallel_dir = tempfile::tempdir().unwrap();
         let serial = Repository::init(serial_dir.path()).unwrap();
         let parallel = Repository::init(parallel_dir.path()).unwrap();
-        let expected = serial
-            .publish_portable_files_from_paths(&files, 1)
-            .unwrap();
+        let expected = serial.publish_portable_files_from_paths(&files, 1).unwrap();
         let actual = parallel
             .publish_portable_files_from_paths(&files, usize::MAX)
             .unwrap();
