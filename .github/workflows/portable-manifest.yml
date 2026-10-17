@@ -59,7 +59,7 @@ jobs:
           python3 benchmarks/portable_tree.py \
             --loom "${{ github.workspace }}/candidate-target/release/loom" \
             --baseline-loom "${{ github.workspace }}/baseline-target/release/loom" \
-            --files 100 1000 --file-bytes 4096 --repeat 5 \
+            --files 100 1000 --file-bytes 4096 --workers 1 2 4 0 --repeat 5 \
             --output artifacts/portable-tree.json
       - name: Record exact provenance
         run: |

@@ -42,18 +42,23 @@ def fixture(root, files, size):
         directory = payload / f"d{index % 64:02d}"; directory.mkdir(exist_ok=True)
         (directory / f"f{index:06d}").write_bytes(random.Random(index).randbytes(size))
 
-def baseline_supports(args):
+def baseline_supports(args, workers):
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary); run(root, [args.baseline_loom, "init"]); fixture(root, 1, 1)
-        result = subprocess.run([args.baseline_loom, "portable-tree", "payload"], cwd=root, env=env(), capture_output=True)
+        result = subprocess.run([args.baseline_loom, "portable-tree", "payload", "--workers", str(workers)], cwd=root, env=env(), capture_output=True)
         return result.returncode == 0, result.returncode
 
 def scenario(args, files):
-    supported, returncode = baseline_supports(args)
-    engines = ["loom", "baseline_loom", "git"] if supported else ["loom", "git"]
-    commands = {"loom": [[args.loom, "portable-tree", "payload"]],
-                "baseline_loom": [[args.baseline_loom, "portable-tree", "payload"]],
-                "git": [["git", "add", "--all", "payload"], ["git", "write-tree"]]}
+    support = {str(workers): baseline_supports(args, workers) for workers in args.workers}
+    commands = {
+        **{f"loom_w{workers}": [[args.loom, "portable-tree", "payload", "--workers", str(workers)]] for workers in args.workers},
+        **{f"baseline_w{workers}": [[args.baseline_loom, "portable-tree", "payload", "--workers", str(workers)]] for workers in args.workers},
+        "baseline_legacy": [[args.baseline_loom, "portable-tree", "payload"]],
+        "git": [["git", "add", "--all", "payload"], ["git", "write-tree"]],
+    }
+    engines = [f"loom_w{workers}" for workers in args.workers]
+    engines += [f"baseline_w{workers}" for workers in args.workers if support[str(workers)][0]]
+    engines += ["baseline_legacy", "git"]
     samples = {engine: [] for engine in engines}; footprints = {engine: [] for engine in engines}
     for repeat in range(args.repeat):
         order = engines[repeat % len(engines):] + engines[:repeat % len(engines)]
@@ -61,31 +66,38 @@ def scenario(args, files):
             with tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary); fixture(root, files, args.file_bytes)
                 if engine == "git": run(root, ["git", "init", "-q", "-b", "main"])
-                else: run(root, [args.loom if engine == "loom" else args.baseline_loom, "init"])
+                else: run(root, [args.loom if engine.startswith("loom_w") else args.baseline_loom, "init"])
                 sample, oid = measure(root, commands[engine]); samples[engine].append(sample)
                 if engine == "git":
                     assert run(root, ["git", "cat-file", "-t", oid.decode().strip()]).strip() == b"tree"
                     footprints[engine].append(footprint(root / ".git" / "objects"))
                 else:
-                    binary = args.loom if engine == "loom" else args.baseline_loom
+                    binary = args.loom if engine.startswith("loom_w") else args.baseline_loom
                     run(root, [binary, "fsck"]); assert run(root, commands[engine][0]).strip() == oid.strip()
                     footprints[engine].append(footprint(root / ".loom" / "objects"))
     operations = {engine: {key: distribution(values, key) for key in values[0]} for engine, values in samples.items()}
+    serial = operations.get("loom_w1")
+    parallel = {key: operations[f"loom_w{key}"]["wall_ms"]["p50"] for key in map(str, args.workers)}
     return {"files": files, "file_bytes": args.file_bytes, "repeat": args.repeat, "commands": commands,
-            "baseline": {"classification": "measured" if supported else "unsupported", "returncode": returncode},
+            "baseline_worker_support": {key: {"classification": "measured" if value[0] else "unsupported", "returncode": value[1]} for key, value in support.items()},
+            "baseline_legacy_classification": "non-equivalent diagnostic: no explicit worker request",
             "operations": operations, "footprints": footprints,
-            "baseline_over_candidate_p50": operations["baseline_loom"]["wall_ms"]["p50"] / operations["loom"]["wall_ms"]["p50"] if supported else None,
-            "git_over_loom_p50_diagnostic": operations["git"]["wall_ms"]["p50"] / operations["loom"]["wall_ms"]["p50"]}
+            "sequential_over_workers_p50": {key: serial["wall_ms"]["p50"] / value for key, value in parallel.items()} if serial else None,
+            "baseline_over_candidate_p50": {key: operations[f"baseline_w{key}"]["wall_ms"]["p50"] / operations[f"loom_w{key}"]["wall_ms"]["p50"] if f"baseline_w{key}" in operations else None for key in map(str, args.workers)},
+            "git_over_candidate_p50_diagnostic": {key: operations["git"]["wall_ms"]["p50"] / value for key, value in parallel.items()}}
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__); parser.add_argument("--loom", required=True); parser.add_argument("--baseline-loom", required=True)
     parser.add_argument("--files", nargs="+", type=int, default=[100, 1000]); parser.add_argument("--file-bytes", type=int, default=4096)
+    parser.add_argument("--workers", nargs="+", type=int, default=[1, 2, 4, 0])
     parser.add_argument("--repeat", type=int, default=5); parser.add_argument("--output", required=True, type=Path); args = parser.parse_args()
-    report = {"schema_version": 1, "host": {"platform": platform.platform(), "cpus": os.cpu_count()},
-              "conditions": ["candidate and baseline receive identical native directory arguments",
+    report = {"schema_version": 2, "host": {"platform": platform.platform(), "cpus": os.cpu_count()},
+              "conditions": ["candidate and baseline receive identical native directory and explicit worker arguments where supported",
+                 "the actually started argv lists are recorded under each scenario's commands",
+                 "baseline legacy no-worker data is not a pure version-speed comparison",
                  "Git add plus write-tree is a diagnostic subset with different metadata/durability semantics",
                  "fresh stores per sample; verification/idempotent retry outside timing; OS caches not flushed",
-                 "no network, remote cache, worker sweep, concurrent agents or power-loss test"],
+                 "no network, remote cache, concurrent agents or power-loss test"],
               "scenarios": [scenario(args, files) for files in args.files]}
     args.output.parent.mkdir(parents=True, exist_ok=True); args.output.write_text(json.dumps(report, indent=2) + "\n"); print(json.dumps(report, indent=2))
 
