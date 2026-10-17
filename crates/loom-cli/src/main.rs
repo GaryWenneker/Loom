@@ -23,11 +23,11 @@ fn same_open_file(path: &std::fs::Metadata, opened: &std::fs::Metadata) -> bool 
     }
 }
 
-fn portable_file_kind(metadata: &std::fs::Metadata) -> loom_core::PortableFileKind {
+fn portable_file_kind(_metadata: &std::fs::Metadata) -> loom_core::PortableFileKind {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o111 != 0 {
+        if _metadata.permissions().mode() & 0o111 != 0 {
             return loom_core::PortableFileKind::Executable;
         }
     }
