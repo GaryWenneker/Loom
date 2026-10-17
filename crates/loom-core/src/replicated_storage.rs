@@ -7,12 +7,25 @@ use std::sync::Arc;
 
 /// All replicas must acknowledge publication before success. A failed write
 /// may leave immutable objects on a subset of replicas; retry is idempotent.
+const MAX_REPLICA_WORKERS: usize = 8;
+
 pub struct ReplicatedObjectBackend {
     replicas: Vec<Arc<dyn ObjectBackend>>,
+    publication_workers: usize,
 }
 
 impl ReplicatedObjectBackend {
     pub fn new(replicas: Vec<Arc<dyn ObjectBackend>>) -> Result<Self> {
+        Self::with_workers(replicas, 0)
+    }
+
+    /// Configure bounded independent replica publications. Zero selects up to
+    /// four replica workers; explicit requests are capped at eight and at the
+    /// number of configured replicas.
+    pub fn with_workers(
+        replicas: Vec<Arc<dyn ObjectBackend>>,
+        requested_workers: usize,
+    ) -> Result<Self> {
         if replicas.is_empty() {
             return Err(Error::Invalid(
                 "replicated storage requires at least one backend".into(),
@@ -26,7 +39,19 @@ impl ReplicatedObjectBackend {
                 "replicated storage requires durable conditional-create backends".into(),
             ));
         }
-        Ok(Self { replicas })
+        let requested_workers = if requested_workers == 0 {
+            4
+        } else {
+            requested_workers
+        };
+        let publication_workers = requested_workers
+            .min(MAX_REPLICA_WORKERS)
+            .min(replicas.len())
+            .max(1);
+        Ok(Self {
+            replicas,
+            publication_workers,
+        })
     }
 
     pub fn replica_count(&self) -> usize {
@@ -81,15 +106,25 @@ impl ObjectBackend for ReplicatedObjectBackend {
             ));
         }
         decode_object(canonical_envelope)?;
-        for replica in &self.replicas {
-            replica.put_if_absent(id, canonical_envelope)?;
-            // A backend must not acknowledge bytes that cannot be verified.
-            if replica.get(id)? != canonical_envelope {
-                return Err(Error::Invalid(format!(
-                    "replica failed read-after-write verification for {id}"
-                )));
-            }
-        }
+        // The outer object publisher intentionally sees this backend's
+        // default single-write capability. Parallelism exists only across the
+        // replicas for one object, preventing object-worker x replica-worker
+        // multiplication while still overlapping independent durable I/O.
+        crate::workers::parallel_map_min(
+            &self.replicas,
+            self.publication_workers,
+            2,
+            &|replica| {
+                replica.put_if_absent(id, canonical_envelope)?;
+                // A backend must not acknowledge bytes that cannot be verified.
+                if replica.get(id)? != canonical_envelope {
+                    return Err(Error::Invalid(format!(
+                        "replica failed read-after-write verification for {id}"
+                    )));
+                }
+                Ok(())
+            },
+        )?;
         Ok(())
     }
 
@@ -110,8 +145,9 @@ mod tests {
     use super::*;
     use crate::format::{encode_object, BLOB};
     use std::collections::HashMap;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use std::time::Duration;
 
     #[derive(Default)]
     struct FakeDurable {
@@ -189,5 +225,52 @@ mod tests {
             }
         }
         assert!(ReplicatedObjectBackend::new(vec![Arc::new(Volatile)]).is_err());
+    }
+    #[test]
+    fn replica_publications_overlap_with_bounded_workers() {
+        struct ObservedDurable {
+            inner: FakeDurable,
+            active: Arc<AtomicUsize>,
+            peak: Arc<AtomicUsize>,
+        }
+        impl ObjectBackend for ObservedDurable {
+            fn capabilities(&self) -> StoreCapabilities {
+                self.inner.capabilities()
+            }
+            fn get(&self, id: ObjectId) -> Result<Vec<u8>> {
+                self.inner.get(id)
+            }
+            fn put_if_absent(&self, id: ObjectId, bytes: &[u8]) -> Result<()> {
+                let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+                self.peak.fetch_max(active, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(25));
+                let result = self.inner.put_if_absent(id, bytes);
+                self.active.fetch_sub(1, Ordering::SeqCst);
+                result
+            }
+            fn exists(&self, id: ObjectId) -> Result<bool> {
+                self.inner.exists(id)
+            }
+        }
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let replicas: Vec<Arc<dyn ObjectBackend>> = (0..4)
+            .map(|_| {
+                Arc::new(ObservedDurable {
+                    inner: FakeDurable::default(),
+                    active: active.clone(),
+                    peak: peak.clone(),
+                }) as Arc<dyn ObjectBackend>
+            })
+            .collect();
+        let store = ReplicatedObjectBackend::with_workers(replicas, usize::MAX).unwrap();
+        assert_eq!(store.publication_workers, 4);
+        let bytes = encode_object(BLOB, b"parallel replication").unwrap();
+        let id = object_id(&bytes);
+        store.put_if_absent(id, &bytes).unwrap();
+        assert_eq!(peak.load(Ordering::SeqCst), 4);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert!(store.exists(id).unwrap());
     }
 }
