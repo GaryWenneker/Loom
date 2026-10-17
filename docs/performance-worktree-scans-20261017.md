@@ -102,3 +102,7 @@ The read window owns at most 1,024 file records and 8 MiB discovered payload, wi
 External editors can race same-length reads; this is not an atomic filesystem snapshot. Unix leaf opens reject symlinks/FIFOs; parent traversal is not anchored, and the portable fallback does not establish race-free reparse confinement. Full scans still visit all paths and replay history. Change-sized discovery/indexing, global cross-process resource scheduling, remote storage/RPC, sparse workspaces, broad #26/#13 parity and 100× performance remain open.
 
 [Scan contract](worktree-scans.md), [reproduction](../benchmarks/README.md#durable-publication-workflows). Raw evidence: [sharded](../benchmarks/results/worktree-sharded-20261017.json), [nested](../benchmarks/results/worktree-nested-20261017.json), [100k](../benchmarks/results/worktree-100k-20261017.json), [payload](../benchmarks/results/worktree-payload-20261017.json), [workers](../benchmarks/results/worktree-workers-20261017.json).
+
+## Additional 100k scan-worker repeat
+
+A second run of the same frozen binary and worker harness retained all seven worker settings with seven rotated samples per state. Four requested workers measured 395.56 ms for eight changed files versus 573.55 ms with one worker (1.45×). This supplementary run does not replace the original controls or change the default-worker/Git claims above. Full sorted status bytes, working bytes, HEAD and fsck passed. [Additional raw samples](../benchmarks/results/worktree-workers-repeat-20261017.json).
