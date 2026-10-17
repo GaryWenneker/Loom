@@ -1,6 +1,6 @@
 use loom_core::Repository;
 use std::error::Error;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 fn contents(index: usize, side: &str) -> Vec<u8> {
@@ -17,7 +17,7 @@ fn contents(index: usize, side: &str) -> Vec<u8> {
     }
 }
 
-fn write_files(workspace: &PathBuf, files: usize, side: &str) -> Result<(), Box<dyn Error>> {
+fn write_files(workspace: &Path, files: usize, side: &str) -> Result<(), Box<dyn Error>> {
     for index in 0..files {
         let directory = workspace.join(format!("files/{:04x}", index % 64));
         std::fs::create_dir_all(&directory)?;
