@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         copies.push(replica);
     }
     let backend = Arc::new(ReplicatedObjectBackend::with_workers(replicas, workers)?);
-    let repository = Repository::init_with_object_backend(&workspace, backend)?;
+    let repository = Repository::init_with_object_backend(&workspace, backend.clone())?;
     for index in 0..files {
         let directory = workspace.join(format!("files/{:04x}", index % 64));
         std::fs::create_dir_all(&directory)?;
@@ -48,12 +48,44 @@ fn main() -> Result<(), Box<dyn Error>> {
     let elapsed = started.elapsed();
     drop(repository);
 
+    // Enumerate outside timing, then revalidate live bytes through every
+    // replica. Includes stored orphan objects as well as the reachable graph.
+    let objects = copies[0].list_ids()?;
+    let verification_started = Instant::now();
+    for id in &objects {
+        if !backend.exists(*id)? {
+            return Err("stored object missing from a replica".into());
+        }
+    }
+    let verification_elapsed = verification_started.elapsed();
+
     let mut checked = Vec::with_capacity(copies.len());
+    let mut expected_paths: Vec<_> = (0..files)
+        .map(|index| format!("files/{:04x}/{index:08}.bin", index % 64))
+        .collect();
+    expected_paths.sort();
+    let mut canonical_root = None;
     for copy in copies {
         let replica = Repository::discover_with_object_backend(&workspace, copy)?;
         if replica.head()?.as_ref() != Some(&revision) {
             return Err("replica did not expose the acknowledged revision".into());
         }
+        if replica.list_branch_files("main", None)? != expected_paths {
+            return Err("replica path listing differs from the complete fixture".into());
+        }
+        for index in 0..files {
+            let path = format!("files/{:04x}/{index:08}.bin", index % 64);
+            let mut expected = vec![0_u8; 256];
+            expected[..8].copy_from_slice(&(index as u64).to_le_bytes());
+            if replica.read_branch_file("main", &path)?.as_ref() != Some(&expected) {
+                return Err("replica payload differs from the fixture".into());
+            }
+        }
+        let root = replica.native_tree_root(revision)?;
+        if canonical_root.is_some_and(|previous| previous != root) {
+            return Err("replica canonical root mismatch".into());
+        }
+        canonical_root = Some(root);
         checked.push(replica.fsck()?);
     }
     let checked = checked
@@ -61,6 +93,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map(usize::to_string)
         .collect::<Vec<_>>()
         .join(",");
-    println!("{}\t{}\t{}", elapsed.as_nanos(), revision, checked);
+    println!(
+        "{}\t{}\t{}\t{}\t{}\t{}",
+        elapsed.as_nanos(),
+        verification_elapsed.as_nanos(),
+        objects.len(),
+        revision,
+        canonical_root.ok_or("no replicas checked")?,
+        checked
+    );
     Ok(())
 }

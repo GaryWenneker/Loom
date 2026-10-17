@@ -1,0 +1,14 @@
+{
+  "source_commit": "645aad4579aafac64a977d5910e39c320b59c547",
+  "source_tree": "a4d9dbf96bd461696169fad7d6d545ad9f98f3c5",
+  "local_source_commit": "62669c6cbc91d5ab3f2d1130187b085f7e421305",
+  "base_main": "4260d72f1573394813ddab5c46b1c3f309e0e33e",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1",
+  "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "binary_sha256": "9c26a1bdb68c484feec895650e5d54661eec5985e3b31e167bca9c1de987d1f1",
+  "harness_sha256": "536408555255bb898efa67ecb11b0fafc25e15cba701df6b9dc6f1fa65a74b73",
+  "resource_helper_sha256": "e73d044ad6582bca3f876212d5a9a1ed8c3a1c6bd4927f6fe9367205090244bd",
+  "raw_sha256": "bd9749b69199b5d79947098ce6ce1e5f1323f44b9e73acfdd74df724b0f339ac",
+  "cpu_max": "800000 100000",
+  "local_tests_passed": 237
+}

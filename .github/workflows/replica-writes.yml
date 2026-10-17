@@ -38,7 +38,7 @@ jobs:
           mkdir -p artifacts
           python3 benchmarks/replica_writes.py \
             --binary target/release/examples/replication_publication \
-            --files 100 1000 --workers 1 2 4 --replicas 4 --repeat 7 \
+            --files 100 1000 --workers 1 0 2 4 --replicas 4 --repeat 7 \
             --output artifacts/replica-writes.json
       - name: Record provenance
         env:
