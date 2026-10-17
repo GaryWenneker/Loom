@@ -7,6 +7,7 @@ history or repository format selection:
 loom portable-manifest regular path/to/file
 loom portable-manifest executable path/to/tool
 loom portable-manifest symlink path/to/link
+loom portable-tree path/to/directory
 ```
 
 The object records regular, executable or symbolic-link identity, the exact
@@ -27,6 +28,15 @@ relative UTF-8 paths without backslashes, NUL bytes or parent traversal. This is
 a deliberately narrow cross-platform contract, not silent pass-through of host
 filesystem semantics.
 
+`portable-tree` recursively publishes typed manifests and canonical directory
+nodes. Entries are byte-sorted UTF-8 names and reference either a blob manifest
+or another portable directory. Empty directories are retained. Names with
+ASCII case collisions, Windows device aliases, control characters, trailing
+dots/spaces, separators or repository metadata aliases are rejected rather
+than producing a snapshot that changes identity across common hosts. Non-ASCII
+Unicode normalization and case-folding remain explicit migration gates. The
+command rejects special files and never follows symlinks.
+
 Regular and executable files are read from an opened handle in fixed 4 MiB
 chunks. Loom checks the declared handle length exactly, bounds the publication
 window, and publishes the manifest only after all chunks are durable and live
@@ -46,6 +56,12 @@ explicitly classified as unsupported above its former 64 MiB CLI cap. Git
 but does not provide Loom's typed metadata, fixed chunk closure or necessarily
 the same durability. Consequently its timing is not a pure product comparison.
 
+`benchmarks/portable_tree.py` measures complete publication of identical native
+directory arguments for candidate and previous Loom. An older binary without
+the command is classified unsupported and receives no version factor. Git
+`add --all payload` plus `write-tree` is only a diagnostic subset because its
+metadata, live-verification and durability contracts differ.
+
 The harness records p50/p95/p99 wall/CPU, peak RSS, kernel block counters and
 logical/allocated object-store bytes for small, multi-chunk and above-64-MiB
 payloads. Each sample uses a fresh repository. Verification and idempotent
@@ -55,8 +71,8 @@ chunks. OS caches are not flushed.
 
 ## Remaining migration gates
 
-This is a contract primitive, not a v1-to-v2 migration. Native tree symlink
-entries, portable path collision rules, history conversion, backup/restore,
+This is a contract primitive, not a v1-to-v2 migration. Full Unicode collision
+policy, history conversion, backup/restore,
 crash recovery, rollback/no-downgrade state, remote transport
 and three-OS golden-vector evidence remain open under issue #13. Refs continue
 to use the existing atomic compare-and-swap path and do not yet reference these

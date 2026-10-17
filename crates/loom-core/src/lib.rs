@@ -7,6 +7,7 @@ mod format;
 mod ignore;
 pub mod memory_storage;
 mod portable_manifest;
+mod portable_tree;
 mod read_pack;
 pub mod replicated_storage;
 mod repository;
@@ -25,6 +26,10 @@ pub use format::{Change, ChangeKind, Changeset, ObjectId};
 pub use portable_manifest::{
     PortableBlobManifest, PortableFileKind, MAX_PORTABLE_CHUNKS, MAX_SYMLINK_BYTES,
     PORTABLE_CHUNK_BYTES,
+};
+pub use portable_tree::{
+    PortableTree, PortableTreeEntry, PortableTreeEntryKind, MAX_PORTABLE_NAME_BYTES,
+    MAX_PORTABLE_TREE_ENTRIES,
 };
 pub use read_pack::ReadPackStats;
 pub use repository::{FileDiff, Repository, StatusEntry, StatusKind};
