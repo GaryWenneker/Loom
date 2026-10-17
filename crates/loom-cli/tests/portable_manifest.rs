@@ -54,6 +54,40 @@ fn portable_manifest_streams_files_beyond_the_legacy_cli_cap() {
     ok(root, &["fsck"]);
 }
 
+#[test]
+fn portable_tree_is_canonical_typed_and_repository_independent() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    ok(root, &["init"]);
+    fs::write(root.join("tracked"), b"committed").unwrap();
+    ok(root, &["commit", "-m", "base"]);
+    fs::write(root.join("tracked"), b"unstaged").unwrap();
+    fs::create_dir(root.join("portable")).unwrap();
+    fs::create_dir(root.join("portable/sub")).unwrap();
+    fs::write(root.join("portable/a"), b"alpha").unwrap();
+    fs::write(root.join("portable/sub/b"), b"beta").unwrap();
+    let status_before = ok(root, &["status"]);
+
+    let first = ok(root, &["portable-tree", "portable"]);
+    let retry = ok(root, &["portable-tree", "portable"]);
+    assert_eq!(first, retry);
+    assert_eq!(String::from_utf8(first).unwrap().trim().len(), 64);
+    assert_eq!(ok(root, &["status"]), status_before);
+    ok(root, &["fsck"]);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn portable_tree_rejects_case_collisions() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    ok(root, &["init"]);
+    fs::create_dir(root.join("portable")).unwrap();
+    fs::write(root.join("portable/A"), b"one").unwrap();
+    fs::write(root.join("portable/a"), b"two").unwrap();
+    assert!(!call(root, &["portable-tree", "portable"]).status.success());
+}
+
 #[cfg(unix)]
 #[test]
 fn portable_symlink_manifest_rejects_escape_targets() {

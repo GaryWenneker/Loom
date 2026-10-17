@@ -502,6 +502,16 @@ impl ObjectStore {
                             .map(|chunk| (chunk, crate::format::BLOB)),
                     );
                 }
+                crate::format::PORTABLE_TREE => {
+                    let tree = crate::PortableTree::decode(&bytes)?;
+                    pending.extend(tree.entries.into_iter().map(|entry| {
+                        let kind = match entry.kind {
+                            crate::PortableTreeEntryKind::File => crate::format::BLOB_MANIFEST,
+                            crate::PortableTreeEntryKind::Directory => crate::format::PORTABLE_TREE,
+                        };
+                        (entry.object, kind)
+                    }));
+                }
                 _ => {}
             }
         }

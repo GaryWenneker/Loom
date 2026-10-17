@@ -27,6 +27,7 @@
 | `loom tree @CHANGESET_ID` | Build/publish a canonical immutable directory tree for the native revision and print its BLAKE3 root object ID, without modifying the worktree. May leave unused immutable nodes after interruption. |
 | `loom sparse-export @CHANGESET_ID DESTINATION [PREFIX ...]` | Materialize an immutable full or prefix-selected snapshot into a new isolated directory; refuses existing destinations and writes a completion receipt only after synced files. |
 | `loom portable-manifest regular|executable|symlink PATH` | Publish an additive canonical v2 portable-file manifest without modifying history, staging, worktree or refs. Regular and executable inputs stream in fixed 4 MiB chunks, including files beyond the v1 64 MiB object limit. |
+| `loom portable-tree DIRECTORY` | Publish an additive canonical portable-v2 directory closure. Regular/executable files, safe symlinks and child directories are typed through blob manifests; history, staging, worktree and refs remain untouched. |
 | `loom tree ls @TREE_ID [DIRECTORY]` | List immediate entries of an immutable directory object by its native ID; includes object IDs and file/dir types. |
 | `loom tree cat @TREE_ID PATH` | Read raw binary file bytes by traversing immutable directory objects, without accessing branchrefs, historical caches or the worktree. |
 | `loom fsck` | Verify native objects, tree node references, native revision-to-tree mappings, refs, derived indexes, staging and recovery roots; **not** a backup or full filesystem recovery test |

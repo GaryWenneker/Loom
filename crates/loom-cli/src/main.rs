@@ -23,10 +23,124 @@ fn same_open_file(path: &std::fs::Metadata, opened: &std::fs::Metadata) -> bool 
     }
 }
 
+fn portable_file_kind(metadata: &std::fs::Metadata) -> loom_core::PortableFileKind {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o111 != 0 {
+            return loom_core::PortableFileKind::Executable;
+        }
+    }
+    loom_core::PortableFileKind::Regular
+}
+
+fn same_directory(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool {
+    if !before.is_dir() || !after.is_dir() || before.file_type().is_symlink() || after.file_type().is_symlink() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        before.dev() == after.dev() && before.ino() == after.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
 fn usage() {
     eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path] [--object-dir DIRECTORY | --object-db FILE]\n  loom status [--scan-workers N]\n  loom add [--scan-workers N] [--] PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME] [--scan-workers N]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom merge-bases LEFT_BRANCH RIGHT_BRANCH\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom cat @CHANGESET_ID PATH\n  loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]\n  loom tree @CHANGESET_ID\n  loom tree ls @TREE_ID [DIR]\n  loom tree cat @TREE_ID PATH\n  loom fsck\n  loom git -- GIT_ARGS...\n  loom query --batch @CHANGESET_ID [--cache-bytes N] [--read-pack FILE]\n  loom read-pack @CHANGESET_ID FILE\n\nExternal object storage: set LOOM_OBJECT_DIR or LOOM_OBJECT_DB for every command.\n");
     eprintln!("  loom sparse-export @CHANGESET_ID DESTINATION [PREFIX ...]");
     eprintln!("  loom portable-manifest regular|executable|symlink PATH");
+    eprintln!("  loom portable-tree DIRECTORY");
+}
+
+fn publish_portable_directory(
+    repo: &Repository,
+    directory: &Path,
+    depth: usize,
+) -> Result<ObjectId, Box<dyn std::error::Error>> {
+    if depth > 256 {
+        return Err("portable tree nesting limit reached".into());
+    }
+    let before = std::fs::symlink_metadata(directory)?;
+    if !before.is_dir() || before.file_type().is_symlink() {
+        return Err("portable-tree requires a non-symlink directory".into());
+    }
+    let mut discovered = Vec::new();
+    for item in std::fs::read_dir(directory)? {
+        let item = item?;
+        let name = item
+            .file_name()
+            .into_string()
+            .map_err(|_| "portable tree names must be UTF-8")?;
+        discovered.push((name, item.path()));
+    }
+    discovered.sort_by(|left, right| left.0.cmp(&right.0));
+    let names_before: Vec<_> = discovered.iter().map(|(name, _)| name.clone()).collect();
+    let mut entries = Vec::with_capacity(discovered.len());
+    for (name, path) in discovered {
+        let metadata = std::fs::symlink_metadata(&path)?;
+        let (kind, object) = if metadata.file_type().is_symlink() {
+            let target = std::fs::read_link(&path)?;
+            let target = target
+                .to_str()
+                .ok_or("portable symlink target must be UTF-8")?;
+            let published = (
+                loom_core::PortableTreeEntryKind::File,
+                repo.publish_portable_blob(
+                    loom_core::PortableFileKind::Symlink,
+                    target.as_bytes(),
+                )?,
+            );
+            if std::fs::read_link(&path)? != target {
+                return Err("portable symlink changed while reading".into());
+            }
+            published
+        } else if metadata.is_dir() {
+            (
+                loom_core::PortableTreeEntryKind::Directory,
+                publish_portable_directory(repo, &path, depth + 1)?,
+            )
+        } else if metadata.is_file() {
+            let mut input = std::fs::File::open(&path)?;
+            let opened = input.metadata()?;
+            if !same_open_file(&metadata, &opened) {
+                return Err("portable tree input changed before reading".into());
+            }
+            let file_kind = portable_file_kind(&opened);
+            let object = repo.publish_portable_blob_from_reader(file_kind, opened.len(), &mut input)?;
+            let opened_after = input.metadata()?;
+            let after = std::fs::symlink_metadata(&path)?;
+            if !same_open_file(&opened, &opened_after)
+                || !same_open_file(&opened_after, &after)
+                || portable_file_kind(&opened) != portable_file_kind(&after)
+            {
+                return Err("portable tree input changed while reading".into());
+            }
+            (loom_core::PortableTreeEntryKind::File, object)
+        } else {
+            return Err(format!("unsupported portable tree entry: {}", path.display()).into());
+        };
+        entries.push(loom_core::PortableTreeEntry { name, kind, object });
+    }
+    let mut names_after = Vec::new();
+    for item in std::fs::read_dir(directory)? {
+        names_after.push(
+            item?
+                .file_name()
+                .into_string()
+                .map_err(|_| "portable tree names must be UTF-8")?,
+        );
+    }
+    names_after.sort();
+    let after = std::fs::symlink_metadata(directory)?;
+    if names_after != names_before || !same_directory(&before, &after) {
+        return Err("portable tree directory changed while reading".into());
+    }
+    repo.publish_portable_tree(&loom_core::PortableTree { entries })
+        .map_err(Into::into)
 }
 
 fn print_diff(change: &loom_core::FileDiff) {
@@ -656,6 +770,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 id
             };
+            println!("{id}");
+        }
+        "portable-tree" => {
+            let [_, raw_path] = args.as_slice() else {
+                return Err("usage: loom portable-tree DIRECTORY".into());
+            };
+            let id = publish_portable_directory(&repo, Path::new(raw_path), 0)?;
             println!("{id}");
         }
         _ => {

@@ -5,12 +5,14 @@ on:
     paths:
       - "crates/loom-core/src/format.rs"
       - "crates/loom-core/src/portable_manifest.rs"
+      - "crates/loom-core/src/portable_tree.rs"
       - "crates/loom-core/src/repository.rs"
       - "crates/loom-core/src/store.rs"
       - "crates/loom-core/src/lib.rs"
       - "crates/loom-cli/src/main.rs"
       - "crates/loom-cli/tests/portable_manifest.rs"
       - "benchmarks/portable_manifest.py"
+      - "benchmarks/portable_tree.py"
       - "docs/portable-v2-manifests.md"
       - ".github/workflows/portable-manifest.yml"
 
@@ -54,6 +56,11 @@ jobs:
             --baseline-loom "${{ github.workspace }}/baseline-target/release/loom" \
             --bytes 1024 8388608 71303168 --repeat 7 --large-repeat 3 \
             --output artifacts/portable-manifest.json
+          python3 benchmarks/portable_tree.py \
+            --loom "${{ github.workspace }}/candidate-target/release/loom" \
+            --baseline-loom "${{ github.workspace }}/baseline-target/release/loom" \
+            --files 100 1000 --file-bytes 4096 --repeat 5 \
+            --output artifacts/portable-tree.json
       - name: Record exact provenance
         run: |
           python3 - <<'PY'
@@ -70,6 +77,7 @@ jobs:
               "candidate_sha256": hashlib.sha256(Path("candidate-target/release/loom").read_bytes()).hexdigest(),
               "baseline_sha256": hashlib.sha256(Path("baseline-target/release/loom").read_bytes()).hexdigest(),
               "harness_sha256": hashlib.sha256(Path("candidate/benchmarks/portable_manifest.py").read_bytes()).hexdigest(),
+              "tree_harness_sha256": hashlib.sha256(Path("candidate/benchmarks/portable_tree.py").read_bytes()).hexdigest(),
           }
           Path("candidate/artifacts/provenance.json").write_text(json.dumps(data, indent=2) + "\n")
           PY

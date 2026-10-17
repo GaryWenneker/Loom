@@ -415,6 +415,80 @@ impl Repository {
         Ok(manifest)
     }
 
+    /// Publish a canonical additive portable directory after live-verifying
+    /// every direct child. This never updates history, staging, worktree or refs.
+    pub fn publish_portable_tree(&self, tree: &crate::PortableTree) -> Result<ObjectId> {
+        let encoded = tree.encode()?;
+        for entry in &tree.entries {
+            let target = self.store.get(entry.object)?;
+            let (actual, _) = decode_object(&target)?;
+            let expected = match entry.kind {
+                crate::PortableTreeEntryKind::File => crate::format::BLOB_MANIFEST,
+                crate::PortableTreeEntryKind::Directory => crate::format::PORTABLE_TREE,
+            };
+            if actual != expected {
+                return Err(Error::Invalid(format!(
+                    "portable tree entry references wrong object type: {}",
+                    entry.name
+                )));
+            }
+            if actual == crate::format::BLOB_MANIFEST {
+                self.portable_blob_manifest(entry.object)?;
+            } else {
+                self.portable_tree(entry.object)?;
+            }
+        }
+        let (_, payload) = decode_object(&encoded)?;
+        let id = self.store.put(crate::format::PORTABLE_TREE, payload)?;
+        if self.portable_tree(id)? != *tree {
+            return Err(Error::Invalid("portable tree live verification disagrees".into()));
+        }
+        Ok(id)
+    }
+
+    /// Read and live-verify a complete portable directory closure.
+    pub fn portable_tree(&self, id: ObjectId) -> Result<crate::PortableTree> {
+        self.portable_tree_inner(id, 0, &mut std::collections::BTreeSet::new())
+    }
+
+    fn portable_tree_inner(
+        &self,
+        id: ObjectId,
+        depth: usize,
+        checked: &mut std::collections::BTreeSet<ObjectId>,
+    ) -> Result<crate::PortableTree> {
+        if depth > 256 {
+            return Err(Error::Invalid("portable tree nesting limit reached".into()));
+        }
+        let tree = crate::PortableTree::decode(&self.store.get(id)?)?;
+        if !checked.insert(id) {
+            return Ok(tree);
+        }
+        for entry in &tree.entries {
+            let target = self.store.get(entry.object)?;
+            let (actual, _) = decode_object(&target)?;
+            let expected = match entry.kind {
+                crate::PortableTreeEntryKind::File => crate::format::BLOB_MANIFEST,
+                crate::PortableTreeEntryKind::Directory => crate::format::PORTABLE_TREE,
+            };
+            if actual != expected {
+                return Err(Error::Invalid(format!(
+                    "portable tree entry references wrong object type: {}",
+                    entry.name
+                )));
+            }
+            match entry.kind {
+                crate::PortableTreeEntryKind::File => {
+                    self.portable_blob_manifest(entry.object)?;
+                }
+                crate::PortableTreeEntryKind::Directory => {
+                    self.portable_tree_inner(entry.object, depth + 1, checked)?;
+                }
+            }
+        }
+        Ok(tree)
+    }
+
     fn connect(meta: &Path) -> Result<Connection> {
         let db = Connection::open(meta.join("index.sqlite"))?;
         db.execute_batch(
@@ -2458,6 +2532,9 @@ impl Repository {
             }
             if kind == crate::format::BLOB_MANIFEST {
                 self.portable_blob_manifest(*id)?;
+            }
+            if kind == crate::format::PORTABLE_TREE {
+                self.portable_tree(*id)?;
             }
             checked += 1;
         }
@@ -4737,6 +4814,54 @@ mod tests {
             .unwrap();
         assert!(repository.portable_blob_manifest(id).is_err());
         assert!(repository.fsck().is_err());
+    }
+
+    #[test]
+    fn portable_trees_are_typed_idempotent_and_live_verified() {
+        let dir = tempfile::tempdir().unwrap();
+        let repository = Repository::init(dir.path()).unwrap();
+        let regular = repository
+            .publish_portable_blob(crate::PortableFileKind::Regular, b"regular")
+            .unwrap();
+        let executable = repository
+            .publish_portable_blob(crate::PortableFileKind::Executable, b"tool")
+            .unwrap();
+        let child = crate::PortableTree {
+            entries: vec![crate::PortableTreeEntry {
+                name: "tool".into(),
+                kind: crate::PortableTreeEntryKind::File,
+                object: executable,
+            }],
+        };
+        let child_id = repository.publish_portable_tree(&child).unwrap();
+        let root = crate::PortableTree {
+            entries: vec![
+                crate::PortableTreeEntry {
+                    name: "README".into(),
+                    kind: crate::PortableTreeEntryKind::File,
+                    object: regular,
+                },
+                crate::PortableTreeEntry {
+                    name: "bin".into(),
+                    kind: crate::PortableTreeEntryKind::Directory,
+                    object: child_id,
+                },
+            ],
+        };
+        let root_id = repository.publish_portable_tree(&root).unwrap();
+        assert_eq!(repository.publish_portable_tree(&root).unwrap(), root_id);
+        assert_eq!(repository.portable_tree(root_id).unwrap(), root);
+        assert_eq!(repository.head().unwrap(), None);
+        repository.fsck().unwrap();
+
+        let wrong = crate::PortableTree {
+            entries: vec![crate::PortableTreeEntry {
+                name: "wrong".into(),
+                kind: crate::PortableTreeEntryKind::Directory,
+                object: regular,
+            }],
+        };
+        assert!(repository.publish_portable_tree(&wrong).is_err());
     }
 
     #[test]

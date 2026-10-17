@@ -10,6 +10,8 @@ pub const CHANGESET: u8 = 2;
 pub const TREE: u8 = 3;
 /// Version-2 portable file metadata with canonical chunk references.
 pub const BLOB_MANIFEST: u8 = 4;
+/// Version-2 portable directory nodes referencing blob manifests or children.
+pub const PORTABLE_TREE: u8 = 5;
 pub const TREE_VERSION: u8 = 2;
 pub const MAX_OBJECT_SIZE: usize = 64 * 1024 * 1024;
 
@@ -53,12 +55,12 @@ pub(crate) fn object_header(kind: u8, length: usize) -> Result<[u8; 15]> {
     if length > MAX_OBJECT_SIZE {
         return Err(Error::Invalid("object exceeds 64 MiB v1 cap".into()));
     }
-    if !matches!(kind, BLOB | CHANGESET | TREE | BLOB_MANIFEST) {
+    if !matches!(kind, BLOB | CHANGESET | TREE | BLOB_MANIFEST | PORTABLE_TREE) {
         return Err(Error::Invalid("unknown object kind".into()));
     }
     let mut header = [0; 15];
     header[..5].copy_from_slice(MAGIC);
-    header[5] = if matches!(kind, TREE | BLOB_MANIFEST) {
+    header[5] = if matches!(kind, TREE | BLOB_MANIFEST | PORTABLE_TREE) {
         TREE_VERSION
     } else {
         VERSION
@@ -81,7 +83,8 @@ pub(crate) fn decode_object(b: &[u8]) -> Result<(u8, &[u8])> {
     let kind = b[6];
     if !matches!(
         (b[5], kind),
-        (VERSION, BLOB | CHANGESET) | (TREE_VERSION, TREE | BLOB_MANIFEST)
+        (VERSION, BLOB | CHANGESET)
+            | (TREE_VERSION, TREE | BLOB_MANIFEST | PORTABLE_TREE)
     ) {
         return Err(Error::Invalid("unsupported object version or kind".into()));
     }
