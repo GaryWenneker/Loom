@@ -8,6 +8,8 @@ pub const BLOB: u8 = 1;
 pub const CHANGESET: u8 = 2;
 /// Version-2 immutable directory tree nodes, independent of v1 changesets.
 pub const TREE: u8 = 3;
+/// Version-2 portable file metadata with canonical chunk references.
+pub const BLOB_MANIFEST: u8 = 4;
 pub const TREE_VERSION: u8 = 2;
 pub const MAX_OBJECT_SIZE: usize = 64 * 1024 * 1024;
 
@@ -51,12 +53,16 @@ pub(crate) fn object_header(kind: u8, length: usize) -> Result<[u8; 15]> {
     if length > MAX_OBJECT_SIZE {
         return Err(Error::Invalid("object exceeds 64 MiB v1 cap".into()));
     }
-    if kind != BLOB && kind != CHANGESET && kind != TREE {
+    if !matches!(kind, BLOB | CHANGESET | TREE | BLOB_MANIFEST) {
         return Err(Error::Invalid("unknown object kind".into()));
     }
     let mut header = [0; 15];
     header[..5].copy_from_slice(MAGIC);
-    header[5] = if kind == TREE { TREE_VERSION } else { VERSION };
+    header[5] = if matches!(kind, TREE | BLOB_MANIFEST) {
+        TREE_VERSION
+    } else {
+        VERSION
+    };
     header[6] = kind;
     header[7..].copy_from_slice(&(length as u64).to_le_bytes());
     Ok(header)
@@ -75,7 +81,7 @@ pub(crate) fn decode_object(b: &[u8]) -> Result<(u8, &[u8])> {
     let kind = b[6];
     if !matches!(
         (b[5], kind),
-        (VERSION, BLOB | CHANGESET) | (TREE_VERSION, TREE)
+        (VERSION, BLOB | CHANGESET) | (TREE_VERSION, TREE | BLOB_MANIFEST)
     ) {
         return Err(Error::Invalid("unsupported object version or kind".into()));
     }

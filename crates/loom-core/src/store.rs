@@ -493,6 +493,15 @@ impl ObjectStore {
                         )
                     }));
                 }
+                crate::format::BLOB_MANIFEST => {
+                    let manifest = crate::PortableBlobManifest::decode(&bytes)?;
+                    pending.extend(
+                        manifest
+                            .chunks
+                            .into_iter()
+                            .map(|chunk| (chunk, crate::format::BLOB)),
+                    );
+                }
                 _ => {}
             }
         }

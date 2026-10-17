@@ -281,6 +281,83 @@ impl Repository {
         crate::read_pack::write(&self.store, root, destination.as_ref())
     }
 
+    /// Publish one additive v2 portable file manifest and its canonical v1
+    /// content chunks. This does not rewrite history, change the worktree,
+    /// stage content or update a ref. Repeating the same call is idempotent.
+    pub fn publish_portable_blob(
+        &self,
+        kind: crate::PortableFileKind,
+        content: &[u8],
+    ) -> Result<ObjectId> {
+        if content.len().div_ceil(crate::PORTABLE_CHUNK_BYTES) > crate::MAX_PORTABLE_CHUNKS {
+            return Err(Error::Invalid(
+                "portable blob exceeds manifest limit".into(),
+            ));
+        }
+        if kind == crate::PortableFileKind::Symlink {
+            crate::portable_manifest::validate_symlink_target(content)?;
+            if content.len() > crate::MAX_SYMLINK_BYTES {
+                return Err(Error::Invalid("portable symlink target is too long".into()));
+            }
+        }
+        let mut chunks = Vec::with_capacity(content.len().div_ceil(crate::PORTABLE_CHUNK_BYTES));
+        for chunk in content.chunks(crate::PORTABLE_CHUNK_BYTES) {
+            chunks.push(self.store.put(BLOB, chunk)?);
+        }
+        let manifest = crate::PortableBlobManifest {
+            kind,
+            logical_bytes: content.len() as u64,
+            chunks,
+        };
+        let encoded = manifest.encode()?;
+        let (_, payload) = decode_object(&encoded)?;
+        let id = self.store.put(crate::format::BLOB_MANIFEST, payload)?;
+        if self.portable_blob_manifest(id)? != manifest {
+            return Err(Error::Invalid(
+                "portable manifest live verification disagrees".into(),
+            ));
+        }
+        Ok(id)
+    }
+
+    /// Read and live-verify a portable manifest plus every referenced chunk.
+    pub fn portable_blob_manifest(&self, id: ObjectId) -> Result<crate::PortableBlobManifest> {
+        let manifest = crate::PortableBlobManifest::decode(&self.store.get(id)?)?;
+        let mut total = 0u64;
+        for (index, chunk) in manifest.chunks.iter().enumerate() {
+            let encoded = self.store.get(*chunk)?;
+            let (kind, payload) = decode_object(&encoded)?;
+            if kind != BLOB {
+                return Err(Error::Invalid(format!(
+                    "portable manifest references a non-blob chunk: {chunk}"
+                )));
+            }
+            let final_chunk = index + 1 == manifest.chunks.len();
+            if !final_chunk && payload.len() != crate::PORTABLE_CHUNK_BYTES {
+                return Err(Error::Invalid(
+                    "portable manifest has a short non-final chunk".into(),
+                ));
+            }
+            if final_chunk && payload.len() > crate::PORTABLE_CHUNK_BYTES {
+                return Err(Error::Invalid(
+                    "portable manifest has an oversized final chunk".into(),
+                ));
+            }
+            total = total
+                .checked_add(payload.len() as u64)
+                .ok_or_else(|| Error::Invalid("portable manifest length overflow".into()))?;
+            if manifest.kind == crate::PortableFileKind::Symlink {
+                crate::portable_manifest::validate_symlink_target(payload)?;
+            }
+        }
+        if total != manifest.logical_bytes {
+            return Err(Error::Invalid(
+                "portable manifest live length disagrees with chunks".into(),
+            ));
+        }
+        Ok(manifest)
+    }
+
     fn connect(meta: &Path) -> Result<Connection> {
         let db = Connection::open(meta.join("index.sqlite"))?;
         db.execute_batch(
@@ -2321,6 +2398,9 @@ impl Repository {
                         )));
                     }
                 }
+            }
+            if kind == crate::format::BLOB_MANIFEST {
+                self.portable_blob_manifest(*id)?;
             }
             checked += 1;
         }
@@ -4489,6 +4569,61 @@ mod tests {
             before,
             "a rejected merge must not publish successful sibling results"
         );
+    }
+
+    #[test]
+    fn portable_manifests_are_chunked_typed_idempotent_and_ref_independent() {
+        let dir = tempfile::tempdir().unwrap();
+        let repository = Repository::init(dir.path()).unwrap();
+        let mut content = vec![0x5a; crate::PORTABLE_CHUNK_BYTES];
+        content.extend_from_slice(b"tail");
+
+        let regular = repository
+            .publish_portable_blob(crate::PortableFileKind::Regular, &content)
+            .unwrap();
+        assert_eq!(
+            repository
+                .publish_portable_blob(crate::PortableFileKind::Regular, &content)
+                .unwrap(),
+            regular
+        );
+        let manifest = repository.portable_blob_manifest(regular).unwrap();
+        assert_eq!(manifest.logical_bytes, content.len() as u64);
+        assert_eq!(manifest.chunks.len(), 2);
+        let executable = repository
+            .publish_portable_blob(crate::PortableFileKind::Executable, &content)
+            .unwrap();
+        assert_ne!(
+            regular, executable,
+            "portable mode is part of object identity"
+        );
+        assert_eq!(repository.head().unwrap(), None);
+        assert!(repository.status().unwrap().is_empty());
+        repository.fsck().unwrap();
+    }
+
+    #[test]
+    fn portable_manifest_live_verification_rejects_missing_chunks_and_bad_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let repository = Repository::init(dir.path()).unwrap();
+        for target in [b"../escape".as_slice(), b"/absolute", b"bad\\target"] {
+            assert!(repository
+                .publish_portable_blob(crate::PortableFileKind::Symlink, target)
+                .is_err());
+        }
+        let manifest = crate::PortableBlobManifest {
+            kind: crate::PortableFileKind::Regular,
+            logical_bytes: 1,
+            chunks: vec![ObjectId([0xa5; 32])],
+        };
+        let encoded = manifest.encode().unwrap();
+        let (_, payload) = decode_object(&encoded).unwrap();
+        let id = repository
+            .store
+            .put(crate::format::BLOB_MANIFEST, payload)
+            .unwrap();
+        assert!(repository.portable_blob_manifest(id).is_err());
+        assert!(repository.fsck().is_err());
     }
 
     #[test]
