@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'crates/loom-core/src/tree.rs'
+      - 'crates/loom-core/src/store.rs'
       - 'crates/loom-core/src/repository.rs'
       - 'crates/loom-core/src/worktree_scan.rs'
       - 'benchmarks/pathsets.py'
@@ -13,7 +14,7 @@ on:
       baseline_ref:
         description: Baseline commit or ref in this repository
         required: true
-        default: 57c0aa5a26c743b3e1ed250e82029b495095d854
+        default: 5faf141bad40136c4e87858f1de17af5d8a74642
         type: string
 
 permissions:
@@ -32,7 +33,7 @@ jobs:
       - name: Check out baseline
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.baseline_ref || '57c0aa5a26c743b3e1ed250e82029b495095d854' }}
+          ref: ${{ inputs.baseline_ref || '5faf141bad40136c4e87858f1de17af5d8a74642' }}
           path: baseline
       - uses: dtolnay/rust-toolchain@stable
       - name: Build baseline and candidate in separate targets

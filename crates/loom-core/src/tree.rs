@@ -315,12 +315,12 @@ pub(crate) fn apply_changes(
     apply_changes_with_workers(store, root, changes, 0)
 }
 
-/// Apply one edit trie while independently building changed root subtrees.
+/// Apply one edit trie while independently building changed subtrees.
 ///
 /// The worker request uses the same zero/explicit bounds as worktree scans.
-/// Only the root fan-out is parallel: recursive work inside each independent
-/// subtree remains serial, preventing nested thread multiplication. Results
-/// are reassembled in canonical name order before the root is persisted.
+/// Follow shared prefixes to independent directory edits. Descendants of a
+/// fork remain serial, preventing nested thread multiplication. Provider write
+/// limits are respected; parents are persisted in canonical name order.
 pub(crate) fn apply_changes_with_workers(
     store: &crate::store::ObjectStore,
     root: ObjectId,
@@ -355,6 +355,7 @@ pub(crate) fn apply_changes_with_workers(
         existing: Option<TreeEntry>,
         child: &Edits,
         depth: usize,
+        workers: usize,
     ) -> Result<Option<TreeEntry>> {
         let replacement = match child.value {
             Some(Some(blob)) => {
@@ -373,7 +374,8 @@ pub(crate) fn apply_changes_with_workers(
                         )));
                     }
                     if previous.kind == TreeEntryKind::Directory
-                        && apply_dir(store, Some(previous.object), child, depth + 1, 1)?.is_some()
+                        && apply_dir(store, Some(previous.object), child, depth + 1, workers)?
+                            .is_some()
                     {
                         return Err(Error::Invalid(format!(
                             "native tree directory has undeleted descendants: {name}"
@@ -403,7 +405,7 @@ pub(crate) fn apply_changes_with_workers(
                         "native tree deletion targets a directory: {name}"
                     )));
                 }
-                apply_dir(store, None, child, depth + 1, 1)?.map(|id| TreeEntry {
+                apply_dir(store, None, child, depth + 1, workers)?.map(|id| TreeEntry {
                     name: name.to_owned(),
                     kind: TreeEntryKind::Directory,
                     executable: false,
@@ -420,7 +422,7 @@ pub(crate) fn apply_changes_with_workers(
                     }
                     None => None,
                 };
-                apply_dir(store, prior, child, depth + 1, 1)?.map(|id| TreeEntry {
+                apply_dir(store, prior, child, depth + 1, workers)?.map(|id| TreeEntry {
                     name: name.to_owned(),
                     kind: TreeEntryKind::Directory,
                     executable: false,
@@ -456,21 +458,31 @@ pub(crate) fn apply_changes_with_workers(
             BTreeMap::new()
         };
 
-        // Removing all edited entries before dispatch makes each task
-        // independent. parallel_map preserves input order and joins every
-        // worker on failure; immutable objects written before an error may be
-        // harmless orphans, but no root or ref has been published.
-        let work: Vec<_> = edits
+        // File-entry edits stay serial. Group directory rebuilds separately
+        // so a few expensive tasks cannot hide in one chunk of cheap work.
+        let (subtrees, files): (Vec<_>, Vec<_>) = edits
             .children
             .iter()
             .map(|(name, child)| (name.as_str(), entries.remove(name), child))
-            .collect();
-        let fanout = if depth == 0 { workers } else { 1 };
-        let replacements =
-            crate::workers::parallel_map(&work, fanout, &|(name, existing, child)| {
-                apply_child(store, name, existing.clone(), child, depth)
-            })?;
-        for ((name, _, _), replacement) in work.into_iter().zip(replacements) {
+            .partition(|(_, _, child)| !child.children.is_empty());
+        for (name, existing, child) in files {
+            if let Some(entry) = apply_child(store, name, existing, child, depth, 1)? {
+                entries.insert(name.to_owned(), entry);
+            }
+        }
+        let fork = workers > 1 && subtrees.len() >= 2;
+        let descendants = if fork { 1 } else { workers };
+        let replacements = crate::workers::parallel_map_min(
+            &subtrees,
+            if fork { workers } else { 1 },
+            2,
+            &|(name, existing, child)| {
+                apply_child(store, name, existing.clone(), child, depth, descendants)
+            },
+        )?;
+        // Every worker is joined before canonical parent publication. Failed
+        // builds may leave only unreachable immutable objects.
+        for ((name, _, _), replacement) in subtrees.into_iter().zip(replacements) {
             if let Some(entry) = replacement {
                 entries.insert(name.to_owned(), entry);
             }
@@ -525,7 +537,8 @@ pub(crate) fn apply_changes_with_workers(
     let workers = crate::worktree_scan::worker_limit(
         requested_workers,
         std::thread::available_parallelism().map_or(1, usize::from),
-    );
+    )
+    .min(store.max_concurrent_writes());
     // The empty root has an object ID too. Empty nonroot directories are
     // pruned, ensuring canonical output matches write_snapshot().
     let result = apply_dir(store, Some(root), &edits, 0, workers)?;
@@ -599,6 +612,97 @@ pub(crate) fn flatten_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage_backend::{ObjectBackend, StoreCapabilities};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Condvar, Mutex};
+
+    struct PublicationProbe {
+        inner: crate::FilesystemObjectBackend,
+        limit: usize,
+        observe: AtomicBool,
+        fail: AtomicBool,
+        active: AtomicUsize,
+        peak: AtomicUsize,
+        overlap: (Mutex<bool>, Condvar),
+    }
+
+    impl PublicationProbe {
+        fn new(path: &std::path::Path, limit: usize) -> Self {
+            Self {
+                inner: crate::FilesystemObjectBackend::open(path).unwrap(),
+                limit,
+                observe: AtomicBool::new(false),
+                fail: AtomicBool::new(false),
+                active: AtomicUsize::new(0),
+                peak: AtomicUsize::new(0),
+                overlap: (Mutex::new(false), Condvar::new()),
+            }
+        }
+    }
+
+    impl ObjectBackend for PublicationProbe {
+        fn capabilities(&self) -> StoreCapabilities {
+            self.inner.capabilities()
+        }
+        fn get(&self, id: ObjectId) -> Result<Vec<u8>> {
+            self.inner.get(id)
+        }
+        fn exists(&self, id: ObjectId) -> Result<bool> {
+            self.inner.exists(id)
+        }
+        fn list_ids(&self) -> Result<Vec<ObjectId>> {
+            self.inner.list_ids()
+        }
+        fn max_concurrent_writes(&self) -> usize {
+            self.limit
+        }
+        fn put_if_absent(&self, id: ObjectId, bytes: &[u8]) -> Result<()> {
+            if !self.observe.load(Ordering::SeqCst) || decode_object(bytes)?.0 != TREE {
+                return self.inner.put_if_absent(id, bytes);
+            }
+            struct Active<'a>(&'a AtomicUsize);
+            impl Drop for Active<'_> {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, Ordering::SeqCst);
+                }
+            }
+            let count = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            let _active = Active(&self.active);
+            self.peak.fetch_max(count, Ordering::SeqCst);
+            if count > self.limit {
+                return Err(Error::Invalid("provider write limit exceeded".into()));
+            }
+            if self.fail.load(Ordering::SeqCst) {
+                return Err(Error::Invalid(
+                    "injected native-tree publication failure".into(),
+                ));
+            }
+            let tree = NativeTree::decode(bytes)?;
+            let leaf = tree.entries.len() == 1
+                && tree.entries[0].name == "file"
+                && tree.entries[0].kind == TreeEntryKind::File;
+            if self.limit > 1
+                && std::thread::available_parallelism().map_or(1, usize::from) > 1
+                && leaf
+            {
+                let (reached, wake) = &self.overlap;
+                let mut reached = reached.lock().unwrap();
+                if count >= 2 {
+                    *reached = true;
+                    wake.notify_all();
+                }
+                let (reached, _) = wake
+                    .wait_timeout_while(reached, std::time::Duration::from_secs(5), |value| !*value)
+                    .unwrap();
+                if !*reached {
+                    return Err(Error::Invalid(
+                        "independent nested subtrees did not overlap".into(),
+                    ));
+                }
+            }
+            self.inner.put_if_absent(id, bytes)
+        }
+    }
 
     fn tree() -> NativeTree {
         NativeTree {
@@ -1330,5 +1434,97 @@ mod tests {
                 Some(after)
             );
         }
+    }
+
+    #[test]
+    fn nested_subtrees_overlap_without_exceeding_provider_or_nested_worker_limits() {
+        use crate::format::{Change, ChangeKind, BLOB};
+        use std::collections::BTreeMap;
+        for limit in [1, 2] {
+            let dir = tempfile::tempdir().unwrap();
+            let backend = Arc::new(PublicationProbe::new(dir.path(), limit));
+            let store = crate::store::ObjectStore::with_backend(backend.clone()).unwrap();
+            let before = store.put(BLOB, b"before").unwrap();
+            let after = store.put(BLOB, b"after").unwrap();
+            let mut state = BTreeMap::new();
+            let mut changes = Vec::new();
+            for index in 0..64 {
+                let path = format!("shared/prefix/branch-{}/deep-{index:02}/file", index % 4);
+                state.insert(path.clone(), before);
+                changes.push(Change {
+                    path,
+                    kind: ChangeKind::Modify,
+                    blob: Some(after),
+                });
+            }
+            // Cheap siblings must not hide the independent directory tasks.
+            for index in 0..32 {
+                let path = format!("shared/prefix/top-{index:02}");
+                state.insert(path.clone(), before);
+                changes.push(Change {
+                    path,
+                    kind: ChangeKind::Modify,
+                    blob: Some(after),
+                });
+            }
+            state.insert("untouched/file".into(), before);
+            let root = write_snapshot(&store, &state).unwrap();
+            let serial = apply_changes_with_workers(&store, root, &changes, 1).unwrap();
+            backend.observe.store(true, Ordering::SeqCst);
+            let parallel = apply_changes_with_workers(&store, root, &changes, 8).unwrap();
+            assert_eq!(parallel, serial);
+            assert_eq!(backend.active.load(Ordering::SeqCst), 0);
+            let expected = limit.min(std::thread::available_parallelism().map_or(1, usize::from));
+            assert_eq!(backend.peak.load(Ordering::SeqCst), expected);
+            for change in changes {
+                state.insert(change.path, after);
+            }
+            assert_eq!(flatten_snapshot(&store, parallel).unwrap(), state);
+        }
+    }
+
+    #[test]
+    fn nested_tree_failure_preserves_ref_and_staged_snapshot_for_retry() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let backend = Arc::new(PublicationProbe::new(&temp.path().join("objects"), 2));
+        let repo =
+            crate::Repository::init_with_object_backend(&workspace, backend.clone()).unwrap();
+        for name in ["left", "right"] {
+            let path = workspace.join(format!("shared/prefix/{name}/file"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"before").unwrap();
+        }
+        let before = repo.commit("test", "base").unwrap();
+        for name in ["left", "right"] {
+            std::fs::write(
+                workspace.join(format!("shared/prefix/{name}/file")),
+                b"after",
+            )
+            .unwrap();
+        }
+        repo.add("shared").unwrap();
+        let staged = repo.diff_staged().unwrap();
+        backend.observe.store(true, Ordering::SeqCst);
+        backend.fail.store(true, Ordering::SeqCst);
+        assert!(repo
+            .commit("test", "reject failed native-tree write")
+            .is_err());
+        assert_eq!(repo.head().unwrap(), Some(before));
+        assert_eq!(repo.diff_staged().unwrap(), staged);
+        assert_eq!(backend.active.load(Ordering::SeqCst), 0);
+        backend.fail.store(false, Ordering::SeqCst);
+        let after = repo.commit("test", "retry native-tree write").unwrap();
+        assert_ne!(before, after);
+        for name in ["left", "right"] {
+            assert_eq!(
+                repo.read_branch_file("main", &format!("shared/prefix/{name}/file"))
+                    .unwrap()
+                    .unwrap(),
+                b"after"
+            );
+        }
+        repo.fsck().unwrap();
     }
 }
