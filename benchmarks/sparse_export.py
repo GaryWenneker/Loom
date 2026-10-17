@@ -112,7 +112,11 @@ def footprint(root):
 
 
 def selected_paths(all_paths, prefixes):
-    return [path for path in all_paths if any(path == p or path.startswith(p + "/") for p in prefixes)]
+    return sorted(
+        path
+        for path in all_paths
+        if any(path == prefix or path.startswith(prefix + "/") for prefix in prefixes)
+    )
 
 
 def verify(destination, paths, expected, marker=False):
