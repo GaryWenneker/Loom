@@ -15,9 +15,11 @@ This checks complete add+commit commands, both startups included, for the
 requested number of modified files and independent top-level subtrees. Initial repository creation is
 outside timing. The first unchanged add records cold index bootstrap separately;
 incremental samples then use current native path indexes. Existing repositories
-are reused with identical history depth, and engine order rotates. The baseline
-receives an equivalent file list expanded before timing, supporting older Loom
-without recursive add and favoring the baseline. Git receives the same
+are reused with identical history depth, and engine order rotates. For baselines with recursive add, pass `--baseline-directories` and use the
+same `--scan-workers N --baseline-scan-workers N` requests. Both engines then
+receive identical directory scopes and worker policies. Omitting the baseline
+directory flag retains a legacy expanded-file control for older binaries;
+argument counts differ and it is not a same-input directory comparison. Git receives the same
 file/directory selections as new Loom.
 Run the harness with `--scan-workers 1` and `--scan-workers 8` (or omit the
 option for up to four workers) to compare identical sequential and

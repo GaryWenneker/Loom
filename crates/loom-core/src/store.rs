@@ -416,6 +416,12 @@ impl ObjectStore {
         }
     }
 
+    /// Shared bound for independent live object publications, including
+    /// native subtree builders that publish outside the buffered publisher.
+    pub(crate) fn max_concurrent_writes(&self) -> usize {
+        self.backend.max_concurrent_writes().clamp(1, 8)
+    }
+
     pub fn ids(&self) -> Result<Vec<ObjectId>> {
         if !self.backend.capabilities().list_objects {
             return Err(Error::Invalid(
@@ -564,7 +570,7 @@ impl ObjectPublisher<'_> {
         }
         let workers = if work.len() >= 32 {
             *self.workers.get_or_insert_with(|| {
-                let hint = self.store.backend.max_concurrent_writes().clamp(1, 8);
+                let hint = self.store.max_concurrent_writes();
                 if hint > 1 {
                     hint.min(std::thread::available_parallelism().map_or(1, usize::from))
                 } else {

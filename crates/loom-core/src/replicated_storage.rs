@@ -475,10 +475,12 @@ mod tests {
     }
     #[test]
     fn replica_publications_overlap_with_bounded_workers() {
+        use std::sync::Barrier;
         struct ObservedDurable {
             inner: FakeDurable,
             active: Arc<AtomicUsize>,
             peak: Arc<AtomicUsize>,
+            barrier: Arc<Barrier>,
         }
         impl ObjectBackend for ObservedDurable {
             fn capabilities(&self) -> StoreCapabilities {
@@ -490,7 +492,7 @@ mod tests {
             fn put_if_absent(&self, id: ObjectId, bytes: &[u8]) -> Result<()> {
                 let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
                 self.peak.fetch_max(active, Ordering::SeqCst);
-                std::thread::sleep(Duration::from_millis(25));
+                self.barrier.wait();
                 let result = self.inner.put_if_absent(id, bytes);
                 self.active.fetch_sub(1, Ordering::SeqCst);
                 result
@@ -502,12 +504,14 @@ mod tests {
 
         let active = Arc::new(AtomicUsize::new(0));
         let peak = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(Barrier::new(4));
         let replicas: Vec<Arc<dyn ObjectBackend>> = (0..4)
             .map(|_| {
                 Arc::new(ObservedDurable {
                     inner: FakeDurable::default(),
                     active: active.clone(),
                     peak: peak.clone(),
+                    barrier: barrier.clone(),
                 }) as Arc<dyn ObjectBackend>
             })
             .collect();
