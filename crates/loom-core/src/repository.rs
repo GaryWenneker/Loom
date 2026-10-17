@@ -34,6 +34,29 @@ pub struct FileDiff {
 }
 
 static STAGE_NONCE: AtomicU64 = AtomicU64::new(0);
+const AUTO_PARALLEL_TEXT_MERGE_MIN: usize = 128;
+const AUTO_PARALLEL_TEXT_MERGE_MAX: usize = 2;
+
+fn bounded_text_merge_workers(
+    task_count: usize,
+    requested_workers: usize,
+    provider_workers: usize,
+    available_workers: usize,
+) -> usize {
+    let cap = provider_workers
+        .clamp(1, 8)
+        .min(available_workers.max(1))
+        .min(task_count.max(1));
+    if requested_workers == 0 {
+        if task_count < AUTO_PARALLEL_TEXT_MERGE_MIN {
+            1
+        } else {
+            cap.min(AUTO_PARALLEL_TEXT_MERGE_MAX)
+        }
+    } else {
+        requested_workers.min(cap).max(1)
+    }
+}
 
 // A durable transition descriptor. Object IDs point to immutable snapshots; SQLite
 // publishes the ref/HEAD change only after worktree materialization completes.
@@ -2055,15 +2078,12 @@ impl Repository {
         let mut publications = Vec::new();
         if !text_tasks.is_empty() {
             let reader = self.store.read_session()?;
-            let provider_workers = reader.max_concurrent_reads().clamp(1, 8);
-            let requested_workers = if requested_workers == 0 {
-                provider_workers
-            } else {
-                requested_workers.min(provider_workers)
-            };
-            let workers = requested_workers
-                .min(std::thread::available_parallelism().map_or(1, usize::from))
-                .max(1);
+            let workers = bounded_text_merge_workers(
+                text_tasks.len(),
+                requested_workers,
+                reader.max_concurrent_reads(),
+                std::thread::available_parallelism().map_or(1, usize::from),
+            );
             let outcomes = crate::workers::parallel_map_min(&text_tasks, workers, 2, &|task| {
                 let load_blob = |id| -> Result<Vec<u8>> {
                     let raw = reader.get(id)?;
@@ -4469,5 +4489,21 @@ mod tests {
             before,
             "a rejected merge must not publish successful sibling results"
         );
+    }
+
+    #[test]
+    fn automatic_text_merge_workers_avoid_small_batch_overhead() {
+        assert_eq!(bounded_text_merge_workers(0, 0, 8, 8), 1);
+        assert_eq!(bounded_text_merge_workers(64, 0, 8, 8), 1);
+        assert_eq!(bounded_text_merge_workers(127, 0, 8, 8), 1);
+        assert_eq!(bounded_text_merge_workers(128, 0, 8, 8), 2);
+        assert_eq!(bounded_text_merge_workers(512, 0, 8, 4), 2);
+
+        // Explicit requests remain useful for controlled measurements, but
+        // never exceed provider, host, global or task-count limits.
+        assert_eq!(bounded_text_merge_workers(64, 2, 8, 8), 2);
+        assert_eq!(bounded_text_merge_workers(64, 32, 16, 64), 8);
+        assert_eq!(bounded_text_merge_workers(3, 8, 8, 8), 3);
+        assert_eq!(bounded_text_merge_workers(512, 8, 1, 8), 1);
     }
 }

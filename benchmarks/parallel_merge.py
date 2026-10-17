@@ -129,16 +129,16 @@ def scenario(args, files):
         }
         for name, samples in rows.items()
     }
-    serial = operations[f"loom-{args.workers[0]}"]["merge_wall_ms"]["p50"]
-    parallel = operations[f"loom-{args.workers[-1]}"]["merge_wall_ms"]["p50"]
+    serial = operations["loom-1"]["merge_wall_ms"]["p50"]
+    adaptive = operations["loom-0"]["merge_wall_ms"]["p50"]
     git = operations["git"]["merge_wall_ms"]["p50"]
     return {
         "files": files,
         "independently_text_merged_files": files,
         "operations": operations,
         "canonical_loom_roots": roots,
-        "worker_one_over_parallel_p50": serial / parallel,
-        "git_over_parallel_loom_p50": git / parallel,
+        "worker_one_over_adaptive_p50": serial / adaptive,
+        "git_over_adaptive_loom_p50": git / adaptive,
     }
 
 
@@ -146,16 +146,20 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=lambda value: str(Path(value).resolve()))
     parser.add_argument("--files", nargs="+", type=int, default=[64, 512])
-    parser.add_argument("--workers", nargs="+", type=int, default=[1, 2])
+    parser.add_argument("--workers", nargs="+", type=int, default=[1, 2, 0])
     parser.add_argument("--repeat", type=int, default=7)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     if not hasattr(os, "wait4"):
         parser.error("per-process resource measurements require POSIX wait4")
-    if min(args.files) < 1 or min(args.workers) < 1 or args.repeat < 1:
-        parser.error("positive files/workers/repeat required")
-    if len(set(args.workers)) != len(args.workers) or args.workers[0] != 1:
-        parser.error("workers must be unique and start with sequential worker 1")
+    if min(args.files) < 1 or min(args.workers) < 0 or args.repeat < 1:
+        parser.error("positive files/repeat and non-negative workers required")
+    if (
+        len(set(args.workers)) != len(args.workers)
+        or args.workers[0] != 1
+        or args.workers[-1] != 0
+    ):
+        parser.error("workers must be unique, start with sequential 1 and end with adaptive 0")
 
     binary = Path(args.binary)
     report = {
@@ -194,6 +198,7 @@ def main():
             "every Loom result verifies all bytes, clean status, full fsck and canonical root equality",
             "every Git result verifies all bytes, clean status and full fsck",
             "Loom explicit workers remain capped by CPU, eight and provider read hint",
+            "Loom worker 0 is adaptive: fewer than 128 text merges stay sequential",
             "OS caches are not flushed; no controlled cold-cache evidence",
             "local filesystem only; network and remote cache use are not measured",
             "single merge process; no concurrent-agent or fault-injection evidence",
@@ -207,8 +212,8 @@ def main():
         latest = report["scenarios"][-1]
         print(json.dumps({
             "files": files,
-            "worker_one_over_parallel_p50": latest["worker_one_over_parallel_p50"],
-            "git_over_parallel_loom_p50": latest["git_over_parallel_loom_p50"],
+            "worker_one_over_adaptive_p50": latest["worker_one_over_adaptive_p50"],
+            "git_over_adaptive_loom_p50": latest["git_over_adaptive_loom_p50"],
         }), flush=True)
 
 
