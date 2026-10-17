@@ -37,8 +37,11 @@ checks identical serial/parallel roots and all paths. A native-tree write failur
 also preserves the branch and complete staged snapshot, drains workers, and
 permits a lossless retry. Existing canonical/path/metadata tests remain active.
 
-`benchmarks/pathsets.py --changed-paths 64 --scan-workers 1` and the same request
-with `8` compare complete checked add-plus-commit histories with the exact
-pre-change Loom baseline and Git. Setup, warm-cache conditions, split command
+`benchmarks/pathsets.py --changed-paths 64 --scan-workers 0
+--baseline-scan-workers 0 --baseline-directories` compares complete checked add-plus-commit histories with the exact
+pre-change Loom baseline and Git with identical native directory arguments and
+worker requests. Use the same pair of worker flags for a sequential control.
+The legacy expanded-file mode remains available for older binaries, but is
+explicitly labeled as an adapted control rather than a same-input comparison. Setup, warm-cache conditions, split command
 timings, canonical roots, full payload/fsck checks and raw resource limitations
 remain explicit. Exposing or enabling a pool is not itself a speedup claim.

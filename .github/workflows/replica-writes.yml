@@ -2,6 +2,7 @@ name: Replica publication evidence
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - "crates/loom-core/src/replicated_storage.rs"
       - "crates/loom-core/src/workers.rs"
@@ -17,6 +18,7 @@ permissions:
 
 jobs:
   benchmark:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: checked replica writes
     runs-on: ubuntu-latest
     timeout-minutes: 30

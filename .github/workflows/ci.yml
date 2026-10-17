@@ -42,8 +42,9 @@ jobs:
           python3 -m py_compile benchmarks/scan_workers.py
           python3 benchmarks/scan_workers.py --loom target/debug/loom --files 40 --workers 1 4 1024 --repeat 1 --directories 4 --output /tmp/scan-workers-smoke.json
           python3 -m py_compile benchmarks/pathsets.py
+          python3 benchmarks/test_pathset_arguments.py --loom target/debug/loom
           for workers in 1 8; do
-            python3 benchmarks/pathsets.py --loom target/debug/loom --baseline-loom target/debug/loom --files 16 --repeat 1 --directories 4 --scan-workers "$workers" --output "/tmp/pathsets-workers-$workers-smoke.json"
+            python3 benchmarks/pathsets.py --loom target/debug/loom --baseline-loom target/debug/loom --files 16 --repeat 1 --directories 4 --scan-workers "$workers" --baseline-scan-workers "$workers" --baseline-directories --output "/tmp/pathsets-workers-$workers-smoke.json"
           done
   msrv:
     name: Rust 1.85 minimum

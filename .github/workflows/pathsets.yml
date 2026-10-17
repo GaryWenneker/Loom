@@ -9,13 +9,14 @@ on:
       - 'crates/loom-core/src/repository.rs'
       - 'crates/loom-core/src/worktree_scan.rs'
       - 'benchmarks/pathsets.py'
+      - 'benchmarks/test_pathset_arguments.py'
       - '.github/workflows/pathsets.yml'
   workflow_dispatch:
     inputs:
       baseline_ref:
         description: Baseline commit or ref in this repository
         required: true
-        default: 5faf141bad40136c4e87858f1de17af5d8a74642
+        default: 6df6411c4262cf8a5e81d7d399b56d462b6b1d63
         type: string
 
 permissions:
@@ -35,7 +36,7 @@ jobs:
       - name: Check out baseline
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.baseline_ref || '5faf141bad40136c4e87858f1de17af5d8a74642' }}
+          ref: ${{ inputs.baseline_ref || '6df6411c4262cf8a5e81d7d399b56d462b6b1d63' }}
           path: baseline
       - uses: dtolnay/rust-toolchain@stable
       - name: Build baseline and candidate in separate targets
@@ -64,12 +65,13 @@ jobs:
       - name: Compare complete selected-set workflows at each worker request
         working-directory: candidate
         run: |
-          for workers in 1 8; do
+          for workers in 1 0; do
             python3 benchmarks/pathsets.py \
               --loom "${{ github.workspace }}/candidate-target/release/loom" \
               --baseline-loom "${{ github.workspace }}/baseline-target/release/loom" \
               --files 1000 10000 100000 --directories 256 --changed-paths 64 --repeat 6 \
-              --scan-workers "$workers" --output "pathsets-workers-$workers.json"
+              --scan-workers "$workers" --baseline-scan-workers "$workers" --baseline-directories \
+              --output "pathsets-workers-$workers.json"
           done
       - name: Upload checked raw evidence and provenance
         if: always()
@@ -79,6 +81,6 @@ jobs:
           path: |
             candidate/pathset-provenance.json
             candidate/pathsets-workers-1.json
-            candidate/pathsets-workers-8.json
+            candidate/pathsets-workers-0.json
           if-no-files-found: error
           retention-days: 90

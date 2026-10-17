@@ -1,3 +1,5 @@
+> **Withdrawn as a same-workload speed comparison.** These runs gave the baseline an expanded file list although that binary supports directory scopes, and worker requests were not paired. The 1.93× conclusion is withdrawn as a like-for-like improvement. All raw data is retained as a historical expanded-argument control. Replacement measurements give both native engines identical scopes and worker requests.
+
 # Nested subtree construction — 2026-10-17
 
 Native snapshot construction now follows common prefixes to independent directory edits, instead of limiting workers to at least 32 root entries. Cheap file edits stay serial; descendants of a fork stay serial; the storage provider write hint caps the whole pool. This activates useful work for selections below a shared parent and prevents subtree × replica worker multiplication. Canonical IDs, CAS and staged snapshot semantics are unchanged.
@@ -10,7 +12,7 @@ After these isolated measurements, [integrated source e95cbcc4](https://github.c
 
 ## Method
 
-Each run compares complete add-plus-commit workflows, including both startups, against previous Loom and Git on identical files and histories. Sixty-four files change in sixty-four directories below the shared files/ prefix. Files and enclosing directory scopes are measured separately. The baseline receives an equivalent expanded file list computed outside timing, favoring it; normal CLI progress output remains enabled. The baseline supports recursive selection but the expanded control is retained.
+Each run compares complete add-plus-commit workflows, including both startups, against previous Loom and Git on identical files and histories. Sixty-four files change in sixty-four directories below the shared files/ prefix. Files and enclosing directory scopes are measured separately. The baseline receives an equivalent expanded file list computed outside timing, with different argument counts; normal CLI progress output remains enabled. The baseline supports recursive selection but the expanded control is retained.
 
 The initial repositories are written by the baseline and initial derived path indexes are absent. One first unchanged add/bootstrap is recorded separately; repeated timings use current indexes. Initial fixture creation, verification and cold-index bootstrap are excluded from incremental distributions. Every sample checks the full path list, all changed bytes/framing and native root equality. Every final byte and complete history/closure fsck are checked after the samples.
 
@@ -33,7 +35,7 @@ No local builds or tests run concurrently with the reported measurements. This i
 | 8 | 1,000 | 65,536 | files | 64 | 346.26 | 320.18 | 267.55 | 1.08× | 0.84× |
 | 8 | 1,000 | 65,536 | directories | 256 | 483.31 | 356.30 | 267.10 | 1.36× | 0.75× |
 
-Ratios above one favor new Loom. The 10k / 64-directory request-8 case improves from 423.51 to 218.87 ms (1.93× versus previous Loom); Git is 184.63 ms and remains faster. The request-1 exact-file controls regress at both sizes. Every tested Git default case is faster than new Loom. All controls remain in the table; neither 100× Git performance nor a universal improvement is established.
+Ratios above one favor new Loom. The unpaired 10k / 64-directory control recorded 423.51 versus 218.87 ms. This is not a like-for-like speedup claim; Git recorded 184.63 ms. The request-1 exact-file controls regress at both sizes. Every tested Git default case is faster than new Loom. All controls remain in the table; neither 100× Git performance nor a universal improvement is established.
 
 ## Add and commit split, p50
 

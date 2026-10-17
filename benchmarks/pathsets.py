@@ -60,9 +60,11 @@ def scenario(args, count):
                     for n in changed:
                         (root/paths[n]).write_bytes(content(n, args.file_bytes, step))
                     selected = ([paths[n] for n in sorted(changed)] if phase == 'files'
-                                else (expanded if engine == 'baseline' else directories))
-                    worker_args = (['--scan-workers',str(args.scan_workers)]
-                                   if engine == 'loom' and args.scan_workers is not None else [])
+                                else (expanded if engine == 'baseline' and not args.baseline_directories else directories))
+                    worker_request = (args.baseline_scan_workers if engine == 'baseline'
+                                      else args.scan_workers)
+                    worker_args = (['--scan-workers',str(worker_request)]
+                                   if engine != 'git' and worker_request is not None else [])
                     add_args = (['git','add','--',*selected] if engine == 'git'
                                 else [binary,'add',*worker_args,*selected])
                     commit_args = (['git','-c','commit.gpgsign=false','commit','-qm',str(step)]
@@ -115,6 +117,8 @@ def scenario(args, count):
     return {'files':count,'file_bytes':args.file_bytes,'directories':min(count,args.directories),
             'changed_paths':len(changed),'selected_directory_candidates':len(expanded),
             'loom_scan_workers':args.scan_workers,
+            'baseline_scan_workers':args.baseline_scan_workers,
+            'baseline_directory_arguments':'same-scopes' if args.baseline_directories else 'expanded-files',
             'cold_first_unchanged_add':bootstrap,'operations':operations,'canonical_roots':roots,
             'metadata_logical_bytes':footprints,
             'baseline_over_loom_p50':{p:operations['baseline'][p]['complete']['wall_ms']['p50']/operations['loom'][p]['complete']['wall_ms']['p50'] for p in ['files','directories']},
@@ -131,15 +135,21 @@ def main():
     parser.add_argument('--file-bytes',type=int,default=256)
     parser.add_argument('--scan-workers',type=int,
                         help='new Loom add and commit: 0=auto, requests are capped by the engine')
+    parser.add_argument('--baseline-scan-workers',type=int,
+                        help='baseline add and commit worker request; requires baseline CLI support')
+    parser.add_argument('--baseline-directories',action='store_true',
+                        help='use identical directory scopes for a baseline with recursive add support')
     parser.add_argument('--changed-paths',type=int,default=8,
-                        help='files/top-level directory subtrees modified per sample')
+                        help='files/selected directories modified per sample')
     parser.add_argument('--output',type=Path,required=True)
     args=parser.parse_args()
-    if min(args.files)<1 or max(args.files)>1000000 or args.repeat<1 or args.directories<1 or args.changed_paths<1 or not 32<=args.file_bytes<=1048576 or (args.scan_workers is not None and args.scan_workers<0):
+    if min(args.files)<1 or max(args.files)>1000000 or args.repeat<1 or args.directories<1 or args.changed_paths<1 or not 32<=args.file_bytes<=1048576 or any(v is not None and v<0 for v in [args.scan_workers,args.baseline_scan_workers]):
         parser.error('positive valid sizes/repeats required')
-    report={'schema_version':1,'host':{'platform':platform.platform(),'cpus':__import__('os').cpu_count()},
+    report={'schema_version':2,'host':{'platform':platform.platform(),'cpus':__import__('os').cpu_count()},
             'git_version':subprocess.check_output(['git','--version'],text=True).strip(),
             'loom_scan_workers':args.scan_workers,
+            'baseline_scan_workers':args.baseline_scan_workers,
+            'baseline_directory_arguments':'same-scopes' if args.baseline_directories else 'expanded-files',
             'loom_sha256':hashlib.sha256(Path(args.loom).read_bytes()).hexdigest(),
             'baseline_sha256':hashlib.sha256(Path(args.baseline_loom).read_bytes()).hexdigest(),
             'harness_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -147,9 +157,11 @@ def main():
             'conditions':['complete add plus commit, both startups timed, existing filesystem-backed repositories',
                           'initial full-repository commit/setup outside timing; one workspace per engine/size reused with identical history depth',
                           'first unchanged add/bootstrap recorded separately; incremental timings have current native path indexes',
-                          f'{args.changed_paths} files/top-level subtrees requested per sample, files then directory scopes; engine order rotates per repeat',
+                          f'{args.changed_paths} files/selected directories requested per sample, files then directory scopes; engine order rotates per repeat',
                           f'new Loom add+commit worker request: {args.scan_workers}; omitted means up to four workers',
-                          'baseline receives the equivalent candidate file list pre-expanded outside timing, supporting older Loom and favoring baseline',
+                          f'baseline add+commit worker request: {args.baseline_scan_workers}; omitted uses that binary default',
+                          ('both native engines receive identical directory scopes' if args.baseline_directories else
+                           'legacy adapted control: baseline receives an expanded file list; argument counts differ and this is not a same-input directory comparison'),
                           'every sample checks full path listing, selected payload bytes/framing and native root equality',
                           'full final payload verification and full history/closure fsck after all samples',
                           'warm uncontrolled caches; no cold-disk, network, crash or concurrent-agent evidence',
@@ -160,7 +172,9 @@ def main():
         report['scenarios'].append(result)
         args.output.parent.mkdir(parents=True,exist_ok=True)
         args.output.write_text(json.dumps(report,indent=2)+'\n')
-        print(json.dumps({'files':count,'baseline_over_loom_p50':result['baseline_over_loom_p50'],'git_over_loom_p50':result['git_over_loom_p50']}),flush=True)
+        print(json.dumps({'files':count,'baseline_directory_arguments':result['baseline_directory_arguments'],
+                          'baseline_scan_workers':args.baseline_scan_workers,'loom_scan_workers':args.scan_workers,
+                          'baseline_over_loom_p50':result['baseline_over_loom_p50'],'git_over_loom_p50':result['git_over_loom_p50']}),flush=True)
 
 
 if __name__=='__main__': main()
