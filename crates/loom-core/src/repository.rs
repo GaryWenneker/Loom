@@ -290,7 +290,9 @@ impl Repository {
         content: &[u8],
     ) -> Result<ObjectId> {
         if content.len().div_ceil(crate::PORTABLE_CHUNK_BYTES) > crate::MAX_PORTABLE_CHUNKS {
-            return Err(Error::Invalid("portable blob exceeds manifest limit".into()));
+            return Err(Error::Invalid(
+                "portable blob exceeds manifest limit".into(),
+            ));
         }
         if kind == crate::PortableFileKind::Symlink {
             crate::portable_manifest::validate_symlink_target(content)?;
@@ -4591,7 +4593,10 @@ mod tests {
         let executable = repository
             .publish_portable_blob(crate::PortableFileKind::Executable, &content)
             .unwrap();
-        assert_ne!(regular, executable, "portable mode is part of object identity");
+        assert_ne!(
+            regular, executable,
+            "portable mode is part of object identity"
+        );
         assert_eq!(repository.head().unwrap(), None);
         assert!(repository.status().unwrap().is_empty());
         repository.fsck().unwrap();

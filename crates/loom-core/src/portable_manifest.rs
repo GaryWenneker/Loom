@@ -37,7 +37,9 @@ pub struct PortableBlobManifest {
 impl PortableBlobManifest {
     fn validate_shape(&self) -> Result<()> {
         if self.chunks.len() > MAX_PORTABLE_CHUNKS {
-            return Err(Error::Invalid("portable manifest has too many chunks".into()));
+            return Err(Error::Invalid(
+                "portable manifest has too many chunks".into(),
+            ));
         }
         let expected = if self.logical_bytes == 0 {
             0
@@ -125,7 +127,9 @@ pub(crate) fn validate_symlink_target(target: &[u8]) -> Result<()> {
         || target.starts_with('\\')
         || target.contains('\\')
         || target.contains('\0')
-        || target.split('/').any(|part| part.is_empty() || part == "..")
+        || target
+            .split('/')
+            .any(|part| part.is_empty() || part == "..")
     {
         return Err(Error::Invalid(
             "portable symlink target must be a safe relative UTF-8 path".into(),

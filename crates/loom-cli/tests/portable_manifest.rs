@@ -52,10 +52,9 @@ fn portable_symlink_manifest_rejects_escape_targets() {
     symlink("target", root.join("safe-link")).unwrap();
     ok(root, &["portable-manifest", "symlink", "safe-link"]);
     symlink("../escape", root.join("escape-link")).unwrap();
-    assert!(!call(
-        root,
-        &["portable-manifest", "symlink", "escape-link"]
-    )
-    .status
-    .success());
+    assert!(
+        !call(root, &["portable-manifest", "symlink", "escape-link"])
+            .status
+            .success()
+    );
 }

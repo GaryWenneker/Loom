@@ -593,9 +593,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         ),
         "portable-manifest" => {
             let [_, raw_kind, raw_path] = args.as_slice() else {
-                return Err(
-                    "usage: loom portable-manifest regular|executable|symlink PATH".into(),
-                );
+                return Err("usage: loom portable-manifest regular|executable|symlink PATH".into());
             };
             let kind = match raw_kind.as_str() {
                 "regular" => loom_core::PortableFileKind::Regular,
