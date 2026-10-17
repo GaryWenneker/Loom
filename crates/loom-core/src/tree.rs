@@ -312,6 +312,21 @@ pub(crate) fn apply_changes(
     root: ObjectId,
     changes: &[crate::format::Change],
 ) -> Result<ObjectId> {
+    apply_changes_with_workers(store, root, changes, 0)
+}
+
+/// Apply one edit trie while independently building changed root subtrees.
+///
+/// The worker request uses the same zero/explicit bounds as worktree scans.
+/// Only the root fan-out is parallel: recursive work inside each independent
+/// subtree remains serial, preventing nested thread multiplication. Results
+/// are reassembled in canonical name order before the root is persisted.
+pub(crate) fn apply_changes_with_workers(
+    store: &crate::store::ObjectStore,
+    root: ObjectId,
+    changes: &[crate::format::Change],
+    requested_workers: usize,
+) -> Result<ObjectId> {
     use crate::format::{Change, ChangeKind};
     use std::collections::BTreeMap;
 
@@ -334,11 +349,94 @@ pub(crate) fn apply_changes(
         store.put(TREE, payload)
     }
 
+    fn apply_child(
+        store: &crate::store::ObjectStore,
+        name: &str,
+        existing: Option<TreeEntry>,
+        child: &Edits,
+        depth: usize,
+    ) -> Result<Option<TreeEntry>> {
+        let replacement = match child.value {
+            Some(Some(blob)) => {
+                // A file cannot contain another added file. When replacing an
+                // existing directory with a file, every descendant must be
+                // explicitly deleted.
+                if child.children.values().any(Edits::has_additions) {
+                    return Err(Error::Invalid(format!(
+                        "file/directory collision at native tree entry: {name}"
+                    )));
+                }
+                if let Some(previous) = &existing {
+                    if previous.kind == TreeEntryKind::File && !child.children.is_empty() {
+                        return Err(Error::Invalid(format!(
+                            "native tree deletion beneath a file: {name}"
+                        )));
+                    }
+                    if previous.kind == TreeEntryKind::Directory
+                        && apply_dir(store, Some(previous.object), child, depth + 1, 1)?.is_some()
+                    {
+                        return Err(Error::Invalid(format!(
+                            "native tree directory has undeleted descendants: {name}"
+                        )));
+                    }
+                }
+                Some(TreeEntry {
+                    name: name.to_owned(),
+                    kind: TreeEntryKind::File,
+                    // Modifying file contents must not silently discard the
+                    // executable metadata stored in the native tree.
+                    executable: existing
+                        .as_ref()
+                        .is_some_and(|entry| entry.kind == TreeEntryKind::File && entry.executable),
+                    object: blob,
+                })
+            }
+            Some(None) => {
+                // A directory cannot be deleted as if it were a file in the
+                // v1 changeset model. A removed file can instead be replaced
+                // with a directory in the same batch.
+                if existing
+                    .as_ref()
+                    .is_some_and(|entry| entry.kind == TreeEntryKind::Directory)
+                {
+                    return Err(Error::Invalid(format!(
+                        "native tree deletion targets a directory: {name}"
+                    )));
+                }
+                apply_dir(store, None, child, depth + 1, 1)?.map(|id| TreeEntry {
+                    name: name.to_owned(),
+                    kind: TreeEntryKind::Directory,
+                    executable: false,
+                    object: id,
+                })
+            }
+            None => {
+                let prior = match existing {
+                    Some(entry) if entry.kind == TreeEntryKind::Directory => Some(entry.object),
+                    Some(_) => {
+                        return Err(Error::Invalid(format!(
+                            "cannot add path beneath a native tree file: {name}"
+                        )))
+                    }
+                    None => None,
+                };
+                apply_dir(store, prior, child, depth + 1, 1)?.map(|id| TreeEntry {
+                    name: name.to_owned(),
+                    kind: TreeEntryKind::Directory,
+                    executable: false,
+                    object: id,
+                })
+            }
+        };
+        Ok(replacement)
+    }
+
     fn apply_dir(
         store: &crate::store::ObjectStore,
         previous: Option<ObjectId>,
         edits: &Edits,
         depth: usize,
+        workers: usize,
     ) -> Result<Option<ObjectId>> {
         if depth > 256 {
             return Err(Error::Invalid("native tree nesting limit reached".into()));
@@ -358,83 +456,23 @@ pub(crate) fn apply_changes(
             BTreeMap::new()
         };
 
-        for (name, child) in &edits.children {
-            let existing = entries.remove(name);
-            let replacement = match child.value {
-                Some(Some(blob)) => {
-                    // A file cannot contain another added file. When
-                    // replacing an existing directory with a file, all
-                    // tracked descendants must be explicitly deleted.
-                    if child.children.values().any(Edits::has_additions) {
-                        return Err(Error::Invalid(format!(
-                            "file/directory collision at native tree entry: {name}"
-                        )));
-                    }
-                    if let Some(previous) = &existing {
-                        if previous.kind == TreeEntryKind::File && !child.children.is_empty() {
-                            return Err(Error::Invalid(format!(
-                                "native tree deletion beneath a file: {name}"
-                            )));
-                        }
-                        if previous.kind == TreeEntryKind::Directory
-                            && apply_dir(store, Some(previous.object), child, depth + 1)?.is_some()
-                        {
-                            return Err(Error::Invalid(format!(
-                                "native tree directory has undeleted descendants: {name}"
-                            )));
-                        }
-                    }
-                    Some(TreeEntry {
-                        name: name.clone(),
-                        kind: TreeEntryKind::File,
-                        // Modifying file contents must not silently discard
-                        // the executable metadata stored in the native tree.
-                        executable: existing.as_ref().is_some_and(|entry| {
-                            entry.kind == TreeEntryKind::File && entry.executable
-                        }),
-                        object: blob,
-                    })
-                }
-                Some(None) => {
-                    // A directory cannot be deleted as if it were a file
-                    // in the v1 changeset model. A removed file can instead
-                    // be replaced with a directory in the same batch.
-                    if existing
-                        .as_ref()
-                        .is_some_and(|e| e.kind == TreeEntryKind::Directory)
-                    {
-                        return Err(Error::Invalid(format!(
-                            "native tree deletion targets a directory: {name}"
-                        )));
-                    }
-                    let next = apply_dir(store, None, child, depth + 1)?;
-                    next.map(|id| TreeEntry {
-                        name: name.clone(),
-                        kind: TreeEntryKind::Directory,
-                        executable: false,
-                        object: id,
-                    })
-                }
-                None => {
-                    let prior = match existing {
-                        Some(entry) if entry.kind == TreeEntryKind::Directory => Some(entry.object),
-                        Some(_) => {
-                            return Err(Error::Invalid(format!(
-                                "cannot add path beneath a native tree file: {name}"
-                            )))
-                        }
-                        None => None,
-                    };
-                    apply_dir(store, prior, child, depth + 1)?.map(|id| TreeEntry {
-                        name: name.clone(),
-                        kind: TreeEntryKind::Directory,
-                        executable: false,
-                        object: id,
-                    })
-                }
-            };
+        // Removing all edited entries before dispatch makes each task
+        // independent. parallel_map preserves input order and joins every
+        // worker on failure; immutable objects written before an error may be
+        // harmless orphans, but no root or ref has been published.
+        let work: Vec<_> = edits
+            .children
+            .iter()
+            .map(|(name, child)| (name.as_str(), entries.remove(name), child))
+            .collect();
+        let fanout = if depth == 0 { workers } else { 1 };
+        let replacements =
+            crate::workers::parallel_map(&work, fanout, &|(name, existing, child)| {
+                apply_child(store, name, existing.clone(), child, depth)
+            })?;
+        for ((name, _, _), replacement) in work.into_iter().zip(replacements) {
             if let Some(entry) = replacement {
-                entries.insert(name.clone(), entry);
+                entries.insert(name.to_owned(), entry);
             }
         }
         if entries.is_empty() {
@@ -484,9 +522,13 @@ pub(crate) fn apply_changes(
         NativeTree::decode(&store.get(root)?)?;
         return Ok(root);
     }
+    let workers = crate::worktree_scan::worker_limit(
+        requested_workers,
+        std::thread::available_parallelism().map_or(1, usize::from),
+    );
     // The empty root has an object ID too. Empty nonroot directories are
     // pruned, ensuring canonical output matches write_snapshot().
-    let result = apply_dir(store, Some(root), &edits, 0)?;
+    let result = apply_dir(store, Some(root), &edits, 0, workers)?;
     match result {
         Some(id) => Ok(id),
         None => persist(store, Vec::new()),
@@ -1246,5 +1288,47 @@ mod tests {
         let mut wrong_kind = bytes.clone();
         wrong_kind[6] = crate::format::BLOB;
         assert!(NativeTree::decode(&wrong_kind).is_err());
+    }
+    #[test]
+    fn parallel_independent_subtrees_match_serial_canonical_root() {
+        use crate::format::{Change, ChangeKind, BLOB};
+        use std::collections::BTreeMap;
+        use std::fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join(".loom");
+        fs::create_dir(&meta).unwrap();
+        fs::create_dir(meta.join("objects")).unwrap();
+        let store = crate::store::ObjectStore::new(&meta);
+        let before = store.put(BLOB, b"before").unwrap();
+        let after = store.put(BLOB, b"after").unwrap();
+        let mut state = BTreeMap::new();
+        let mut changes = Vec::new();
+        for index in 0..64 {
+            let path = format!("root-{index:02}/nested/file");
+            state.insert(path.clone(), before);
+            changes.push(Change {
+                kind: ChangeKind::Modify,
+                path,
+                blob: Some(after),
+            });
+        }
+        state.insert("untouched/file".into(), before);
+        let root = write_snapshot(&store, &state).unwrap();
+
+        let serial = apply_changes_with_workers(&store, root, &changes, 1).unwrap();
+        let parallel = apply_changes_with_workers(&store, root, &changes, 8).unwrap();
+        assert_eq!(parallel, serial);
+        assert_eq!(flatten_snapshot(&store, parallel).unwrap().len(), 65);
+        assert_eq!(
+            lookup_file(&store, parallel, "untouched/file").unwrap(),
+            Some(before)
+        );
+        for change in changes {
+            assert_eq!(
+                lookup_file(&store, parallel, &change.path).unwrap(),
+                Some(after)
+            );
+        }
     }
 }

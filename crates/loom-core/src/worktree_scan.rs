@@ -168,7 +168,7 @@ fn read(work: &Work) -> Result<(ObjectId, Vec<u8>)> {
     Ok((object_id(&bytes), bytes))
 }
 
-fn worker_limit(requested: usize, available: usize) -> usize {
+pub(crate) fn worker_limit(requested: usize, available: usize) -> usize {
     let requested = if requested == 0 { 4 } else { requested };
     requested.min(MAX_WORKERS).min(available).max(1)
 }

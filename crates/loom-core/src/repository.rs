@@ -1632,8 +1632,9 @@ impl Repository {
         self.commit_with_scan_options(author, message, crate::WorktreeScanOptions::default())
     }
 
-    /// Commit using bounded full-content scan workers in legacy commit-all mode.
-    /// Explicit staging retains its path-sized publication and does not scan.
+    /// Commit using one bounded worker request for full-content scans and
+    /// independent native-tree subtrees. Explicit staging skips the scan but
+    /// retains bounded subtree construction.
     pub fn commit_with_scan_options(
         &self,
         author: &str,
@@ -1691,7 +1692,12 @@ impl Repository {
         } else {
             crate::tree::write_snapshot(&self.store, &BTreeMap::new())?
         };
-        let native_tree = crate::tree::apply_changes(&self.store, previous_root, &c.changes)?;
+        let native_tree = crate::tree::apply_changes_with_workers(
+            &self.store,
+            previous_root,
+            &c.changes,
+            options.workers,
+        )?;
         let raw = c.encode()?;
         let (_, payload) = decode_object(&raw)?;
         let id = self.store.put(CHANGESET, payload)?;
