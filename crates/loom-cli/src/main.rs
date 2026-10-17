@@ -5,6 +5,7 @@ use std::{env, path::Path, process};
 fn usage() {
     eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path] [--object-dir DIRECTORY | --object-db FILE]\n  loom status [--scan-workers N]\n  loom add [--scan-workers N] [--] PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME] [--scan-workers N]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom merge-bases LEFT_BRANCH RIGHT_BRANCH\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom cat @CHANGESET_ID PATH\n  loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]\n  loom tree @CHANGESET_ID\n  loom tree ls @TREE_ID [DIR]\n  loom tree cat @TREE_ID PATH\n  loom fsck\n  loom git -- GIT_ARGS...\n  loom query --batch @CHANGESET_ID [--cache-bytes N] [--read-pack FILE]\n  loom read-pack @CHANGESET_ID FILE\n\nExternal object storage: set LOOM_OBJECT_DIR or LOOM_OBJECT_DB for every command.\n");
     eprintln!("  loom sparse-export @CHANGESET_ID DESTINATION [PREFIX ...]");
+    eprintln!("  loom portable-manifest regular|executable|symlink PATH");
 }
 
 fn print_diff(change: &loom_core::FileDiff) {
@@ -590,6 +591,56 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "Verified {} native objects and branch references",
             repo.fsck()?
         ),
+        "portable-manifest" => {
+            let [_, raw_kind, raw_path] = args.as_slice() else {
+                return Err(
+                    "usage: loom portable-manifest regular|executable|symlink PATH".into(),
+                );
+            };
+            let kind = match raw_kind.as_str() {
+                "regular" => loom_core::PortableFileKind::Regular,
+                "executable" => loom_core::PortableFileKind::Executable,
+                "symlink" => loom_core::PortableFileKind::Symlink,
+                _ => {
+                    return Err(
+                        "portable manifest kind must be regular, executable or symlink".into(),
+                    )
+                }
+            };
+            let path = Path::new(raw_path);
+            let metadata = std::fs::symlink_metadata(path)?;
+            let content = if kind == loom_core::PortableFileKind::Symlink {
+                if !metadata.file_type().is_symlink() {
+                    return Err("portable symlink manifest requires a symlink path".into());
+                }
+                std::fs::read_link(path)?
+                    .to_str()
+                    .ok_or("portable symlink target must be UTF-8")?
+                    .as_bytes()
+                    .to_vec()
+            } else {
+                if !metadata.is_file() || metadata.file_type().is_symlink() {
+                    return Err("portable file manifest requires a regular non-symlink file".into());
+                }
+                if metadata.len() > 64 * 1024 * 1024 {
+                    return Err(
+                        "portable-manifest CLI input is limited to 64 MiB until streaming lands"
+                            .into(),
+                    );
+                }
+                let content = std::fs::read(path)?;
+                let after = std::fs::symlink_metadata(path)?;
+                if !after.is_file()
+                    || after.file_type().is_symlink()
+                    || after.len() != content.len() as u64
+                {
+                    return Err("portable manifest input changed while reading".into());
+                }
+                content
+            };
+            let id = repo.publish_portable_blob(kind, &content)?;
+            println!("{id}");
+        }
         _ => {
             usage();
             return Err(format!("unknown command: {cmd}").into());

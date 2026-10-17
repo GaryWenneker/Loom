@@ -5,6 +5,7 @@ pub mod cloud_storage;
 mod filesystem_read;
 mod format;
 mod ignore;
+mod portable_manifest;
 pub mod memory_storage;
 mod read_pack;
 pub mod replicated_storage;
@@ -21,6 +22,10 @@ mod workers;
 mod worktree_scan;
 
 pub use format::{Change, ChangeKind, Changeset, ObjectId};
+pub use portable_manifest::{
+    PortableBlobManifest, PortableFileKind, MAX_PORTABLE_CHUNKS, MAX_SYMLINK_BYTES,
+    PORTABLE_CHUNK_BYTES,
+};
 pub use read_pack::ReadPackStats;
 pub use repository::{FileDiff, Repository, StatusEntry, StatusKind};
 pub use snapshot::{
