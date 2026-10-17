@@ -2064,27 +2064,20 @@ impl Repository {
             let workers = requested_workers
                 .min(std::thread::available_parallelism().map_or(1, usize::from))
                 .max(1);
-            let outcomes = crate::workers::parallel_map_min(
-                &text_tasks,
-                workers,
-                2,
-                &|task| {
-                    let load_blob = |id| -> Result<Vec<u8>> {
-                        let raw = reader.get(id)?;
-                        let (kind, payload) = decode_object(&raw)?;
-                        if kind != BLOB {
-                            return Err(Error::Invalid(format!(
-                                "expected blob object: {id}"
-                            )));
-                        }
-                        Ok(payload.to_vec())
-                    };
-                    let base = load_blob(task.1)?;
-                    let ours = load_blob(task.2)?;
-                    let theirs = load_blob(task.3)?;
-                    Ok(crate::text_merge::merge_text(&base, &ours, &theirs))
-                },
-            )?;
+            let outcomes = crate::workers::parallel_map_min(&text_tasks, workers, 2, &|task| {
+                let load_blob = |id| -> Result<Vec<u8>> {
+                    let raw = reader.get(id)?;
+                    let (kind, payload) = decode_object(&raw)?;
+                    if kind != BLOB {
+                        return Err(Error::Invalid(format!("expected blob object: {id}")));
+                    }
+                    Ok(payload.to_vec())
+                };
+                let base = load_blob(task.1)?;
+                let ours = load_blob(task.2)?;
+                let theirs = load_blob(task.3)?;
+                Ok(crate::text_merge::merge_text(&base, &ours, &theirs))
+            })?;
             for (task, outcome) in text_tasks.iter().zip(outcomes) {
                 match outcome {
                     Some(payload) => {
@@ -4477,5 +4470,4 @@ mod tests {
             "a rejected merge must not publish successful sibling results"
         );
     }
-
 }
