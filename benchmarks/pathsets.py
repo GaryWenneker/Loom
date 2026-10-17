@@ -15,7 +15,7 @@ from compare_publication import content, measured, combined, distribution
 def scenario(args, count):
     engines = ['baseline', 'loom', 'git']
     paths = [f'files/{n % args.directories:04x}/{n:08d}.bin' for n in range(count)]
-    changed = set(range(min(8, args.directories, count)))
+    changed = set(range(min(args.changed_paths, args.directories, count)))
     expanded = [p for n, p in enumerate(paths) if n % args.directories in changed]
     directories = [f'files/{n:04x}' for n in sorted(changed)]
     expected_listing = b''.join(p.encode()+b'\0' for p in sorted(paths))
@@ -66,7 +66,7 @@ def scenario(args, count):
                     add_args = (['git','add','--',*selected] if engine == 'git'
                                 else [binary,'add',*worker_args,*selected])
                     commit_args = (['git','-c','commit.gpgsign=false','commit','-qm',str(step)]
-                                   if engine == 'git' else [binary,'commit','-m',str(step)])
+                                   if engine == 'git' else [binary,'commit',*worker_args,'-m',str(step)])
                     add, _ = measured(root, add_args)
                     commit, output = measured(root, commit_args)
                     samples[engine][phase]['add'].append(add)
@@ -130,10 +130,12 @@ def main():
     parser.add_argument('--directories',type=int,default=256)
     parser.add_argument('--file-bytes',type=int,default=256)
     parser.add_argument('--scan-workers',type=int,
-                        help='new Loom add only: 0=auto, requests are capped by the engine')
+                        help='new Loom add and commit: 0=auto, requests are capped by the engine')
+    parser.add_argument('--changed-paths',type=int,default=8,
+                        help='files/top-level directory subtrees modified per sample')
     parser.add_argument('--output',type=Path,required=True)
     args=parser.parse_args()
-    if min(args.files)<1 or max(args.files)>1000000 or args.repeat<1 or args.directories<1 or not 32<=args.file_bytes<=1048576 or (args.scan_workers is not None and args.scan_workers<0):
+    if min(args.files)<1 or max(args.files)>1000000 or args.repeat<1 or args.directories<1 or args.changed_paths<1 or not 32<=args.file_bytes<=1048576 or (args.scan_workers is not None and args.scan_workers<0):
         parser.error('positive valid sizes/repeats required')
     report={'schema_version':1,'host':{'platform':platform.platform(),'cpus':__import__('os').cpu_count()},
             'git_version':subprocess.check_output(['git','--version'],text=True).strip(),
@@ -145,8 +147,8 @@ def main():
             'conditions':['complete add plus commit, both startups timed, existing filesystem-backed repositories',
                           'initial full-repository commit/setup outside timing; one workspace per engine/size reused with identical history depth',
                           'first unchanged add/bootstrap recorded separately; incremental timings have current native path indexes',
-                          'eight files modified per sample, files then directory scopes; engine order rotates per repeat',
-                          f'new Loom add worker request: {args.scan_workers}; omitted means up to four read/hash workers',
+                          f'{args.changed_paths} files/top-level subtrees requested per sample, files then directory scopes; engine order rotates per repeat',
+                          f'new Loom add+commit worker request: {args.scan_workers}; omitted means up to four workers',
                           'baseline receives the equivalent candidate file list pre-expanded outside timing, supporting older Loom and favoring baseline',
                           'every sample checks full path listing, selected payload bytes/framing and native root equality',
                           'full final payload verification and full history/closure fsck after all samples',
