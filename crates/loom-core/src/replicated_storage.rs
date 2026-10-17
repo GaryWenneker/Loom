@@ -273,6 +273,4 @@ mod tests {
         assert_eq!(active.load(Ordering::SeqCst), 0);
         assert!(store.exists(id).unwrap());
     }
-
-
 }
