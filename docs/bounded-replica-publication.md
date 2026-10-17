@@ -71,7 +71,8 @@ are timed separately. The latter excludes enumeration, includes unreachable
 objects and uses warm stores immediately after commit; it is not a graph
 traversal timing. Schema v2 records both distributions and the verified count.
 After those timing windows, the harness reopens the acknowledged revision from every individual store and runs
-full `fsck` on each. The report retains p50/p95/p99 wall time, process CPU,
+full `fsck` on each. Every path and every fixture payload byte is checked, and
+native tree roots must agree across replicas, worker counts and repeats. The report retains p50/p95/p99 wall time, process CPU,
 peak RSS, raw POSIX block-I/O counters, and logical/allocated replica bytes.
 Whole-process resource metrics include fixture creation and verification;
 RSS may include a launcher floor and is not an isolated engine-memory result;

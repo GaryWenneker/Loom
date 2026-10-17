@@ -60,11 +60,32 @@ fn main() -> Result<(), Box<dyn Error>> {
     let verification_elapsed = verification_started.elapsed();
 
     let mut checked = Vec::with_capacity(copies.len());
+    let mut expected_paths: Vec<_> = (0..files)
+        .map(|index| format!("files/{:04x}/{index:08}.bin", index % 64))
+        .collect();
+    expected_paths.sort();
+    let mut canonical_root = None;
     for copy in copies {
         let replica = Repository::discover_with_object_backend(&workspace, copy)?;
         if replica.head()?.as_ref() != Some(&revision) {
             return Err("replica did not expose the acknowledged revision".into());
         }
+        if replica.list_branch_files("main", None)? != expected_paths {
+            return Err("replica path listing differs from the complete fixture".into());
+        }
+        for index in 0..files {
+            let path = format!("files/{:04x}/{index:08}.bin", index % 64);
+            let mut expected = vec![0_u8; 256];
+            expected[..8].copy_from_slice(&(index as u64).to_le_bytes());
+            if replica.read_branch_file("main", &path)?.as_ref() != Some(&expected) {
+                return Err("replica payload differs from the fixture".into());
+            }
+        }
+        let root = replica.native_tree_root(revision)?;
+        if canonical_root.is_some_and(|previous| previous != root) {
+            return Err("replica canonical root mismatch".into());
+        }
+        canonical_root = Some(root);
         checked.push(replica.fsck()?);
     }
     let checked = checked
@@ -73,11 +94,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         .collect::<Vec<_>>()
         .join(",");
     println!(
-        "{}\t{}\t{}\t{}\t{}",
+        "{}\t{}\t{}\t{}\t{}\t{}",
         elapsed.as_nanos(),
         verification_elapsed.as_nanos(),
         objects.len(),
         revision,
+        canonical_root.ok_or("no replicas checked")?,
         checked
     );
     Ok(())

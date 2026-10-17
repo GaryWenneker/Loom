@@ -24,6 +24,8 @@ def tree_bytes(root):
 
 def scenario(args, files):
     rows = {workers: [] for workers in args.workers}
+    roots = {workers: [] for workers in args.workers}
+    expected_root = None
     for repeat in range(args.repeat):
         order = args.workers[repeat % len(args.workers):] + args.workers[:repeat % len(args.workers)]
         for workers in order:
@@ -37,9 +39,13 @@ def scenario(args, files):
                     + [str(replica) for replica in replicas],
                 )
                 fields = output.decode().strip().split("\t")
-                if len(fields) != 5:
+                if len(fields) != 6:
                     raise RuntimeError(f"unexpected benchmark output: {output!r}")
-                commit_ns, verification_ns, stored_objects, revision, checked = fields
+                commit_ns, verification_ns, stored_objects, revision, canonical_root, checked = fields
+                if len(canonical_root) != 64 or (expected_root is not None and canonical_root != expected_root):
+                    raise RuntimeError("worker count changed the canonical fixture root")
+                expected_root = canonical_root
+                roots[workers].append(canonical_root)
                 checked_counts = [int(value) for value in checked.split(",")]
                 if len(checked_counts) != args.replicas or min(checked_counts) <= 0:
                     raise RuntimeError(f"incomplete replica verification: {checked_counts}")
@@ -71,6 +77,7 @@ def scenario(args, files):
         "files": files,
         "file_bytes": 256,
         "replicas": args.replicas,
+        "canonical_roots_by_requested_workers": roots,
         "operations_by_requested_workers": operations,
         "worker_one_over_parallel_commit_p50": {
             str(workers): serial / operations[str(workers)]["commit_wall_ms"]["p50"]
@@ -142,6 +149,8 @@ def main():
             "live verification times every stored object immediately after commit; warm reads, same bounded worker request",
             "stored-object verification includes unreachable objects; it is not a graph traversal timing",
             "each acknowledged revision is reopened and fully fscked from every replica",
+            "every replica's complete path list and all fixture payload bytes are verified after timing",
+            "canonical native roots must match across all replicas, worker requests and repeats",
             "process CPU/RSS/I-O includes fixture creation and verification as well as commit",
             "OS caches are not flushed; no controlled cold-cache evidence",
             "local filesystem replicas only; network usage and remote latency are not measured",
