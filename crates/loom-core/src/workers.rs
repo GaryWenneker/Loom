@@ -79,6 +79,7 @@ mod tests {
             assert!(coordinator.join().unwrap().is_err());
         }
     }
+
     #[test]
     fn oversized_worker_request_is_bounded_and_preserves_order() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -97,5 +98,4 @@ mod tests {
         assert!(peak.load(Ordering::SeqCst) <= 32);
         assert_eq!(active.load(Ordering::SeqCst), 0);
     }
-
 }
