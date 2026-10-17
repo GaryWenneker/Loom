@@ -833,6 +833,40 @@ mod tests {
     }
 
     #[test]
+    fn twenty_native_tree_component_conformance_cases() {
+        // Ten portable valid UTF-8 names; each must preserve its exact bytes.
+        let valid = [
+            "a", "README", "file.txt", "A-b_1", "space name",
+            "café", "日本語", "Δοκιμή", "é", "data.json",
+        ];
+        for (case, name) in valid.iter().enumerate() {
+            let node = NativeTree { entries: vec![TreeEntry {
+                name: (*name).into(),
+                kind: TreeEntryKind::File,
+                executable: false,
+                object: ObjectId([case as u8; 32]),
+            }] };
+            let encoded = node.encode().unwrap();
+            assert_eq!(NativeTree::decode(&encoded).unwrap(), node, "valid case {case}");
+        }
+
+        // Ten malformed or reserved names must fail closed on all OSes.
+        let invalid = [
+            "", ".", "..", "../escape", "dir/file",
+            "dir\\file", ".git", ".loom", "/absolute", "a/../b",
+        ];
+        for (case, name) in invalid.iter().enumerate() {
+            let node = NativeTree { entries: vec![TreeEntry {
+                name: (*name).into(),
+                kind: TreeEntryKind::File,
+                executable: false,
+                object: ObjectId([case as u8; 32]),
+            }] };
+            assert!(node.encode().is_err(), "invalid case {case}: {name}");
+        }
+    }
+
+    #[test]
     fn snapshot_rejects_missing_and_wrong_kind_blob_references() {
         use std::collections::BTreeMap;
         use std::fs;
