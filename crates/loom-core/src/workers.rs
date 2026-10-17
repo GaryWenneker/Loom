@@ -9,9 +9,12 @@ pub(crate) fn parallel_map<T: Sync, R: Send>(
     if workers <= 1 || work.len() < 32 {
         return work.iter().map(load).collect();
     }
+    // A caller may request far more workers than the host can sustain.
+    // Keep thread creation bounded while preserving input order.
+    let worker_count = workers.min(32).min(work.len());
     std::thread::scope(|scope| {
         let tasks: Vec<_> = work
-            .chunks(work.len().div_ceil(workers))
+            .chunks(work.len().div_ceil(worker_count))
             .map(|chunk| scope.spawn(move || chunk.iter().map(load).collect::<Result<Vec<_>>>()))
             .collect();
         let mut values = Vec::with_capacity(work.len());
@@ -75,5 +78,24 @@ mod tests {
             release.send(()).unwrap();
             assert!(coordinator.join().unwrap().is_err());
         }
+    }
+
+    #[test]
+    fn oversized_worker_request_is_bounded_and_preserves_order() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let active = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let work: Vec<usize> = (0..128).collect();
+        let result = parallel_map(&work, usize::MAX, &|&n| {
+            let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(current, Ordering::SeqCst);
+            std::thread::yield_now();
+            active.fetch_sub(1, Ordering::SeqCst);
+            Ok(n)
+        })
+        .unwrap();
+        assert_eq!(result, work);
+        assert!(peak.load(Ordering::SeqCst) <= 32);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
     }
 }
