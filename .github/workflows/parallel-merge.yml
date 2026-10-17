@@ -38,7 +38,7 @@ jobs:
           mkdir -p artifacts
           python3 benchmarks/parallel_merge.py \
             --binary target/release/examples/parallel_merge \
-            --files 64 512 --workers 1 2 --repeat 7 \
+            --files 64 512 --workers 1 2 0 --repeat 7 \
             --output artifacts/parallel-merge.json
       - name: Record provenance
         env:
