@@ -250,11 +250,12 @@ impl Snapshot {
                 };
                 cursor = Some(next);
             }
-            if prefix.is_some() && !selected {
-                return Err(Error::Invalid(format!(
-                    "sparse export prefix selects no files: {}",
-                    prefix.expect("checked")
-                )));
+            if !selected {
+                if let Some(prefix) = prefix {
+                    return Err(Error::Invalid(format!(
+                        "sparse export prefix selects no files: {prefix}"
+                    )));
+                }
             }
         }
         if paths.contains(MARKER)
