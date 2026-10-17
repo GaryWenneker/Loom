@@ -385,9 +385,9 @@ pub(crate) fn apply_changes_with_workers(
                     kind: TreeEntryKind::File,
                     // Modifying file contents must not silently discard the
                     // executable metadata stored in the native tree.
-                    executable: existing.as_ref().is_some_and(|entry| {
-                        entry.kind == TreeEntryKind::File && entry.executable
-                    }),
+                    executable: existing
+                        .as_ref()
+                        .is_some_and(|entry| entry.kind == TreeEntryKind::File && entry.executable),
                     object: blob,
                 })
             }
@@ -466,13 +466,10 @@ pub(crate) fn apply_changes_with_workers(
             .map(|(name, child)| (name.as_str(), entries.remove(name), child))
             .collect();
         let fanout = if depth == 0 { workers } else { 1 };
-        let replacements = crate::workers::parallel_map(
-            &work,
-            fanout,
-            &|(name, existing, child)| {
+        let replacements =
+            crate::workers::parallel_map(&work, fanout, &|(name, existing, child)| {
                 apply_child(store, name, existing.clone(), child, depth)
-            },
-        )?;
+            })?;
         for ((name, _, _), replacement) in work.into_iter().zip(replacements) {
             if let Some(entry) = replacement {
                 entries.insert(name.to_owned(), entry);
@@ -1334,6 +1331,4 @@ mod tests {
             );
         }
     }
-
-
 }
