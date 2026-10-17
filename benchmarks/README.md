@@ -7,7 +7,7 @@ This directory contains a **reproducible benchmark**, not Scion-level performanc
 ```sh
 python3 benchmarks/pathsets.py --loom /absolute/new-loom \
   --baseline-loom /absolute/previous-loom --files 1000 10000 100000 \
-  --directories 256 --repeat 6 --output pathsets.json
+  --directories 256 --repeat 6 --scan-workers 8 --output pathsets.json
 ```
 
 This checks complete add+commit commands, both startups included, for eight
@@ -17,6 +17,9 @@ incremental samples then use current native path indexes. Existing repositories
 are reused with identical history depth, and engine order rotates. The baseline
 has no recursive add, so its equivalent file list is expanded before timing,
 favoring the baseline. Git receives the same file/directory selections as new Loom.
+Run the harness with `--scan-workers 1` and `--scan-workers 8` (or omit the
+option for adaptive selection) to compare identical sequential and bounded-parallel
+selected-set data paths. The worker request applies only to the candidate Loom.
 
 Each sample checks every listed path, selected payload bytes/framing and old/new
 native root equality. Full final payloads and full history/closure fsck are checked
