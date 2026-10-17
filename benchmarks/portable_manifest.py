@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import random
 import resource
 import statistics
 import subprocess
@@ -72,19 +73,18 @@ def footprint(root):
     return {"logical_bytes": logical, "allocated_bytes": allocated}
 
 
-def payload(size):
-    seed = b"loom portable manifest benchmark\x00"
-    return (seed * (size // len(seed) + 1))[:size]
-
-
 def write_payload(path, size):
-    block = payload(min(size, 1024 * 1024))
     with path.open("wb") as output:
         remaining = size
+        index = 0
         while remaining:
-            part = block[:min(remaining, len(block))]
-            output.write(part)
-            remaining -= len(part)
+            count = min(remaining, 1024 * 1024)
+            # Stable high-entropy blocks avoid accidentally benchmarking
+            # repeated-chunk deduplication or Git compression instead of the
+            # requested byte volume. Generation remains outside timing.
+            output.write(random.Random((size << 32) ^ index).randbytes(count))
+            remaining -= count
+            index += 1
 
 
 def baseline_supports(args, size):
@@ -181,6 +181,7 @@ def main():
             "Git hash-object publishes equivalent bytes but no Loom portable metadata or chunk closure",
             "Git default durability can differ from Loom file fsync, so its ratio is diagnostic, not a pure speed claim",
             "fresh object store per sample; verification and retry are outside timing; OS caches are not flushed",
+            "payloads use deterministic distinct high-entropy 1 MiB blocks to avoid repeated-chunk deduplication",
             "no network, remote cache, concurrent agents, migration, ref CAS or power-loss test is included",
         ],
         "scenarios": [scenario(args, size) for size in args.bytes],

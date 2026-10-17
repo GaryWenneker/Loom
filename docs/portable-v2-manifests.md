@@ -49,7 +49,9 @@ the same durability. Consequently its timing is not a pure product comparison.
 The harness records p50/p95/p99 wall/CPU, peak RSS, kernel block counters and
 logical/allocated object-store bytes for small, multi-chunk and above-64-MiB
 payloads. Each sample uses a fresh repository. Verification and idempotent
-retry occur outside the timed section. OS caches are not flushed.
+retry occur outside the timed section. Inputs contain deterministic distinct
+high-entropy 1 MiB blocks so the large case does not collapse into repeated
+chunks. OS caches are not flushed.
 
 ## Remaining migration gates
 
