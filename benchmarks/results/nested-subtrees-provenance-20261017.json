@@ -1,0 +1,23 @@
+{
+  "measured_source_commit": "71d1cd76455cab2a5cd390db5767354acf2ad806",
+  "measured_source_tree": "544943ee695386f67587bb67c59fdd11bad29625",
+  "integrated_source_commit": "e95cbcc4a09d9da1771ae9d75a8b61045e585d19",
+  "integrated_source_tree": "aa7785799d46c8da5373efb1336926762714fe74",
+  "baseline_commit": "5faf141bad40136c4e87858f1de17af5d8a74642",
+  "baseline_tree": "abad9544d6f430ca5fa3ba35f4a40effc5521f74",
+  "integrated_main": "6df6411c4262cf8a5e81d7d399b56d462b6b1d63",
+  "candidate_binary_sha256": "863470a6815e277bd171a4790bf1d0780df787e29ac812b93d1ccedd4534675b",
+  "baseline_binary_sha256": "117e876a69759ad566c84defc16ee9aee1f524d7c276992627c6a0af38b49619",
+  "raw_sha256": {
+    "nested-subtrees-workers-1-20261017.json": "b692a7a6570942b8833ca4271912eedf3f1cfb019e2cfb960bcce5f5c24944ae",
+    "nested-subtrees-workers-8-20261017.json": "5cc3373a15784741a96744e9cd9c4c20e19afc54920f331cfd9ee3a4479523ec",
+    "nested-subtrees-payload-20261017.json": "67df2d01f05d1f8930089780b38b48f45e3cfa592b75eaf1919c9aafbc6f08ce"
+  },
+  "harness_sha256": "379bda9a8a9beb165cee68ea90d1fb7575c8d7fc7b564179cb6b6aa915b94e20",
+  "resource_helper_sha256": "e73d044ad6582bca3f876212d5a9a1ed8c3a1c6bd4927f6fe9367205090244bd",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1",
+  "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "cpu_max": "800000 100000",
+  "isolated_source_local_tests": 239,
+  "integrated_source_local_tests": 240
+}
