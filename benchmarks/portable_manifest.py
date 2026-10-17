@@ -77,31 +77,60 @@ def payload(size):
     return (seed * (size // len(seed) + 1))[:size]
 
 
+def write_payload(path, size):
+    block = payload(min(size, 1024 * 1024))
+    with path.open("wb") as output:
+        remaining = size
+        while remaining:
+            part = block[:min(remaining, len(block))]
+            output.write(part)
+            remaining -= len(part)
+
+
+def baseline_supports(args, size):
+    with tempfile.TemporaryDirectory(prefix="loom-v2-baseline-probe-") as temporary:
+        root = Path(temporary)
+        run(root, [args.baseline_loom, "init"])
+        write_payload(root / "payload", size)
+        probe = subprocess.run(
+            [args.baseline_loom, "portable-manifest", "regular", "payload"],
+            cwd=root, env=environment(), capture_output=True,
+        )
+        return probe.returncode == 0, probe.returncode
+
+
 def scenario(args, size):
-    samples = {"loom": [], "git": []}
-    footprints = {"loom": [], "git": []}
+    baseline_supported, baseline_returncode = baseline_supports(args, size)
+    engines = ["loom", "baseline_loom", "git"] if baseline_supported else ["loom", "git"]
+    samples = {engine: [] for engine in engines}
+    footprints = {engine: [] for engine in engines}
     commands = {
         "loom": [args.loom, "portable-manifest", "regular", "payload"],
+        "baseline_loom": [args.baseline_loom, "portable-manifest", "regular", "payload"],
         "git": ["git", "hash-object", "-w", "payload"],
     }
-    for repeat in range(args.repeat):
-        for engine in (["loom", "git"] if repeat % 2 == 0 else ["git", "loom"]):
+    repeats = args.large_repeat if size > 64 * 1024 * 1024 else args.repeat
+    for repeat in range(repeats):
+        order = engines[repeat % len(engines):] + engines[:repeat % len(engines)]
+        for engine in order:
             with tempfile.TemporaryDirectory(prefix="loom-v2-manifest-") as temporary:
                 root = Path(temporary)
-                (root / "payload").write_bytes(payload(size))
-                if engine == "loom":
-                    run(root, [args.loom, "init"])
+                write_payload(root / "payload", size)
+                if engine in ("loom", "baseline_loom"):
+                    binary = args.loom if engine == "loom" else args.baseline_loom
+                    run(root, [binary, "init"])
                 else:
                     run(root, ["git", "init", "-q", "-b", "main"])
                 sample, object_id = measure(root, commands[engine])
                 samples[engine].append(sample)
                 object_id = object_id.decode().strip()
-                if engine == "loom":
-                    run(root, [args.loom, "fsck"])
+                if engine in ("loom", "baseline_loom"):
+                    binary = args.loom if engine == "loom" else args.baseline_loom
+                    run(root, [binary, "fsck"])
                     assert run(root, commands[engine]).decode().strip() == object_id
                     footprints[engine].append(footprint(root / ".loom" / "objects"))
                 else:
-                    assert run(root, ["git", "cat-file", "blob", object_id]) == payload(size)
+                    assert int(run(root, ["git", "cat-file", "-s", object_id])) == size
                     footprints[engine].append(footprint(root / ".git" / "objects"))
     operations = {
         engine: {
@@ -112,9 +141,19 @@ def scenario(args, size):
     }
     return {
         "bytes": size,
+        "repeat": repeats,
         "commands": commands,
+        "baseline": {
+            "classification": "measured" if baseline_supported else "unsupported",
+            "returncode": baseline_returncode,
+        },
         "operations": operations,
         "footprints": footprints,
+        "baseline_over_candidate_p50": (
+            operations["baseline_loom"]["wall_ms"]["p50"]
+            / operations["loom"]["wall_ms"]["p50"]
+            if baseline_supported else None
+        ),
         "git_over_loom_p50_diagnostic": (
             operations["git"]["wall_ms"]["p50"] / operations["loom"]["wall_ms"]["p50"]
         ),
@@ -125,33 +164,20 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--loom", required=True, type=lambda path: str(Path(path).resolve()))
     parser.add_argument("--baseline-loom", required=True, type=lambda path: str(Path(path).resolve()))
-    parser.add_argument("--bytes", nargs="+", type=int, default=[1024, 8 * 1024 * 1024])
+    parser.add_argument(
+        "--bytes", nargs="+", type=int,
+        default=[1024, 8 * 1024 * 1024, 68 * 1024 * 1024],
+    )
     parser.add_argument("--repeat", type=int, default=7)
+    parser.add_argument("--large-repeat", type=int, default=3)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
-    with tempfile.TemporaryDirectory(prefix="loom-v2-baseline-probe-") as temporary:
-        root = Path(temporary)
-        run(root, [args.baseline_loom, "init"])
-        (root / "payload").write_bytes(b"probe")
-        probe = subprocess.run(
-            [args.baseline_loom, "portable-manifest", "regular", "payload"],
-            cwd=root,
-            env=environment(),
-            capture_output=True,
-        )
-        if probe.returncode == 0:
-            raise RuntimeError("baseline unexpectedly supports portable-manifest")
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "host": {"platform": platform.platform(), "cpus": os.cpu_count()},
-        "baseline": {
-            "classification": "unsupported",
-            "command": [args.baseline_loom, "portable-manifest", "regular", "payload"],
-            "returncode": probe.returncode,
-        },
         "conditions": [
             "candidate publishes fixed 4 MiB chunks plus typed v2 manifest and runs Loom fsck outside timing",
-            "previous Loom is probed with the identical command and classified unsupported, not assigned a speed factor",
+            "candidate and previous Loom receive identical commands; unsupported payload sizes receive no version factor",
             "Git hash-object publishes equivalent bytes but no Loom portable metadata or chunk closure",
             "Git default durability can differ from Loom file fsync, so its ratio is diagnostic, not a pure speed claim",
             "fresh object store per sample; verification and retry are outside timing; OS caches are not flushed",

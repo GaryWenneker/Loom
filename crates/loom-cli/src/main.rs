@@ -2,6 +2,27 @@ mod batch;
 use loom_core::{FilesystemObjectBackend, ObjectId, Repository, StatusKind, WorktreeScanOptions};
 use std::{env, path::Path, process};
 
+fn same_open_file(path: &std::fs::Metadata, opened: &std::fs::Metadata) -> bool {
+    if !path.is_file()
+        || path.file_type().is_symlink()
+        || !opened.is_file()
+        || opened.file_type().is_symlink()
+        || path.len() != opened.len()
+        || path.modified().ok() != opened.modified().ok()
+    {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        path.dev() == opened.dev() && path.ino() == opened.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
 fn usage() {
     eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path] [--object-dir DIRECTORY | --object-db FILE]\n  loom status [--scan-workers N]\n  loom add [--scan-workers N] [--] PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME] [--scan-workers N]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom merge-bases LEFT_BRANCH RIGHT_BRANCH\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom cat @CHANGESET_ID PATH\n  loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]\n  loom tree @CHANGESET_ID\n  loom tree ls @TREE_ID [DIR]\n  loom tree cat @TREE_ID PATH\n  loom fsck\n  loom git -- GIT_ARGS...\n  loom query --batch @CHANGESET_ID [--cache-bytes N] [--read-pack FILE]\n  loom read-pack @CHANGESET_ID FILE\n\nExternal object storage: set LOOM_OBJECT_DIR or LOOM_OBJECT_DB for every command.\n");
     eprintln!("  loom sparse-export @CHANGESET_ID DESTINATION [PREFIX ...]");
@@ -607,36 +628,35 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             };
             let path = Path::new(raw_path);
             let metadata = std::fs::symlink_metadata(path)?;
-            let content = if kind == loom_core::PortableFileKind::Symlink {
+            let id = if kind == loom_core::PortableFileKind::Symlink {
                 if !metadata.file_type().is_symlink() {
                     return Err("portable symlink manifest requires a symlink path".into());
                 }
-                std::fs::read_link(path)?
+                let content = std::fs::read_link(path)?
                     .to_str()
                     .ok_or("portable symlink target must be UTF-8")?
                     .as_bytes()
-                    .to_vec()
+                    .to_vec();
+                repo.publish_portable_blob(kind, &content)?
             } else {
                 if !metadata.is_file() || metadata.file_type().is_symlink() {
                     return Err("portable file manifest requires a regular non-symlink file".into());
                 }
-                if metadata.len() > 64 * 1024 * 1024 {
-                    return Err(
-                        "portable-manifest CLI input is limited to 64 MiB until streaming lands"
-                            .into(),
-                    );
+                let mut input = std::fs::File::open(path)?;
+                let opened = input.metadata()?;
+                if !same_open_file(&metadata, &opened) {
+                    return Err("portable manifest input changed before reading".into());
                 }
-                let content = std::fs::read(path)?;
+                let id = repo.publish_portable_blob_from_reader(kind, opened.len(), &mut input)?;
+                let opened_after = input.metadata()?;
                 let after = std::fs::symlink_metadata(path)?;
-                if !after.is_file()
-                    || after.file_type().is_symlink()
-                    || after.len() != content.len() as u64
+                if !same_open_file(&opened, &opened_after)
+                    || !same_open_file(&opened_after, &after)
                 {
                     return Err("portable manifest input changed while reading".into());
                 }
-                content
+                id
             };
-            let id = repo.publish_portable_blob(kind, &content)?;
             println!("{id}");
         }
         _ => {

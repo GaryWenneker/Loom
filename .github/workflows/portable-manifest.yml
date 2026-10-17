@@ -52,7 +52,7 @@ jobs:
           python3 benchmarks/portable_manifest.py \
             --loom "${{ github.workspace }}/candidate-target/release/loom" \
             --baseline-loom "${{ github.workspace }}/baseline-target/release/loom" \
-            --bytes 1024 8388608 --repeat 7 \
+            --bytes 1024 8388608 71303168 --repeat 7 --large-repeat 3 \
             --output artifacts/portable-manifest.json
       - name: Record exact provenance
         run: |

@@ -27,30 +27,35 @@ relative UTF-8 paths without backslashes, NUL bytes or parent traversal. This is
 a deliberately narrow cross-platform contract, not silent pass-through of host
 filesystem semantics.
 
-The current CLI reads one regular file into memory and therefore rejects input
-larger than 64 MiB. The core manifest schema is chunked, but bounded streaming
-publication and handle-relative race protection are still migration gates.
+Regular and executable files are read from an opened handle in fixed 4 MiB
+chunks. Loom checks the declared handle length exactly, bounds the publication
+window, and publishes the manifest only after all chunks are durable and live
+verified. It then rechecks the opened handle and path metadata; on Unix the
+device and inode must also remain identical. A failed or concurrently changed
+input may leave unreachable immutable chunks, but never a manifest that claims
+the incomplete stream. The 64 MiB v1 object limit therefore no longer limits
+this additive command; the canonical manifest bound is 16,384 chunks (64 GiB).
 
 ## Benchmark classification
 
 `benchmarks/portable_manifest.py` builds the exact candidate and base in
-separate targets. The previous Loom binary receives the identical
-`portable-manifest regular payload` arguments; because it lacks the command it
-is recorded as unsupported and receives no speed factor. Git `hash-object -w`
-is a diagnostic external subset: it publishes identical bytes but does not
-provide Loom's typed metadata, fixed chunk closure or necessarily the same
-durability. Consequently its timing is not a pure product comparison.
+separate targets. Both receive the identical `portable-manifest regular
+payload` command. The baseline is timed where it supports the payload and is
+explicitly classified as unsupported above its former 64 MiB CLI cap. Git
+`hash-object -w` is a diagnostic external subset: it publishes identical bytes
+but does not provide Loom's typed metadata, fixed chunk closure or necessarily
+the same durability. Consequently its timing is not a pure product comparison.
 
 The harness records p50/p95/p99 wall/CPU, peak RSS, kernel block counters and
-logical/allocated object-store bytes for 1 KiB and 8 MiB payloads. Each sample
-uses a fresh repository. Verification and idempotent retry occur outside the
-timed section. OS caches are not flushed.
+logical/allocated object-store bytes for small, multi-chunk and above-64-MiB
+payloads. Each sample uses a fresh repository. Verification and idempotent
+retry occur outside the timed section. OS caches are not flushed.
 
 ## Remaining migration gates
 
 This is a contract primitive, not a v1-to-v2 migration. Native tree symlink
 entries, portable path collision rules, history conversion, backup/restore,
-crash recovery, rollback/no-downgrade state, streaming input, remote transport
+crash recovery, rollback/no-downgrade state, remote transport
 and three-OS golden-vector evidence remain open under issue #13. Refs continue
 to use the existing atomic compare-and-swap path and do not yet reference these
 manifests.
