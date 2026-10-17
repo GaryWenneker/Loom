@@ -93,7 +93,15 @@ fn add_worker_override_is_validated_and_keeps_the_pathset_atomic() {
 
     assert!(!run(
         root,
-        &["add", "--scan-workers", "1", "a", "--scan-workers", "2", "b"]
+        &[
+            "add",
+            "--scan-workers",
+            "1",
+            "a",
+            "--scan-workers",
+            "2",
+            "b",
+        ]
     )
     .status
     .success());
