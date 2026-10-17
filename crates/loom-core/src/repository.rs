@@ -754,43 +754,19 @@ impl Repository {
     fn make_delta(
         &self,
         old: &BTreeMap<String, ObjectId>,
-        files: &BTreeMap<String, Vec<u8>>,
         persist: bool,
+        options: crate::WorktreeScanOptions,
     ) -> Result<Vec<Change>> {
-        let mut changes = Vec::new();
         let mut publication = self.store.publisher();
-        for (path, bytes) in files {
-            let data = encode_object(BLOB, bytes)?;
-            let id = object_id(&data);
-            let prior = old.get(path);
-            if prior != Some(&id) {
-                if persist {
-                    publication.push(id, data)?;
-                }
-                changes.push(Change {
-                    kind: if prior.is_some() {
-                        ChangeKind::Modify
-                    } else {
-                        ChangeKind::Add
-                    },
-                    path: path.clone(),
-                    blob: Some(id),
-                });
+        let changes = crate::worktree_scan::changes(&self.root, old, options, |id, data| {
+            if persist {
+                publication.push(id, data)?;
             }
-        }
+            Ok(())
+        })?;
         // No tree, changeset or ref can be published while blob workers run.
         // A failed window is joined before returning; buffered work is dropped.
         publication.finish()?;
-        for path in old.keys() {
-            if !files.contains_key(path) {
-                changes.push(Change {
-                    kind: ChangeKind::Delete,
-                    path: path.clone(),
-                    blob: None,
-                });
-            }
-        }
-        changes.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(changes)
     }
 
@@ -1124,10 +1100,20 @@ impl Repository {
     }
 
     pub fn status(&self) -> Result<Vec<StatusEntry>> {
+        self.status_with_scan_options(crate::WorktreeScanOptions::default())
+    }
+
+    pub fn status_with_scan_options(
+        &self,
+        options: crate::WorktreeScanOptions,
+    ) -> Result<Vec<StatusEntry>> {
         let old = self.state_at(self.head()?)?;
-        let files = self.scan_files_tracked(&old)?;
-        let changes = self.make_delta(&old, &files, false)?;
-        Ok(changes
+        let changes = self.make_delta(&old, false, options)?;
+        Ok(Self::status_entries(changes))
+    }
+
+    fn status_entries(changes: Vec<Change>) -> Vec<StatusEntry> {
+        changes
             .into_iter()
             .map(|ch| StatusEntry {
                 path: ch.path,
@@ -1137,7 +1123,7 @@ impl Repository {
                     ChangeKind::Delete => StatusKind::Deleted,
                 },
             })
-            .collect())
+            .collect()
     }
 
     /// Compare the current worktree with HEAD without modifying the repository.
@@ -1241,21 +1227,17 @@ impl Repository {
     /// Accurate post-stage working tree status. This is informational;
     /// safety gates still use the full HEAD-to-worktree status.
     pub fn unstaged_status(&self) -> Result<Vec<StatusEntry>> {
-        Ok(self
-            .diff_unstaged()?
-            .into_iter()
-            .map(|change| {
-                let kind = match (change.before.is_some(), change.after.is_some()) {
-                    (false, true) => StatusKind::Added,
-                    (true, false) => StatusKind::Deleted,
-                    _ => StatusKind::Modified,
-                };
-                StatusEntry {
-                    path: change.path,
-                    kind,
-                }
-            })
-            .collect())
+        self.unstaged_status_with_scan_options(crate::WorktreeScanOptions::default())
+    }
+
+    pub fn unstaged_status_with_scan_options(
+        &self,
+        options: crate::WorktreeScanOptions,
+    ) -> Result<Vec<StatusEntry>> {
+        let staged = self.staged_state()?;
+        Ok(Self::status_entries(
+            self.make_delta(&staged, false, options)?,
+        ))
     }
 
     /// Compare two branch tips without materializing either worktree.
@@ -1749,6 +1731,17 @@ impl Repository {
     }
 
     pub fn commit(&self, author: &str, message: &str) -> Result<ObjectId> {
+        self.commit_with_scan_options(author, message, crate::WorktreeScanOptions::default())
+    }
+
+    /// Commit using bounded full-content scan workers in legacy commit-all mode.
+    /// Explicit staging retains its path-sized publication and does not scan.
+    pub fn commit_with_scan_options(
+        &self,
+        author: &str,
+        message: &str,
+        options: crate::WorktreeScanOptions,
+    ) -> Result<ObjectId> {
         let _worktree_guard = self.lock_worktree()?;
         self.recover_locked()?;
         if author.trim().is_empty() || message.trim().is_empty() {
@@ -1769,8 +1762,7 @@ impl Repository {
             changes
         } else {
             let old = self.state_at(prev)?;
-            let files = self.scan_files_tracked(&old)?;
-            self.make_delta(&old, &files, true)?
+            self.make_delta(&old, true, options)?
         };
         if changes.is_empty() {
             return Err(Error::Invalid(

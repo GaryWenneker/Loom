@@ -47,18 +47,24 @@ impl fmt::Display for ObjectId {
     }
 }
 
-pub(crate) fn encode_object(kind: u8, payload: &[u8]) -> Result<Vec<u8>> {
-    if payload.len() > MAX_OBJECT_SIZE {
+pub(crate) fn object_header(kind: u8, length: usize) -> Result<[u8; 15]> {
+    if length > MAX_OBJECT_SIZE {
         return Err(Error::Invalid("object exceeds 64 MiB v1 cap".into()));
     }
     if kind != BLOB && kind != CHANGESET && kind != TREE {
         return Err(Error::Invalid("unknown object kind".into()));
     }
-    let mut b = Vec::with_capacity(payload.len() + 15);
-    b.extend_from_slice(MAGIC);
-    b.push(if kind == TREE { TREE_VERSION } else { VERSION });
-    b.push(kind);
-    b.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+    let mut header = [0; 15];
+    header[..5].copy_from_slice(MAGIC);
+    header[5] = if kind == TREE { TREE_VERSION } else { VERSION };
+    header[6] = kind;
+    header[7..].copy_from_slice(&(length as u64).to_le_bytes());
+    Ok(header)
+}
+pub(crate) fn encode_object(kind: u8, payload: &[u8]) -> Result<Vec<u8>> {
+    let header = object_header(kind, payload.len())?;
+    let mut b = Vec::with_capacity(payload.len() + header.len());
+    b.extend_from_slice(&header);
     b.extend_from_slice(payload);
     Ok(b)
 }

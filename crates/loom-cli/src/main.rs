@@ -1,9 +1,9 @@
 mod batch;
-use loom_core::{FilesystemObjectBackend, ObjectId, Repository, StatusKind};
+use loom_core::{FilesystemObjectBackend, ObjectId, Repository, StatusKind, WorktreeScanOptions};
 use std::{env, path::Path, process};
 
 fn usage() {
-    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path] [--object-dir DIRECTORY | --object-db FILE]\n  loom status\n  loom add PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom merge-bases LEFT_BRANCH RIGHT_BRANCH\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom cat @CHANGESET_ID PATH\n  loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]\n  loom tree @CHANGESET_ID\n  loom tree ls @TREE_ID [DIR]\n  loom tree cat @TREE_ID PATH\n  loom fsck\n  loom git -- GIT_ARGS...\n  loom query --batch @CHANGESET_ID [--cache-bytes N] [--read-pack FILE]\n  loom read-pack @CHANGESET_ID FILE\n\nExternal object storage: set LOOM_OBJECT_DIR or LOOM_OBJECT_DB for every command.\n");
+    eprintln!("Loom v0.1 (experimental)\n\nUsage:\n  loom init [path] [--object-dir DIRECTORY | --object-db FILE]\n  loom status [--scan-workers N]\n  loom add PATH [PATH ...]\n  loom unstage PATH [PATH ...]\n  loom commit -m MESSAGE [--author NAME] [--scan-workers N]\n  loom log [limit]\n  loom branch list|create NAME\n  loom switch NAME\n  loom merge NAME [-m MESSAGE]\n  loom merge-bases LEFT_BRANCH RIGHT_BRANCH\n  loom diff [--staged | --unstaged | FROM_BRANCH TO_BRANCH]\n  loom review\n  loom cat BRANCH PATH\n  loom cat @CHANGESET_ID PATH\n  loom files BRANCH|@CHANGESET_ID [PREFIX] [--null]\n  loom tree @CHANGESET_ID\n  loom tree ls @TREE_ID [DIR]\n  loom tree cat @TREE_ID PATH\n  loom fsck\n  loom git -- GIT_ARGS...\n  loom query --batch @CHANGESET_ID [--cache-bytes N] [--read-pack FILE]\n  loom read-pack @CHANGESET_ID FILE\n\nExternal object storage: set LOOM_OBJECT_DIR or LOOM_OBJECT_DB for every command.\n");
 }
 
 fn print_diff(change: &loom_core::FileDiff) {
@@ -38,6 +38,30 @@ fn print_diff(change: &loom_core::FileDiff) {
         }
         _ => println!("Binary files differ"),
     }
+}
+
+fn scan_options(args: &[String]) -> Result<WorktreeScanOptions, Box<dyn std::error::Error>> {
+    let positions: Vec<_> = args
+        .iter()
+        .enumerate()
+        .filter(|(_, arg)| arg.as_str() == "--scan-workers")
+        .map(|(pos, _)| pos)
+        .collect();
+    if positions.len() > 1 {
+        return Err("duplicate --scan-workers".into());
+    }
+    let workers = positions
+        .first()
+        .map(|pos| {
+            args.get(pos + 1)
+                .ok_or("--scan-workers requires an integer")?
+                .parse::<usize>()
+                .map_err(|_| "--scan-workers requires a nonnegative integer")
+        })
+        .transpose()?;
+    Ok(WorktreeScanOptions {
+        workers: workers.unwrap_or(0),
+    })
 }
 
 type ObjectProvider = std::sync::Arc<dyn loom_core::storage_backend::ObjectBackend>;
@@ -222,6 +246,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         "status" => {
+            if args.len() != 1 && (args.len() != 3 || args[1] != "--scan-workers") {
+                return Err("usage: loom status [--scan-workers N]".into());
+            }
+            let options = scan_options(&args)?;
             println!("On branch {}", repo.current_branch()?);
             let staged = repo.staged_status()?;
             if repo.staging_enabled()? {
@@ -238,7 +266,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     println!("staged {flag} {}", change.path);
                 }
             }
-            let changes = repo.unstaged_status()?;
+            let changes = repo.unstaged_status_with_scan_options(options)?;
             if changes.is_empty() {
                 println!("Working tree clean");
             }
@@ -268,22 +296,35 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         "commit" => {
-            let pos = args
-                .iter()
-                .position(|x| x == "-m")
-                .ok_or("commit requires -m MESSAGE")?;
-            let msg = args
-                .get(pos + 1)
-                .ok_or("commit requires a message after -m")?;
-            let author = if let Some(pos) = args.iter().position(|x| x == "--author") {
-                args.get(pos + 1).ok_or("missing --author value")?.clone()
-            } else {
+            let mut message = None;
+            let mut author = None;
+            let mut workers = None;
+            let mut rest = args[1..].iter();
+            while let Some(option) = rest.next() {
+                let value = rest.next().ok_or("commit option requires a value")?;
+                match option.as_str() {
+                    "-m" if message.is_none() => message = Some(value.as_str()),
+                    "--author" if author.is_none() => author = Some(value.clone()),
+                    "--scan-workers" if workers.is_none() => {
+                        workers = Some(value.parse::<usize>()?)
+                    }
+                    _ => return Err("unknown or duplicate commit option".into()),
+                }
+            }
+            let message = message.ok_or("commit requires -m MESSAGE")?;
+            let author = author.unwrap_or_else(|| {
                 env::var("LOOM_AUTHOR")
                     .or_else(|_| env::var("USER"))
                     .or_else(|_| env::var("USERNAME"))
                     .unwrap_or_else(|_| "unknown".into())
-            };
-            let oid = repo.commit(&author, msg)?;
+            });
+            let oid = repo.commit_with_scan_options(
+                &author,
+                message,
+                WorktreeScanOptions {
+                    workers: workers.unwrap_or(0),
+                },
+            )?;
             println!("Committed {oid}");
         }
         "log" => {

@@ -18,6 +18,7 @@ mod text_merge;
 mod tree;
 mod tree_index;
 mod workers;
+mod worktree_scan;
 
 pub use format::{Change, ChangeKind, Changeset, ObjectId};
 pub use read_pack::ReadPackStats;
@@ -28,6 +29,7 @@ pub use snapshot::{
 };
 pub use store::FilesystemObjectBackend;
 pub use tree::{NativeTree, TreeEntry, TreeEntryKind};
+pub use worktree_scan::WorktreeScanOptions;
 
 pub type Result<T> = std::result::Result<T, Error>;
 

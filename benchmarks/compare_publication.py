@@ -59,7 +59,8 @@ def distribution(values):
 
 def scenario(args, count):
     names = ['baseline', 'loom', 'git']
-    samples = {name: {'initial': [], 'incremental': []} for name in names}
+    phases = ['initial', 'changed_status', 'incremental', 'clean_status']
+    samples = {name: {phase: [] for phase in phases} for name in names}
     roots = {name: [] for name in names if name != 'git'}
     footprints = {name: [] for name in names}
     def relative(n):
@@ -89,10 +90,24 @@ def scenario(args, count):
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_bytes(content(n, args.file_bytes))
                 recorded_roots = []
+                scan_options = (['--scan-workers', str(args.scan_workers)]
+                                if name == 'loom' and args.scan_workers is not None else [])
                 for phase in ['initial', 'incremental']:
                     if phase == 'incremental':
                         for n in changed:
                             (root/paths[n]).write_bytes(content(n, args.file_bytes, 1))
+                        status_command = (['git', 'status', '--porcelain=v1', '--untracked-files=all']
+                                          if name == 'git' else [binary, 'status', *scan_options])
+                        metrics, status = measured(root, status_command)
+                        samples[name]['changed_status'].append(metrics)
+                        if name == 'git':
+                            actual = {line[3:] for line in status.decode().splitlines()}
+                        else:
+                            lines = status.decode().splitlines()
+                            assert lines[0] == 'On branch main', lines
+                            assert all(line.startswith('M ') for line in lines[1:]), lines
+                            actual = {line[2:] for line in lines[1:]}
+                        assert actual == {paths[n] for n in changed}, 'changed status mismatch'
                     if name == 'git':
                         add, _ = measured(root, ['git', 'add', '--', 'files'])
                         commit, _ = measured(root, ['git', '-c', 'commit.gpgsign=false', 'commit', '-qm', phase])
@@ -101,7 +116,7 @@ def scenario(args, count):
                         revision = revision.decode().strip()
                         _, listing = command(root, ['git', 'ls-tree', '-r', '--name-only', '-z', revision])
                     else:
-                        metrics, output = measured(root, [binary, 'commit', '-m', phase])
+                        metrics, output = measured(root, [binary, 'commit', '-m', phase, *scan_options])
                         revision = output.decode().strip().split()[-1]
                         _, listing = command(root, [binary, 'files', '@'+revision, '--null'])
                     samples[name][phase].append(metrics)
@@ -122,6 +137,11 @@ def scenario(args, count):
                         _, stats = command(root, [binary, 'query', '--batch', '@'+revision],
                                            b'{"id":0,"op":"stats"}\n')
                         recorded_roots.append(json.loads(stats)['root'])
+                status_command = (['git', 'status', '--porcelain=v1', '--untracked-files=all']
+                                  if name == 'git' else [binary, 'status', *scan_options])
+                metrics, status = measured(root, status_command)
+                samples[name]['clean_status'].append(metrics)
+                assert status == (b'' if name == 'git' else b'On branch main\nWorking tree clean\n'), 'clean status mismatch'
                 if name != 'git':
                     roots[name].append(recorded_roots)
                 metadata = root/('.git' if name == 'git' else '.loom')
@@ -134,11 +154,12 @@ def scenario(args, count):
     return {'files': count, 'file_bytes': args.file_bytes, 'layout': args.layout,
             'leaf_directories': 1 if args.layout == 'wide' else min(args.directories, count),
             'changed_files': len(changed), 'operations': operations,
+            'requested_scan_workers': args.scan_workers,
             'canonical_roots': roots, 'metadata_logical_bytes_after_both_commits': footprints,
             'baseline_over_loom_p50': {p: operations['baseline'][p]['wall_ms']['p50']/operations['loom'][p]['wall_ms']['p50']
-                                      for p in ['initial', 'incremental']},
+                                      for p in phases},
             'git_over_loom_p50': {p: operations['git'][p]['wall_ms']['p50']/operations['loom'][p]['wall_ms']['p50']
-                                 for p in ['initial', 'incremental']}}
+                                 for p in phases}}
 
 
 def main():
@@ -150,6 +171,7 @@ def main():
     parser.add_argument('--directories', type=int, default=256)
     parser.add_argument('--layout', choices=['wide', 'sharded', 'nested'], default='sharded')
     parser.add_argument('--file-bytes', type=int, default=256)
+    parser.add_argument('--scan-workers', type=int, help='new Loom only: 0=auto, capped at 8/available CPUs')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     if not hasattr(os, 'wait4'):
@@ -158,6 +180,8 @@ def main():
         parser.error('positive sizes required; at most one million files')
     if not 32 <= args.file_bytes <= 1024*1024:
         parser.error('file bytes must be 32..1048576')
+    if args.scan_workers is not None and args.scan_workers < 0:
+        parser.error('scan workers must be nonnegative')
     report = {'schema_version': 1, 'git_version': subprocess.check_output(['git', '--version'], text=True).strip(),
               'host': {'platform': platform.platform(), 'cpus': os.cpu_count(),
                        'cpu_model': next((l.split(':', 1)[1].strip() for l in Path('/proc/cpuinfo').read_text().splitlines()
@@ -173,6 +197,7 @@ def main():
                              'Loom commit-all vs Git add+commit; both full workflows measured, including process startup',
                              'engine order rotates; fixture creation, full byte verification, listings and fsck outside timing',
                              'initial commit then eight changed files; incremental control rescans same tracked fixture',
+                             'changed status checked before incremental commit; clean status after byte verification/fsck',
                              'POSIX wait4 per-process user/system CPU, max RSS and raw kernel block-I/O counters',
                              'Git RSS is max of two sequential commands; CPU/I-O/wall are summed',
                              'metadata bytes are logical file lengths, not allocated disk blocks',

@@ -11,12 +11,20 @@ python3 benchmarks/compare_publication.py --loom /absolute/new-loom \
 ```
 
 This POSIX harness measures complete initial commit workflows in fresh identical
-fixtures, then a commit with eight modified files. Loom uses commit-all; Git uses
+fixtures, then a commit with eight modified files. It also checks changed status
+before that commit and clean status after full verification. Loom uses commit-all; Git uses
 both `add` and `commit` inside the measured workflow. Startup is included.
 Fixture creation, full payload/listing verification and fsck occur outside timing.
 All native roots must match between old/new Loom. Engine order rotates; six
 repeats cover two full three-engine cycles. Try `--layout nested --directories
 1024 --files 10000` and `--files 100000` separately.
+
+`--scan-workers N` applies only to the new Loom binary; omit it for automatic
+selection. Compare 1/2/4/8/16/32/1024 separately; requests above eight are capped,
+and small windows remain serial. These complete workflows also include the
+unchanged publication-worker policy, so this is scan scheduling evidence, not
+an isolated worker microbenchmark. All file bytes, statuses and native roots
+are checked regardless of the requested limit.
 
 `wait4` records per-process CPU and maximum RSS; Git's two commands have summed
 wall/CPU/I-O and maximum RSS. Raw kernel block-I/O counters are retained in their
@@ -26,6 +34,24 @@ fork/pre-exec launcher floor; it is not an isolated engine-RAM measurement.
 Samples include p50/p95/p99; few samples are insufficient for production tail
 guarantees. This filesystem-provider benchmark
 does not flush OS caches or measure network, power loss or concurrent agents.
+
+## Full-content scan worker scaling
+
+```sh
+python3 benchmarks/scan_workers.py --loom /absolute/new-loom \
+  --files 1000 10000 100000 --workers 1 2 4 8 16 32 1024 --repeat 7 \
+  --directories 256 --output scan-workers.json
+```
+
+This measures complete status commands over clean, eight-file-modified and
+all-files-modified worktrees. Each size uses one fresh committed fixture. Exact
+sorted status output, working bytes and unchanged HEAD are checked, with fsck
+after each phase. Worker order rotates; seven repeats give one complete cycle.
+This is Loom sequential/parallel scan evidence; use the workflow harness above
+for Git comparisons. It shares the POSIX resource-accounting limitations above.
+
+[Measured scan results](../docs/performance-worktree-scans-20261017.md) retain all
+default-worker, larger-payload, nested-directory and worker-scaling controls.
 
 ## Repeated immutable working sets
 
