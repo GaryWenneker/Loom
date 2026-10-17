@@ -200,6 +200,41 @@ impl ObjectBackend for SqliteObjectBackend {
         tx.commit()?;
         Ok(())
     }
+    fn put_batch_if_absent(&self, objects: &[(ObjectId, &[u8])]) -> Result<bool> {
+        // Reject the complete window before BEGIN IMMEDIATE so malformed input
+        // cannot flush an earlier prefix. ObjectPublisher already bounds normal
+        // calls to 128 objects / 8 MiB, while direct callers retain format limits.
+        let mut unique = std::collections::BTreeMap::new();
+        for (id, bytes) in objects {
+            if object_id(bytes) != *id {
+                return Err(Error::Invalid(
+                    "object ID does not match canonical envelope".into(),
+                ));
+            }
+            decode_object(bytes)?;
+            if let Some(previous) = unique.insert(*id, *bytes) {
+                if previous != *bytes {
+                    return Err(Error::Invalid("SQLite batch object collision".into()));
+                }
+            }
+        }
+
+        let mut conn = self.connection()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for (id, bytes) in &unique {
+            tx.execute(
+                "INSERT OR IGNORE INTO loom_storage_objects(oid,envelope) VALUES(?1,?2)",
+                params![id.to_string(), bytes],
+            )?;
+        }
+        for (id, bytes) in &unique {
+            if Self::read(&tx, *id)?.as_slice() != *bytes {
+                return Err(Error::Invalid("SQLite immutable object collision".into()));
+            }
+        }
+        tx.commit()?;
+        Ok(true)
+    }
     fn exists(&self, id: ObjectId) -> Result<bool> {
         match self.get(id) {
             Ok(_) => Ok(true),
@@ -297,6 +332,77 @@ mod tests {
             .query_row("SELECT envelope FROM loom_storage_objects", [], |r| {
                 r.get(0)
             })
+            .unwrap();
+        assert_eq!(actual, b"corrupt");
+    }
+
+    #[test]
+    fn batch_failure_rolls_back_every_new_object_and_retry_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("objects.sqlite");
+        let backend = SqliteObjectBackend::open(&path).unwrap();
+        let envelopes: Vec<_> = (0..4)
+            .map(|index| encode_object(BLOB, format!("batch-{index}").as_bytes()).unwrap())
+            .collect();
+        let objects: Vec<_> = envelopes
+            .iter()
+            .map(|bytes| (object_id(bytes), bytes.as_slice()))
+            .collect();
+
+        let rejected = objects[2].0;
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TRIGGER reject_batch_insert BEFORE INSERT ON loom_storage_objects
+             WHEN NEW.oid='{}' BEGIN SELECT RAISE(ABORT, 'injected batch failure'); END;",
+            rejected
+        ))
+        .unwrap();
+        assert!(backend.put_batch_if_absent(&objects).is_err());
+        assert!(backend.list_ids().unwrap().is_empty());
+
+        conn.execute_batch("DROP TRIGGER reject_batch_insert;")
+            .unwrap();
+        assert!(backend.put_batch_if_absent(&objects).unwrap());
+        assert!(backend.put_batch_if_absent(&objects).unwrap());
+        assert_eq!(backend.list_ids().unwrap(), {
+            let mut ids: Vec<_> = objects.iter().map(|(id, _)| *id).collect();
+            ids.sort_unstable();
+            ids
+        });
+        for (id, bytes) in objects {
+            assert_eq!(backend.get(id).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn batch_collision_rolls_back_new_siblings_without_replacing_corruption() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("objects.sqlite");
+        let backend = SqliteObjectBackend::open(&path).unwrap();
+        let existing = encode_object(BLOB, b"existing").unwrap();
+        let existing_id = object_id(&existing);
+        backend.put_if_absent(existing_id, &existing).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        conn.execute(
+            "UPDATE loom_storage_objects SET envelope=?1 WHERE oid=?2",
+            params![b"corrupt".as_slice(), existing_id.to_string()],
+        )
+        .unwrap();
+        let sibling = encode_object(BLOB, b"new sibling").unwrap();
+        let sibling_id = object_id(&sibling);
+        assert!(backend
+            .put_batch_if_absent(&[
+                (sibling_id, sibling.as_slice()),
+                (existing_id, existing.as_slice()),
+            ])
+            .is_err());
+        assert!(!backend.list_ids().unwrap().contains(&sibling_id));
+        let actual: Vec<u8> = conn
+            .query_row(
+                "SELECT envelope FROM loom_storage_objects WHERE oid=?1",
+                [existing_id.to_string()],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(actual, b"corrupt");
     }

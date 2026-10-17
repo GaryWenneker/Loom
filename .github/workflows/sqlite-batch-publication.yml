@@ -1,0 +1,77 @@
+name: SQLite batch publication evidence
+
+on:
+  pull_request:
+    paths:
+      - "crates/loom-core/src/storage_backend.rs"
+      - "crates/loom-core/src/store.rs"
+      - "crates/loom-core/src/sqlite_object_storage.rs"
+      - "benchmarks/sqlite_batch_publication.py"
+      - "docs/sqlite-batch-publication.md"
+      - ".github/workflows/sqlite-batch-publication.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    name: checked SQLite object batches
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: candidate
+          persist-credentials: false
+      - name: Check out exact baseline
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: baseline
+          persist-credentials: false
+      - name: Verify resolved candidates
+        run: |
+          test "$(git -C candidate rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          test "$(git -C baseline rev-parse HEAD)" = "${{ github.event.pull_request.base.sha }}"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build baseline and candidate separately
+        run: |
+          CARGO_TARGET_DIR="${{ github.workspace }}/baseline-target" cargo build --release --locked -p loom-cli --manifest-path baseline/Cargo.toml
+          CARGO_TARGET_DIR="${{ github.workspace }}/candidate-target" cargo build --release --locked -p loom-cli --manifest-path candidate/Cargo.toml
+      - name: Run complete checked workflows
+        working-directory: candidate
+        run: |
+          mkdir -p artifacts
+          python3 benchmarks/sqlite_batch_publication.py \
+            --loom "${{ github.workspace }}/candidate-target/release/loom" \
+            --baseline-loom "${{ github.workspace }}/baseline-target/release/loom" \
+            --files 32 256 --repeat 7 \
+            --output artifacts/sqlite-batch-publication.json
+      - name: Record provenance
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, subprocess
+          from pathlib import Path
+          def output(*args):
+              return subprocess.check_output(args, text=True).strip()
+          provenance = {
+              "candidate_commit": output("git", "-C", "candidate", "rev-parse", "HEAD"),
+              "baseline_commit": output("git", "-C", "baseline", "rev-parse", "HEAD"),
+              "candidate_tree": output("git", "-C", "candidate", "rev-parse", "HEAD^{tree}"),
+              "baseline_tree": output("git", "-C", "baseline", "rev-parse", "HEAD^{tree}"),
+              "rustc": output("rustc", "--version"),
+              "candidate_sha256": hashlib.sha256(Path("candidate-target/release/loom").read_bytes()).hexdigest(),
+              "baseline_sha256": hashlib.sha256(Path("baseline-target/release/loom").read_bytes()).hexdigest(),
+              "harness_sha256": hashlib.sha256(Path("candidate/benchmarks/sqlite_batch_publication.py").read_bytes()).hexdigest(),
+          }
+          Path("candidate/artifacts/provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sqlite-batch-${{ github.event.pull_request.head.sha }}
+          path: candidate/artifacts/
+          if-no-files-found: error
+          retention-days: 90

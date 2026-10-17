@@ -16,7 +16,7 @@ on:
       baseline_ref:
         description: Baseline commit or ref in this repository
         required: true
-        default: 6df6411c4262cf8a5e81d7d399b56d462b6b1d63
+        default: 3a607fd8a5ded59dbf919a321a50339851b0993a
         type: string
 
 permissions:
@@ -36,13 +36,18 @@ jobs:
       - name: Check out baseline
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.baseline_ref || '6df6411c4262cf8a5e81d7d399b56d462b6b1d63' }}
+          ref: ${{ inputs.baseline_ref || '3a607fd8a5ded59dbf919a321a50339851b0993a' }}
           path: baseline
       - uses: dtolnay/rust-toolchain@stable
       - name: Build baseline and candidate in separate targets
         run: |
           CARGO_TARGET_DIR="${{ github.workspace }}/baseline-target" cargo build --release --locked -p loom-cli --manifest-path baseline/Cargo.toml
           CARGO_TARGET_DIR="${{ github.workspace }}/candidate-target" cargo build --release --locked -p loom-cli --manifest-path candidate/Cargo.toml
+      - name: Verify actual argument equality for both binaries
+        run: |
+          python3 candidate/benchmarks/test_pathset_arguments.py \
+            --loom "${{ github.workspace }}/candidate-target/release/loom" \
+            --baseline-loom "${{ github.workspace }}/baseline-target/release/loom"
       - name: Record resolved commits, compiler and binary identities
         run: |
           python3 - <<'PY'

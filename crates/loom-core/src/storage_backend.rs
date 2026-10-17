@@ -34,6 +34,14 @@ pub trait ObjectBackend: Send + Sync {
     fn capabilities(&self) -> StoreCapabilities;
     fn get(&self, id: ObjectId) -> Result<Vec<u8>>;
     fn put_if_absent(&self, id: ObjectId, canonical_envelope: &[u8]) -> Result<()>;
+    /// Optionally publish one already bounded window in a single durable
+    /// backend transaction. Returning false asks the core to use the scalar
+    /// fallback. Implementations must validate every input before writing,
+    /// preserve conditional creation, verify all existing rows and roll the
+    /// complete window back on any error.
+    fn put_batch_if_absent(&self, _objects: &[(ObjectId, &[u8])]) -> Result<bool> {
+        Ok(false)
+    }
     /// Opt in to independent durable object publications. This is a hint,
     /// not a durability relaxation: every write must finish its normal sync
     /// and verification. The core bounds workers and joins them on failure.
