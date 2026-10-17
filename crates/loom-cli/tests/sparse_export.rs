@@ -50,12 +50,17 @@ fn sparse_export_is_revision_pinned_and_preserves_source_state() {
         ],
     );
 
-    assert!(String::from_utf8(output).unwrap().contains("Exported 3 files"));
+    assert!(String::from_utf8(output)
+        .unwrap()
+        .contains("Exported 3 files"));
     assert_eq!(
         fs::read(destination.join("README.md")).unwrap(),
         b"committed readme"
     );
-    assert_eq!(fs::read(destination.join("src/a.rs")).unwrap(), b"committed a");
+    assert_eq!(
+        fs::read(destination.join("src/a.rs")).unwrap(),
+        b"committed a"
+    );
     assert_eq!(
         fs::read(destination.join("src/deep/b.rs")).unwrap(),
         b"committed b"
@@ -64,7 +69,10 @@ fn sparse_export_is_revision_pinned_and_preserves_source_state() {
     assert!(!destination.join("draft.txt").exists());
     assert!(destination.join(".loom-sparse-complete").is_file());
     assert_eq!(ok(&source, &["status"]), status_before);
-    assert_eq!(fs::read(source.join("README.md")).unwrap(), b"unstaged replacement");
+    assert_eq!(
+        fs::read(source.join("README.md")).unwrap(),
+        b"unstaged replacement"
+    );
     assert_eq!(fs::read(source.join("draft.txt")).unwrap(), b"staged draft");
 
     let failed = call(

@@ -223,9 +223,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     if cmd == "sparse-export" {
         if args.len() < 3 {
-            return Err(
-                "usage: loom sparse-export @CHANGESET_ID DESTINATION [PREFIX ...]".into(),
-            );
+            return Err("usage: loom sparse-export @CHANGESET_ID DESTINATION [PREFIX ...]".into());
         }
         let revision = ObjectId::parse(
             args[1]

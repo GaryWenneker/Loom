@@ -232,7 +232,10 @@ impl Snapshot {
         let requested: Vec<Option<&str>> = if prefixes.is_empty() {
             vec![None]
         } else {
-            prefixes.iter().map(|prefix| Some(prefix.as_str())).collect()
+            prefixes
+                .iter()
+                .map(|prefix| Some(prefix.as_str()))
+                .collect()
         };
         let mut paths = std::collections::BTreeSet::new();
         for prefix in requested {
@@ -935,8 +938,14 @@ mod tests {
 
         assert_eq!(stats.files, 3);
         assert_eq!(stats.bytes, 7 + 9 + 9);
-        assert_eq!(std::fs::read(destination.join("README.md")).unwrap(), b"read me");
-        assert_eq!(std::fs::read(destination.join("src/a.rs")).unwrap(), b"fn a() {}");
+        assert_eq!(
+            std::fs::read(destination.join("README.md")).unwrap(),
+            b"read me"
+        );
+        assert_eq!(
+            std::fs::read(destination.join("src/a.rs")).unwrap(),
+            b"fn a() {}"
+        );
         assert_eq!(
             std::fs::read(destination.join("src/deep/b.rs")).unwrap(),
             b"fn b() {}"
@@ -953,8 +962,8 @@ mod tests {
         crate::Repository::init(dir.path()).unwrap();
         let store = ObjectStore::new(&dir.path().join(".loom"));
         let blob = store.put(BLOB, b"value").unwrap();
-        let root = crate::tree::write_snapshot(&store, &BTreeMap::from([("file".into(), blob)]))
-            .unwrap();
+        let root =
+            crate::tree::write_snapshot(&store, &BTreeMap::from([("file".into(), blob)])).unwrap();
         let snapshot = Snapshot::new(root, store, 0).unwrap();
 
         let existing = dir.path().join("existing");
