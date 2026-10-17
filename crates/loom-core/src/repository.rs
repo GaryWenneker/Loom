@@ -289,24 +289,81 @@ impl Repository {
         kind: crate::PortableFileKind,
         content: &[u8],
     ) -> Result<ObjectId> {
-        if content.len().div_ceil(crate::PORTABLE_CHUNK_BYTES) > crate::MAX_PORTABLE_CHUNKS {
+        self.publish_portable_blob_from_reader(kind, content.len() as u64, &mut &*content)
+    }
+
+    /// Stream one portable file into fixed canonical chunks. At most the
+    /// publication window and one input chunk are resident at once. Chunks may
+    /// become unreachable after a read failure, but the manifest is published
+    /// only after exact-length input and durable chunk publication succeed.
+    pub fn publish_portable_blob_from_reader(
+        &self,
+        kind: crate::PortableFileKind,
+        logical_bytes: u64,
+        source: &mut dyn std::io::Read,
+    ) -> Result<ObjectId> {
+        let chunk_count_u64 = logical_bytes.div_ceil(crate::PORTABLE_CHUNK_BYTES as u64);
+        if chunk_count_u64 > crate::MAX_PORTABLE_CHUNKS as u64 {
             return Err(Error::Invalid(
                 "portable blob exceeds manifest limit".into(),
             ));
         }
-        if kind == crate::PortableFileKind::Symlink {
-            crate::portable_manifest::validate_symlink_target(content)?;
-            if content.len() > crate::MAX_SYMLINK_BYTES {
+        if kind == crate::PortableFileKind::Symlink
+            && (logical_bytes == 0 || logical_bytes > crate::MAX_SYMLINK_BYTES as u64)
+        {
+            return Err(Error::Invalid(
+                "portable symlink target must be bounded and nonempty".into(),
+            ));
+        }
+
+        let chunk_count = usize::try_from(chunk_count_u64)
+            .map_err(|_| Error::Invalid("portable manifest is too large".into()))?;
+        let mut chunks = Vec::with_capacity(chunk_count);
+        let mut symlink_target = if kind == crate::PortableFileKind::Symlink {
+            Some(Vec::with_capacity(logical_bytes as usize))
+        } else {
+            None
+        };
+        let mut publication = self.store.publisher();
+        let mut remaining = logical_bytes;
+        while remaining != 0 {
+            let wanted = remaining.min(crate::PORTABLE_CHUNK_BYTES as u64) as usize;
+            let mut chunk = vec![0; wanted];
+            let mut filled = 0;
+            while filled < wanted {
+                let read = source.read(&mut chunk[filled..])?;
+                if read == 0 {
+                    return Err(Error::Invalid(
+                        "portable manifest input ended before its declared length".into(),
+                    ));
+                }
+                filled += read;
+            }
+            if let Some(target) = &mut symlink_target {
+                target.extend_from_slice(&chunk);
+            }
+            let encoded = encode_object(BLOB, &chunk)?;
+            let id = object_id(&encoded);
+            publication.push(id, encoded)?;
+            chunks.push(id);
+            remaining -= wanted as u64;
+        }
+        let mut trailing = [0; 1];
+        if source.read(&mut trailing)? != 0 {
+            return Err(Error::Invalid(
+                "portable manifest input exceeds its declared length".into(),
+            ));
+        }
+        if let Some(target) = symlink_target {
+            crate::portable_manifest::validate_symlink_target(&target)?;
+            if target.len() > crate::MAX_SYMLINK_BYTES {
                 return Err(Error::Invalid("portable symlink target is too long".into()));
             }
         }
-        let mut chunks = Vec::with_capacity(content.len().div_ceil(crate::PORTABLE_CHUNK_BYTES));
-        for chunk in content.chunks(crate::PORTABLE_CHUNK_BYTES) {
-            chunks.push(self.store.put(BLOB, chunk)?);
-        }
+        publication.finish()?;
         let manifest = crate::PortableBlobManifest {
             kind,
-            logical_bytes: content.len() as u64,
+            logical_bytes,
             chunks,
         };
         let encoded = manifest.encode()?;
@@ -4600,6 +4657,62 @@ mod tests {
         assert_eq!(repository.head().unwrap(), None);
         assert!(repository.status().unwrap().is_empty());
         repository.fsck().unwrap();
+    }
+
+    #[test]
+    fn portable_manifest_streaming_is_bounded_exact_and_canonical() {
+        struct ObservedReader<'a> {
+            bytes: &'a [u8],
+            offset: usize,
+            max_request: usize,
+        }
+        impl std::io::Read for ObservedReader<'_> {
+            fn read(&mut self, destination: &mut [u8]) -> std::io::Result<usize> {
+                self.max_request = self.max_request.max(destination.len());
+                let count = destination.len().min(self.bytes.len() - self.offset);
+                destination[..count].copy_from_slice(&self.bytes[self.offset..self.offset + count]);
+                self.offset += count;
+                Ok(count)
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let repository = Repository::init(dir.path()).unwrap();
+        let content = vec![0x6b; crate::PORTABLE_CHUNK_BYTES * 2 + 17];
+        let expected = repository
+            .publish_portable_blob(crate::PortableFileKind::Regular, &content)
+            .unwrap();
+        let mut reader = ObservedReader {
+            bytes: &content,
+            offset: 0,
+            max_request: 0,
+        };
+        let streamed = repository
+            .publish_portable_blob_from_reader(
+                crate::PortableFileKind::Regular,
+                content.len() as u64,
+                &mut reader,
+            )
+            .unwrap();
+        assert_eq!(streamed, expected);
+        assert!(reader.max_request <= crate::PORTABLE_CHUNK_BYTES);
+
+        let mut short = &content[..content.len() - 1];
+        assert!(repository
+            .publish_portable_blob_from_reader(
+                crate::PortableFileKind::Regular,
+                content.len() as u64,
+                &mut short,
+            )
+            .is_err());
+        let mut long = &content[..];
+        assert!(repository
+            .publish_portable_blob_from_reader(
+                crate::PortableFileKind::Regular,
+                content.len() as u64 - 1,
+                &mut long,
+            )
+            .is_err());
     }
 
     #[test]
