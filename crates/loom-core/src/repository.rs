@@ -45,6 +45,14 @@ pub struct PortableMigrationPlan {
     pub objects: usize,
 }
 
+/// Durable evidence that one immutable v1 revision has a complete, verified
+/// portable-v2 closure. This is prepared migration state, not format activation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PortableMigrationCheckpoint {
+    pub revision: ObjectId,
+    pub plan: PortableMigrationPlan,
+}
+
 #[derive(Default)]
 struct PortablePlanDirectory {
     files: BTreeMap<String, ObjectId>,
@@ -1241,6 +1249,106 @@ impl Repository {
         Ok(projection.plan)
     }
 
+    /// Publish and live-verify a portable migration closure, then durably record
+    /// its immutable source/root mapping. The SQLite receipt is conditionally
+    /// created and never replaced: an identical retry succeeds, while any
+    /// conflicting existing value fails closed. Refs, format state, staging and
+    /// the worktree remain unchanged.
+    pub fn checkpoint_portable_migration(
+        &self,
+        revision: ObjectId,
+        requested_workers: usize,
+    ) -> Result<PortableMigrationCheckpoint> {
+        let plan = self.publish_portable_migration(revision, requested_workers)?;
+        // publish_portable_migration already verifies recursively; repeat at the
+        // receipt boundary so no future refactor can record an unchecked root.
+        self.portable_tree(plan.root)?;
+        let expected = PortableMigrationCheckpoint { revision, plan };
+        let tx = self.db.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO portable_migration_checkpoint(
+                 revision_oid,root_oid,file_count,directory_count,logical_bytes,chunk_count,object_count
+             ) VALUES(?1,?2,?3,?4,?5,?6,?7)
+             ON CONFLICT(revision_oid) DO NOTHING",
+            params![
+                revision.to_string(),
+                plan.root.to_string(),
+                i64::try_from(plan.files)
+                    .map_err(|_| Error::Invalid("portable migration file count overflow".into()))?,
+                i64::try_from(plan.directories).map_err(|_| Error::Invalid(
+                    "portable migration directory count overflow".into()
+                ))?,
+                i64::try_from(plan.logical_bytes)
+                    .map_err(|_| Error::Invalid("portable migration byte count overflow".into()))?,
+                i64::try_from(plan.chunks)
+                    .map_err(|_| Error::Invalid("portable migration chunk count overflow".into()))?,
+                i64::try_from(plan.objects)
+                    .map_err(|_| Error::Invalid("portable migration object count overflow".into()))?,
+            ],
+        )?;
+        let actual = Self::migration_checkpoint_in(&tx, revision)?.ok_or_else(|| {
+            Error::Invalid("portable migration checkpoint was not persisted".into())
+        })?;
+        if actual != expected {
+            return Err(Error::Conflict(
+                "portable migration checkpoint already records different canonical state".into(),
+            ));
+        }
+        tx.commit()?;
+        Ok(actual)
+    }
+
+    /// Read a prepared migration receipt without trusting it as format state.
+    pub fn portable_migration_checkpoint(
+        &self,
+        revision: ObjectId,
+    ) -> Result<Option<PortableMigrationCheckpoint>> {
+        Self::migration_checkpoint_in(&self.db, revision)
+    }
+
+    fn migration_checkpoint_in(
+        db: &Connection,
+        revision: ObjectId,
+    ) -> Result<Option<PortableMigrationCheckpoint>> {
+        type Row = (String, i64, i64, i64, i64, i64);
+        let row: Option<Row> = db
+            .query_row(
+                "SELECT root_oid,file_count,directory_count,logical_bytes,chunk_count,object_count
+                 FROM portable_migration_checkpoint WHERE revision_oid=?1",
+                [revision.to_string()],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((root, files, directories, logical_bytes, chunks, objects)) = row else {
+            return Ok(None);
+        };
+        let count = |value: i64, name: &str| {
+            usize::try_from(value)
+                .map_err(|_| Error::Invalid(format!("invalid portable migration {name}")))
+        };
+        Ok(Some(PortableMigrationCheckpoint {
+            revision,
+            plan: PortableMigrationPlan {
+                root: ObjectId::parse(&root)?,
+                files: count(files, "file count")?,
+                directories: count(directories, "directory count")?,
+                logical_bytes: u64::try_from(logical_bytes)
+                    .map_err(|_| Error::Invalid("invalid portable migration byte count".into()))?,
+                chunks: count(chunks, "chunk count")?,
+                objects: count(objects, "object count")?,
+            },
+        }))
+    }
+
     fn materialize_portable_directory(
         reader: &std::sync::Arc<dyn crate::storage_backend::ObjectReadSession>,
         tree_id: ObjectId,
@@ -1557,6 +1665,15 @@ impl Repository {
                  to_branch TEXT NOT NULL,
                  before_oid TEXT,
                  after_oid TEXT
+             );
+             CREATE TABLE IF NOT EXISTS portable_migration_checkpoint (
+                 revision_oid TEXT PRIMARY KEY NOT NULL,
+                 root_oid TEXT NOT NULL,
+                 file_count INTEGER NOT NULL CHECK(file_count >= 0),
+                 directory_count INTEGER NOT NULL CHECK(directory_count >= 0),
+                 logical_bytes INTEGER NOT NULL CHECK(logical_bytes >= 0),
+                 chunk_count INTEGER NOT NULL CHECK(chunk_count >= 0),
+                 object_count INTEGER NOT NULL CHECK(object_count >= 0)
              );",
         )?;
         Ok(db)
@@ -6230,6 +6347,86 @@ mod tests {
         assert_eq!(repository.store.ids().unwrap(), after_first);
         assert_eq!(repository.status().unwrap(), status);
         assert_eq!(repository.head().unwrap(), head);
+    }
+
+    #[test]
+    fn portable_migration_checkpoint_is_durable_idempotent_and_fail_closed() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = Repository::init(directory.path()).unwrap();
+        fs::create_dir(directory.path().join("sub")).unwrap();
+        fs::write(directory.path().join("a"), b"committed").unwrap();
+        fs::write(directory.path().join("sub/b"), b"nested").unwrap();
+        let revision = repository.commit("tester", "source").unwrap();
+        fs::write(directory.path().join("a"), b"unstaged").unwrap();
+        fs::write(directory.path().join("staged"), b"staged").unwrap();
+        repository.add_paths(&["staged"]).unwrap();
+        let status = repository.status().unwrap();
+        let head = repository.head().unwrap();
+        assert_eq!(
+            repository.portable_migration_checkpoint(revision).unwrap(),
+            None
+        );
+
+        let first = repository
+            .checkpoint_portable_migration(revision, usize::MAX)
+            .unwrap();
+        let retry = repository
+            .checkpoint_portable_migration(revision, 1)
+            .unwrap();
+        assert_eq!(first, retry);
+        assert_eq!(
+            repository.portable_migration_checkpoint(revision).unwrap(),
+            Some(first)
+        );
+        assert_eq!(repository.status().unwrap(), status);
+        assert_eq!(repository.head().unwrap(), head);
+        drop(repository);
+
+        let reopened = Repository::discover(directory.path()).unwrap();
+        assert_eq!(
+            reopened.portable_migration_checkpoint(revision).unwrap(),
+            Some(first)
+        );
+    }
+
+    #[test]
+    fn portable_migration_checkpoint_never_replaces_conflicting_receipt() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = Repository::init(directory.path()).unwrap();
+        fs::write(directory.path().join("a"), b"committed").unwrap();
+        let revision = repository.commit("tester", "source").unwrap();
+        let plan = repository.plan_portable_migration(revision, 1).unwrap();
+        repository
+            .db
+            .execute(
+                "INSERT INTO portable_migration_checkpoint(
+                     revision_oid,root_oid,file_count,directory_count,logical_bytes,chunk_count,object_count
+                 ) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                params![
+                    revision.to_string(),
+                    revision.to_string(),
+                    plan.files as i64,
+                    plan.directories as i64,
+                    plan.logical_bytes as i64,
+                    plan.chunks as i64,
+                    plan.objects as i64,
+                ],
+            )
+            .unwrap();
+
+        let error = repository
+            .checkpoint_portable_migration(revision, 4)
+            .unwrap_err();
+        assert!(matches!(error, Error::Conflict(_)));
+        assert_eq!(
+            repository
+                .portable_migration_checkpoint(revision)
+                .unwrap()
+                .unwrap()
+                .plan
+                .root,
+            revision
+        );
     }
 
     #[test]

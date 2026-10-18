@@ -62,6 +62,7 @@ fn usage() {
     eprintln!("  loom portable-verify @TREE_ID DIRECTORY [--workers N]");
     eprintln!("  loom portable-migrate-plan @CHANGESET_ID [--workers N]");
     eprintln!("  loom portable-migrate-publish @CHANGESET_ID [--workers N]");
+    eprintln!("  loom portable-migrate-checkpoint @CHANGESET_ID [--workers N]");
 }
 
 fn publish_portable_directory(
@@ -916,6 +917,42 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let plan = repo.publish_portable_migration(revision, workers)?;
             println!(
                 "Published portable root {}: {} files, {} directories, {} bytes, {} chunks, {} unique objects",
+                plan.root,
+                plan.files,
+                plan.directories,
+                plan.logical_bytes,
+                plan.chunks,
+                plan.objects
+            );
+        }
+        "portable-migrate-checkpoint" => {
+            if args.len() != 2 && args.len() != 4 {
+                return Err(
+                    "usage: loom portable-migrate-checkpoint @CHANGESET_ID [--workers N]".into(),
+                );
+            }
+            let revision = ObjectId::parse(
+                args[1]
+                    .strip_prefix('@')
+                    .ok_or("portable-migrate-checkpoint requires an immutable @CHANGESET_ID")?,
+            )?;
+            let workers = if args.len() == 4 {
+                if args[2] != "--workers" {
+                    return Err(
+                        "usage: loom portable-migrate-checkpoint @CHANGESET_ID [--workers N]"
+                            .into(),
+                    );
+                }
+                args[3]
+                    .parse::<usize>()
+                    .map_err(|_| "--workers requires a nonnegative integer")?
+            } else {
+                0
+            };
+            let checkpoint = repo.checkpoint_portable_migration(revision, workers)?;
+            let plan = checkpoint.plan;
+            println!(
+                "Checkpointed portable root {}: {} files, {} directories, {} bytes, {} chunks, {} unique objects",
                 plan.root,
                 plan.files,
                 plan.directories,

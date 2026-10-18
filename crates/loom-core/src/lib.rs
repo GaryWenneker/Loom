@@ -33,7 +33,8 @@ pub use portable_tree::{
 };
 pub use read_pack::ReadPackStats;
 pub use repository::{
-    FileDiff, PortableExportStats, PortableMigrationPlan, Repository, StatusEntry, StatusKind,
+    FileDiff, PortableExportStats, PortableMigrationCheckpoint, PortableMigrationPlan, Repository,
+    StatusEntry, StatusKind,
 };
 pub use snapshot::{
     Snapshot, SnapshotFiles, SnapshotStats, SparseExportStats, DEFAULT_BULK_BYTES,

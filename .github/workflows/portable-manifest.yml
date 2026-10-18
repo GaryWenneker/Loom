@@ -85,6 +85,12 @@ jobs:
             --files 100 1000 --file-bytes 4096 --workers 1 2 4 0 --repeat 5 \
             --operation publish \
             --output artifacts/portable-migration-publish.json
+          python3 benchmarks/portable_migration_plan.py \
+            --loom "${{ github.workspace }}/candidate-target/release/loom" \
+            --baseline-loom "${{ github.workspace }}/baseline-target/release/loom" \
+            --files 100 1000 --file-bytes 4096 --workers 1 2 4 0 --repeat 5 \
+            --operation checkpoint \
+            --output artifacts/portable-migration-checkpoint.json
       - name: Record exact provenance
         run: |
           python3 - <<'PY'
