@@ -84,7 +84,11 @@ fn portable_migration_publication_is_exact_idempotent_and_preserves_state() {
     let temporary = tempfile::tempdir().unwrap();
     let export = tempfile::tempdir().unwrap();
     let root = temporary.path();
-    ok(root, &["init", "--object-db", "objects.db"]);
+    let object_db = export.path().join("objects.db");
+    ok(
+        root,
+        &["init", "--object-db", object_db.to_str().unwrap()],
+    );
     fs::create_dir(root.join("nested")).unwrap();
     fs::write(root.join("tracked"), b"committed").unwrap();
     fs::write(root.join("nested/file"), b"nested").unwrap();
