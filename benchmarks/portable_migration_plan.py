@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure read-only v1-to-portable-v2 planning and a Git closure diagnostic."""
+"""Measure v1-to-portable-v2 planning/publication and a Git diagnostic."""
 import argparse
 import json
 import os
@@ -50,7 +50,8 @@ def scenario(args, files):
                     binary = args.baseline_loom if baseline else args.loom
                     worker = engine.rsplit("w", 1)[1]
                     revision = loom_revision(root, binary, files, args.file_bytes)
-                    command = [binary, "portable-migrate-plan", f"@{revision}", "--workers", worker]
+                    command = [binary, f"portable-migrate-{args.operation}",
+                               f"@{revision}", "--workers", worker]
                     result = subprocess.run(command, cwd=root, env=clean_env(), capture_output=True)
                     if baseline and result.returncode != 0:
                         support[worker] = False
@@ -108,6 +109,7 @@ def main():
     parser.add_argument("--file-bytes", type=int, default=4096)
     parser.add_argument("--workers", nargs="+", type=int, default=[1, 2, 4, 0])
     parser.add_argument("--repeat", type=int, default=5)
+    parser.add_argument("--operation", choices=["plan", "publish"], default="plan")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     report = {
@@ -115,12 +117,13 @@ def main():
         "host": {"platform": platform.platform(), "cpus": os.cpu_count()},
         "conditions": [
             "fresh repositories and byte-identical payload directories per sample; setup and commit are outside timing",
-            "candidate and previous Loom receive identical portable-migrate-plan argv and explicit worker requests",
+            f"candidate and previous Loom receive identical portable-migrate-{args.operation} argv and explicit worker requests",
             "unsupported previous Loom results have no fabricated version factor",
-            "Git fsck is a diagnostic verified Git-closure workload, not a portable-v2 migration plan",
+            "Git fsck is a diagnostic verified Git-closure workload, not portable-v2 planning or durable publication",
             "wait4 wall/CPU/peak RSS/block counters; OS caches are not flushed",
-            "no network, remote cache, concurrent agents, crash injection, migration publication or rollback",
+            "no network, remote cache, concurrent agents, crash injection, format-state switch or rollback",
         ],
+        "operation": args.operation,
         "scenarios": [scenario(args, files) for files in args.files],
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

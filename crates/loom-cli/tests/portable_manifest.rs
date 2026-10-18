@@ -80,6 +80,66 @@ fn portable_migration_plan_preserves_objects_stage_and_worktree() {
 }
 
 #[test]
+fn portable_migration_publication_is_exact_idempotent_and_preserves_state() {
+    let temporary = tempfile::tempdir().unwrap();
+    let export = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    ok(root, &["init", "--object-db", "objects.db"]);
+    fs::create_dir(root.join("nested")).unwrap();
+    fs::write(root.join("tracked"), b"committed").unwrap();
+    fs::write(root.join("nested/file"), b"nested").unwrap();
+    let committed = String::from_utf8(ok(root, &["commit", "-m", "base"])).unwrap();
+    let revision = committed.split_whitespace().last().expect("commit ID");
+    fs::write(root.join("tracked"), b"unstaged").unwrap();
+    fs::write(root.join("staged"), b"staged").unwrap();
+    ok(root, &["add", "staged"]);
+    let status = ok(root, &["status"]);
+    let plan = String::from_utf8(ok(
+        root,
+        &["portable-migrate-plan", &format!("@{revision}")],
+    ))
+    .unwrap();
+    let planned_root = plan.split_whitespace().nth(2).unwrap().to_owned();
+    let published = String::from_utf8(ok(
+        root,
+        &[
+            "portable-migrate-publish",
+            &format!("@{revision}"),
+            "--workers",
+            "8",
+        ],
+    ))
+    .unwrap();
+    let retry = String::from_utf8(ok(
+        root,
+        &[
+            "portable-migrate-publish",
+            &format!("@{revision}"),
+            "--workers",
+            "1",
+        ],
+    ))
+    .unwrap();
+    assert_eq!(
+        published.split_whitespace().nth(3),
+        Some(planned_root.as_str())
+    );
+    assert_eq!(published, retry);
+    assert_eq!(ok(root, &["status"]), status);
+    ok(root, &["fsck"]);
+    let destination = export.path().join("workspace");
+    ok(
+        root,
+        &[
+            "portable-export",
+            &format!("@{planned_root}"),
+            destination.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(fs::read(destination.join("nested/file")).unwrap(), b"nested");
+}
+
+#[test]
 fn portable_manifest_streams_files_beyond_the_legacy_cli_cap() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path();

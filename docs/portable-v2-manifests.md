@@ -11,6 +11,7 @@ loom portable-tree path/to/directory --workers 0
 loom portable-export @TREE_ID new-workspace --workers 0
 loom portable-verify @TREE_ID new-workspace --workers 0
 loom portable-migrate-plan @CHANGESET_ID --workers 0
+loom portable-migrate-publish @CHANGESET_ID --workers 0
 ```
 
 The object records regular, executable or symbolic-link identity, the exact
@@ -105,9 +106,23 @@ prepared once while logical byte totals still count every tracked path.
 Planning is deliberately read-only: it publishes no chunks, manifests, trees,
 derived indexes, refs, stage rows, receipts or worktree files. V1 never stored
 historic executable bits, symlinks or empty directories, so the preflight
-labels every tracked file regular and cannot recreate absent metadata. A
-future mutation step still needs durable backup, publication, a version-state
-transaction, crash recovery, rollback and no-downgrade enforcement.
+labels every tracked file regular and cannot recreate absent metadata.
+
+`portable-migrate-publish` first performs that complete preflight, then prepares
+unique source blobs in input-byte-bounded windows and feeds canonical chunks,
+manifests and child-first trees into one bounded publisher. SQLite-backed
+repositories conditionally create each publisher window in one durable
+transaction; every committed object is read back and verified. The final root
+is live-verified recursively. Repeating the command publishes no new object
+identities and returns the same root for serial, explicit multi-worker and
+adaptive runs.
+
+This is deliberately additive publication, not a format switch. No ref, native
+index, stage row, worktree file or repository version marker changes. Failure
+before preflight completion publishes nothing; a later I/O failure can leave
+only unreachable immutable objects from earlier durable windows, so retry is
+safe. Durable backup, a version-state transaction, crash recovery,
+rollback/restore and no-downgrade enforcement remain future migration steps.
 
 ## Benchmark classification
 
@@ -152,6 +167,12 @@ not the same migration plan or portable metadata contract. The harness records
 the exact started argv and requires one canonical candidate root across all
 repetitions per worker request.
 
+The same harness's `--operation publish` mode measures the complete durable,
+live-verified additive publication on fresh repositories with those same
+worker requests. Candidate and previous Loom again receive identical arguments;
+unsupported previous binaries get no invented version ratio. Git `fsck` remains
+only a closure-check diagnostic and is not presented as equivalent publication.
+
 The harness records p50/p95/p99 wall/CPU, peak RSS, kernel block counters and
 logical/allocated object-store bytes for small, multi-chunk and above-64-MiB
 payloads. Each sample uses a fresh repository. Verification and idempotent
@@ -161,7 +182,7 @@ chunks. OS caches are not flushed.
 
 ## Remaining migration gates
 
-This remains preflight rather than an applied v1-to-v2 migration. Full Unicode
+This remains additive closure publication rather than an applied v1-to-v2 migration. Full Unicode
 collision policy, history conversion, backup/restore,
 crash recovery, rollback/no-downgrade state, remote transport
 and three-OS golden-vector evidence remain open under issue #13. Refs continue
