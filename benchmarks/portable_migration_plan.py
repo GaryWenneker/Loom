@@ -62,7 +62,14 @@ def scenario(args, files):
                         raise RuntimeError(result.stderr.decode(errors="replace"))
                     sample, measured = measured_run(root, command)
                     if not baseline:
-                        roots[worker].add(measured.decode().split()[2].rstrip(":"))
+                        fields = measured.decode().split()
+                        root_field = 2 if args.operation == "plan" else 3
+                        portable_root = fields[root_field].rstrip(":")
+                        if len(portable_root) != 64 or any(
+                                value not in "0123456789abcdef" for value in portable_root):
+                            raise RuntimeError(
+                                f"invalid portable root in {args.operation} output: {measured!r}")
+                        roots[worker].add(portable_root)
                     footprints[engine].append(footprint(root / ".loom"))
                 samples[engine].append(sample)
                 started[engine].append(command)
