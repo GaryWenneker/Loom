@@ -1051,10 +1051,9 @@ impl Repository {
         stats.files += outcomes.len();
         for outcome in outcomes {
             stats.symlinks += outcome.symlinks;
-            stats.bytes = stats
-                .bytes
-                .checked_add(outcome.bytes)
-                .ok_or_else(|| Error::Invalid("portable verification byte count overflow".into()))?;
+            stats.bytes = stats.bytes.checked_add(outcome.bytes).ok_or_else(|| {
+                Error::Invalid("portable verification byte count overflow".into())
+            })?;
         }
         if portable_directory_names(directory)? != names_before {
             return Err(Error::Invalid(format!(

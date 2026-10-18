@@ -831,9 +831,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         "portable-verify" => {
             if args.len() != 3 && args.len() != 5 {
-                return Err(
-                    "usage: loom portable-verify @TREE_ID DIRECTORY [--workers N]".into(),
-                );
+                return Err("usage: loom portable-verify @TREE_ID DIRECTORY [--workers N]".into());
             }
             let root = ObjectId::parse(
                 args[1]
