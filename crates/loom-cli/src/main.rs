@@ -60,6 +60,7 @@ fn usage() {
     eprintln!("  loom portable-tree DIRECTORY [--workers N]");
     eprintln!("  loom portable-export @TREE_ID DESTINATION [--workers N]");
     eprintln!("  loom portable-verify @TREE_ID DIRECTORY [--workers N]");
+    eprintln!("  loom portable-migrate-plan @CHANGESET_ID [--workers N]");
 }
 
 fn publish_portable_directory(
@@ -854,6 +855,40 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             println!(
                 "Verified {} files, {} directories and {} bytes from {}",
                 stats.files, stats.directories, stats.bytes, root
+            );
+        }
+        "portable-migrate-plan" => {
+            if args.len() != 2 && args.len() != 4 {
+                return Err(
+                    "usage: loom portable-migrate-plan @CHANGESET_ID [--workers N]".into(),
+                );
+            }
+            let revision = ObjectId::parse(
+                args[1]
+                    .strip_prefix('@')
+                    .ok_or("portable-migrate-plan requires an immutable @CHANGESET_ID")?,
+            )?;
+            let workers = if args.len() == 4 {
+                if args[2] != "--workers" {
+                    return Err(
+                        "usage: loom portable-migrate-plan @CHANGESET_ID [--workers N]".into(),
+                    );
+                }
+                args[3]
+                    .parse::<usize>()
+                    .map_err(|_| "--workers requires a nonnegative integer")?
+            } else {
+                0
+            };
+            let plan = repo.plan_portable_migration(revision, workers)?;
+            println!(
+                "Portable root {}: {} files, {} directories, {} bytes, {} chunks, {} unique objects",
+                plan.root,
+                plan.files,
+                plan.directories,
+                plan.logical_bytes,
+                plan.chunks,
+                plan.objects
             );
         }
         _ => {

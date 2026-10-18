@@ -2,6 +2,22 @@
 
 This directory contains a **reproducible benchmark**, not Scion-level performance claims. It works with the Loom binary and Python 3.9+.
 
+## Portable migration preflight
+
+```sh
+python3 benchmarks/portable_migration_plan.py --loom /absolute/new-loom \
+  --baseline-loom /absolute/previous-loom --files 100 1000 \
+  --workers 1 2 4 0 --repeat 5 --output portable-migration-plan.json
+```
+
+Each timed operation plans the complete immutable v1 snapshot from a fresh
+repository. Candidate and baseline receive byte-identical payload directories
+and identical explicit worker arguments; unsupported baselines have no version
+factor. Git `fsck` is retained only as a verified-closure diagnostic. The
+report includes p50/p95/p99 wall/CPU, raw wait4 RSS and block counters, exact
+argv, logical/allocated repository footprints and canonical roots. It does not
+flush caches or measure network, applied migration, rollback, crashes or agents.
+
 ## Atomic selected-set workflows
 
 ```sh

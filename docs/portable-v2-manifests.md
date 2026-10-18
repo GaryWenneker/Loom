@@ -10,6 +10,7 @@ loom portable-manifest symlink path/to/link
 loom portable-tree path/to/directory --workers 0
 loom portable-export @TREE_ID new-workspace --workers 0
 loom portable-verify @TREE_ID new-workspace --workers 0
+loom portable-migrate-plan @CHANGESET_ID --workers 0
 ```
 
 The object records regular, executable or symbolic-link identity, the exact
@@ -91,6 +92,23 @@ accepts a partial workspace. This detects stable corruption and changes
 observed during the pass; it is not an OS-level lease preventing an adversary
 from changing a workspace immediately after successful verification.
 
+`portable-migrate-plan` is the first explicit v1 migration preflight. It
+replays the selected immutable first-parent history, live-verifies every
+referenced v1 blob, rechunks bytes at the canonical 4 MiB boundary, validates
+every portable directory name and computes the exact manifest/tree IDs a later
+publisher must produce. Repeated one-, explicit multi- and adaptive-worker
+runs return the same root. Workers are bounded by CPU, the eight-worker cap and
+the provider read-session limit; because a v1 blob is at most 64 MiB, the hard
+upper bound is eight decoded v1 blobs in flight. Duplicate blob content is
+prepared once while logical byte totals still count every tracked path.
+
+Planning is deliberately read-only: it publishes no chunks, manifests, trees,
+derived indexes, refs, stage rows, receipts or worktree files. V1 never stored
+historic executable bits, symlinks or empty directories, so the preflight
+labels every tracked file regular and cannot recreate absent metadata. A
+future mutation step still needs durable backup, publication, a version-state
+transaction, crash recovery, rollback and no-downgrade enforcement.
+
 ## Benchmark classification
 
 `benchmarks/portable_manifest.py` builds the exact candidate and base in
@@ -126,6 +144,14 @@ factor is produced. Git `diff --no-index --quiet` compares the same two native
 directory payloads only as a diagnostic subset: it does not verify Loom's
 canonical closure, receipt or portable metadata contract.
 
+`benchmarks/portable_migration_plan.py` measures fresh, byte-identical v1
+revision preflights for worker requests 1, 2, 4 and 0. Candidate and previous
+Loom receive identical command shapes; an older binary is classified
+unsupported. Git `fsck --full --no-reflogs HEAD` is a diagnostic closure check,
+not the same migration plan or portable metadata contract. The harness records
+the exact started argv and requires one canonical candidate root across all
+repetitions per worker request.
+
 The harness records p50/p95/p99 wall/CPU, peak RSS, kernel block counters and
 logical/allocated object-store bytes for small, multi-chunk and above-64-MiB
 payloads. Each sample uses a fresh repository. Verification and idempotent
@@ -135,8 +161,8 @@ chunks. OS caches are not flushed.
 
 ## Remaining migration gates
 
-This is a contract primitive, not a v1-to-v2 migration. Full Unicode collision
-policy, history conversion, backup/restore,
+This remains preflight rather than an applied v1-to-v2 migration. Full Unicode
+collision policy, history conversion, backup/restore,
 crash recovery, rollback/no-downgrade state, remote transport
 and three-OS golden-vector evidence remain open under issue #13. Refs continue
 to use the existing atomic compare-and-swap path and do not yet reference these
