@@ -151,7 +151,10 @@ fn portable_migration_publication_is_exact_idempotent_and_preserves_state() {
     ))
     .unwrap();
     assert_eq!(
-        published.split_whitespace().nth(3),
+        published
+            .split_whitespace()
+            .nth(3)
+            .map(|root| root.trim_end_matches(':')),
         Some(planned_root.as_str())
     );
     assert_eq!(published, retry);
