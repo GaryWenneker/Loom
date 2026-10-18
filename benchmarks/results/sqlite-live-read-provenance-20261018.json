@@ -1,0 +1,49 @@
+{
+  "measured_source_commit": "8de720f4c8173d2b2c110cede816aba72d37a2da",
+  "measured_source_tree": "a3eeabb7668a3222a42f081505aa8488c33b6f91",
+  "baseline_commit": "93087efaa557beed930f32dc045f7d71fee9d778",
+  "baseline_tree": "6766e5968019dd572518efbdfe9be6fcdcb4a57f",
+  "candidate_binary_sha256": "8bab775d65d126f1cbb38d4016fea025c07c59da4779b93f44b530bd404956b0",
+  "baseline_binary_sha256": "5ef29b66d67b545aff32b64457b5e1d6eff6ff715187b7ad7389ac5eb67a2cba",
+  "harness_sha256": "4b884f1432d0e2be8c2e0e9d392b40c3269ab1927ba6d2d7e29aa7ea73e9939f",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1",
+  "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "cpu_max": "800000 100000",
+  "host": {
+    "platform": "Linux-6.18.55-x86_64-with-glibc2.39",
+    "cpus": 9,
+    "cpu_model": "INTEL(R) XEON(R) PLATINUM 8573C"
+  },
+  "git_version": "git version 2.51.1",
+  "local_workspace_all_target_tests": 276,
+  "fmt": "passed",
+  "strict_clippy": "passed",
+  "raw_sha256": {
+    "sqlite-live-read-auto-20261018.json": "d8555eb3bf8255039ca134922e8acec30ade2060d7ffb033339b092dad205338",
+    "sqlite-live-read-prototype-auto-20261018.json": "2f78145294b4500feb9fcd4e19feb4b3e49fa47b415636bc7e98b158016cace2",
+    "sqlite-live-read-serial-20261018.json": "c44f49cfd59b246c722f71aa10f1dd36a534f88d4026aa0718eaff1dc48e84be",
+    "sqlite-live-read-prototype-serial-20261018.json": "72990d079fc72e808650e1918512aebc037c74d297a32bcc1ffb0fbdd3afd5bb",
+    "sqlite-live-read-multidir-20261018.json": "b37f6f6d30f4ee55615189c764c8c09c6b181385aa66f7ce2ec07fb3a176f05a",
+    "sqlite-live-read-prototype-multidir-20261018.json": "fb05bcadcdecff9d2494585322f28aca0c5450c4bed6bc136090ea29dff59f65",
+    "sqlite-live-read-payload-20261018.json": "e7c6414468e1bde1a3adb822a14a2045f610aa1b35f7299f8a4282a63bc4a2a4",
+    "sqlite-live-read-prototype-payload-20261018.json": "5ebb89ac03e7f6887c7defc940b4ab63b9dbdbf37d11a6a6568f86b8c0e925f3"
+  },
+  "prototype_source": {
+    "codeHead": "50a8f6226993dfa7e0ab6e64760d64051bc3a9f5",
+    "tree": "64c54f7b110a754f71f318eeb5be75737b045984",
+    "base": "93087efaa557beed930f32dc045f7d71fee9d778",
+    "baseTree": "6766e5968019dd572518efbdfe9be6fcdcb4a57f",
+    "baselineBinarySha256": "5ef29b66d67b545aff32b64457b5e1d6eff6ff715187b7ad7389ac5eb67a2cba",
+    "candidateBinarySha256": "73c878543e7a1829e138b3fae94098f7ee939571e7479f8abcc09795499188a3",
+    "harnessSha256": "4b884f1432d0e2be8c2e0e9d392b40c3269ab1927ba6d2d7e29aa7ea73e9939f",
+    "raw": {
+      "loom-live-read-prototype-auto.json": "2f78145294b4500feb9fcd4e19feb4b3e49fa47b415636bc7e98b158016cace2",
+      "loom-live-read-prototype-serial.json": "72990d079fc72e808650e1918512aebc037c74d297a32bcc1ffb0fbdd3afd5bb",
+      "loom-live-read-prototype-multidir.json": "fb05bcadcdecff9d2494585322f28aca0c5450c4bed6bc136090ea29dff59f65",
+      "loom-live-read-prototype-payload.json": "5ebb89ac03e7f6887c7defc940b4ab63b9dbdbf37d11a6a6568f86b8c0e925f3"
+    },
+    "classification": "Earlier prototype; scalar statement cache and duplicate closure reads replaced after mixed/regressing measurements. Not the final implementation."
+  },
+  "verification": "Actual native timed argv match except executable; all per-repeat final canonical roots match; full byte/listing/history fsck verified; worker1/0 final snapshot roots match; prototype and final final-snapshot sequences match.",
+  "scope": "Fresh complete initial and incremental commits. Git is external add+commit with different transaction/power-loss contracts. No cold/network/remote/concurrent-agent/crash/peak-engine-RSS proof."
+}

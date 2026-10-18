@@ -358,6 +358,30 @@ impl ObjectStore {
         Ok(bytes)
     }
 
+    fn live_batch(&self, ids: &[ObjectId], max_bytes: usize) -> Result<Option<Vec<Vec<u8>>>> {
+        let Some(objects) = self.backend.get_batch_live(ids, max_bytes)? else {
+            return Ok(None);
+        };
+        if objects.len() != ids.len() {
+            return Err(Error::Invalid(
+                "object backend returned an incomplete live batch".into(),
+            ));
+        }
+        let mut remaining = max_bytes;
+        for (id, bytes) in ids.iter().zip(&objects) {
+            remaining = remaining.checked_sub(bytes.len()).ok_or_else(|| {
+                Error::Invalid("object backend exceeded live read byte budget".into())
+            })?;
+            if object_id(bytes) != *id {
+                return Err(Error::Invalid(format!(
+                    "object backend returned a live batch hash mismatch: {id}"
+                )));
+            }
+            decode_object(bytes)?;
+        }
+        Ok(Some(objects))
+    }
+
     pub fn read_session(
         &self,
     ) -> Result<std::sync::Arc<dyn crate::storage_backend::ObjectReadSession>> {
@@ -452,12 +476,19 @@ impl ObjectStore {
                     "external object closure exceeds verification limit".into(),
                 ));
             }
-            if !self.backend.exists(id)? {
-                return Err(Error::Invalid(format!(
-                    "object backend has an incomplete closure: {id}"
-                )));
-            }
-            let bytes = self.get(id)?;
+            let bytes = match self.live_batch(&[id], crate::format::MAX_OBJECT_SIZE + 15)? {
+                Some(mut objects) => objects.pop().expect("one checked live object"),
+                None => {
+                    // Default and replicated providers keep their complete
+                    // all-copy existence check before the separate verified get.
+                    if !self.backend.exists(id)? {
+                        return Err(Error::Invalid(format!(
+                            "object backend has an incomplete closure: {id}"
+                        )));
+                    }
+                    self.get(id)?
+                }
+            };
             let (kind, _) = decode_object(&bytes)?;
             if kind != expected {
                 return Err(Error::Invalid(format!(
@@ -560,6 +591,9 @@ impl ObjectPublisher<'_> {
     }
 
     fn flush(&mut self) -> Result<()> {
+        if self.objects.is_empty() {
+            return Ok(());
+        }
         let mut unique = std::collections::BTreeMap::new();
         for (id, data) in &self.objects {
             if let Some(prior) = unique.insert(*id, data) {
@@ -576,11 +610,26 @@ impl ObjectPublisher<'_> {
         if self.store.backend.put_batch_if_absent(&batch)? {
             // The provider transaction is complete, but ref publication still
             // requires a fresh live read rather than trusting its acknowledgement.
-            for (id, data) in &work {
-                if self.store.get(*id)? != data.as_slice() {
-                    return Err(Error::Invalid(format!(
-                        "object backend failed batch publication verification: {id}"
-                    )));
+            let ids: Vec<_> = work.iter().map(|(id, _)| *id).collect();
+            let max_bytes = work.iter().map(|(_, data)| data.len()).sum();
+            match self.store.live_batch(&ids, max_bytes)? {
+                Some(actual) => {
+                    for ((id, expected), actual) in work.iter().zip(actual) {
+                        if actual != expected.as_slice() {
+                            return Err(Error::Invalid(format!(
+                                "object backend failed batch publication verification: {id}"
+                            )));
+                        }
+                    }
+                }
+                None => {
+                    for (id, data) in &work {
+                        if self.store.get(*id)? != data.as_slice() {
+                            return Err(Error::Invalid(format!(
+                                "object backend failed batch publication verification: {id}"
+                            )));
+                        }
+                    }
                 }
             }
             self.objects.clear();
@@ -806,6 +855,8 @@ mod tests {
             batches: std::sync::atomic::AtomicUsize,
             scalar_calls: std::sync::atomic::AtomicUsize,
             reads: std::sync::atomic::AtomicUsize,
+            live_mode: std::sync::atomic::AtomicUsize,
+            live_calls: std::sync::atomic::AtomicUsize,
         }
         impl ObjectBackend for Batched {
             fn capabilities(&self) -> StoreCapabilities {
@@ -826,6 +877,34 @@ mod tests {
                     .cloned()
                     .ok_or_else(|| Error::Io(std::io::ErrorKind::NotFound.into()))
             }
+            fn get_batch_live(
+                &self,
+                ids: &[ObjectId],
+                max_bytes: usize,
+            ) -> Result<Option<Vec<Vec<u8>>>> {
+                self.live_calls.fetch_add(1, Ordering::SeqCst);
+                let mode = self.live_mode.load(Ordering::SeqCst);
+                if mode == 0 {
+                    return Ok(None);
+                }
+                if mode == 6 {
+                    return Err(Error::Invalid("injected live batch read failure".into()));
+                }
+                let values = self.values.lock().unwrap();
+                let mut bytes: Vec<_> = ids.iter().map(|id| values[id].clone()).collect();
+                assert_eq!(bytes.iter().map(Vec::len).sum::<usize>(), max_bytes);
+                match mode {
+                    2 => {
+                        bytes.pop();
+                    }
+                    3 => bytes.push(bytes[0].clone()),
+                    4 => bytes.reverse(),
+                    5 => bytes[0][15] ^= 1,
+                    7 => bytes.last_mut().unwrap().push(0),
+                    _ => {}
+                }
+                Ok(Some(bytes))
+            }
             fn put_if_absent(&self, _: ObjectId, _: &[u8]) -> Result<()> {
                 self.scalar_calls.fetch_add(1, Ordering::SeqCst);
                 unreachable!("batch-capable provider must not receive scalar fallback")
@@ -843,18 +922,97 @@ mod tests {
             }
         }
 
-        let backend = Arc::new(Batched::default());
-        let store = ObjectStore::with_backend(backend.clone()).unwrap();
-        let mut publication = store.publisher();
-        for index in 0..64 {
-            let bytes = encode_object(BLOB, format!("batch object {index}").as_bytes()).unwrap();
-            publication.push(object_id(&bytes), bytes).unwrap();
+        for mode in 0..=7 {
+            let backend = Arc::new(Batched::default());
+            backend.live_mode.store(mode, Ordering::SeqCst);
+            let store = ObjectStore::with_backend(backend.clone()).unwrap();
+            let publish = || {
+                let mut publication = store.publisher();
+                for index in 0..64 {
+                    let bytes =
+                        encode_object(BLOB, format!("batch object {index}").as_bytes()).unwrap();
+                    publication.push(object_id(&bytes), bytes).unwrap();
+                }
+                publication.finish()
+            };
+            assert_eq!(publish().is_ok(), mode <= 1);
+            assert_eq!(backend.batches.load(Ordering::SeqCst), 1);
+            assert_eq!(backend.live_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(backend.scalar_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                backend.reads.load(Ordering::SeqCst),
+                if mode == 0 { 64 } else { 0 }
+            );
+            assert_eq!(backend.values.lock().unwrap().len(), 64);
+            if mode > 1 {
+                backend.live_mode.store(1, Ordering::SeqCst);
+                publish().unwrap();
+                assert_eq!(backend.values.lock().unwrap().len(), 64);
+            }
         }
-        publication.finish().unwrap();
-        assert_eq!(backend.batches.load(Ordering::SeqCst), 1);
-        assert_eq!(backend.scalar_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(backend.reads.load(Ordering::SeqCst), 64);
-        assert_eq!(backend.values.lock().unwrap().len(), 64);
+    }
+
+    #[test]
+    fn closure_live_reads_validate_bytes_and_preserve_all_copy_fallback() {
+        use crate::storage_backend::{ObjectBackend, StoreCapabilities};
+        #[derive(Default)]
+        struct Live {
+            inner: Recording,
+            batch: std::sync::atomic::AtomicBool,
+            missing_copy: std::sync::atomic::AtomicBool,
+            scalar_reads: std::sync::atomic::AtomicUsize,
+            exists: std::sync::atomic::AtomicUsize,
+        }
+        impl ObjectBackend for Live {
+            fn capabilities(&self) -> StoreCapabilities {
+                self.inner.capabilities()
+            }
+            fn get(&self, id: ObjectId) -> Result<Vec<u8>> {
+                self.scalar_reads.fetch_add(1, Ordering::SeqCst);
+                self.inner.get(id)
+            }
+            fn put_if_absent(&self, id: ObjectId, bytes: &[u8]) -> Result<()> {
+                self.inner.put_if_absent(id, bytes)
+            }
+            fn exists(&self, id: ObjectId) -> Result<bool> {
+                self.exists.fetch_add(1, Ordering::SeqCst);
+                Ok(!self.missing_copy.load(Ordering::SeqCst) && self.inner.exists(id)?)
+            }
+            fn get_batch_live(&self, ids: &[ObjectId], _: usize) -> Result<Option<Vec<Vec<u8>>>> {
+                if !self.batch.load(Ordering::SeqCst) {
+                    return Ok(None);
+                }
+                ids.iter()
+                    .map(|id| self.inner.get(*id))
+                    .collect::<Result<Vec<_>>>()
+                    .map(Some)
+            }
+        }
+        let backend = Arc::new(Live::default());
+        let store = ObjectStore::with_backend(backend.clone()).unwrap();
+        let id = store.put(BLOB, b"live typed closure").unwrap();
+        backend.scalar_reads.store(0, Ordering::SeqCst);
+        store.verify_external_closure(&[(id, BLOB)]).unwrap();
+        assert_eq!(backend.exists.load(Ordering::SeqCst), 1);
+        assert_eq!(backend.scalar_reads.load(Ordering::SeqCst), 1);
+        backend.missing_copy.store(true, Ordering::SeqCst);
+        assert!(store.verify_external_closure(&[(id, BLOB)]).is_err());
+        assert_eq!(backend.scalar_reads.load(Ordering::SeqCst), 1);
+        backend.missing_copy.store(false, Ordering::SeqCst);
+        backend.batch.store(true, Ordering::SeqCst);
+        store.verify_external_closure(&[(id, BLOB)]).unwrap();
+        assert_eq!(backend.exists.load(Ordering::SeqCst), 2);
+        assert_eq!(backend.scalar_reads.load(Ordering::SeqCst), 1);
+        assert!(store
+            .verify_external_closure(&[(id, crate::format::CHANGESET)])
+            .is_err());
+        backend.inner.corrupt.store(true, Ordering::SeqCst);
+        assert!(store.verify_external_closure(&[(id, BLOB)]).is_err());
+        backend.inner.corrupt.store(false, Ordering::SeqCst);
+        let malformed = b"hash-matching malformed envelope".to_vec();
+        let bad = object_id(&malformed);
+        backend.inner.values.lock().unwrap().insert(bad, malformed);
+        assert!(store.verify_external_closure(&[(bad, BLOB)]).is_err());
     }
 
     fn store() -> (tempfile::TempDir, FilesystemObjectBackend) {

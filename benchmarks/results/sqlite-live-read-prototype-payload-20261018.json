@@ -1,0 +1,852 @@
+{
+  "schema_version": 2,
+  "host": {
+    "platform": "Linux-6.18.55-x86_64-with-glibc2.39",
+    "cpus": 9,
+    "cpu_model": "INTEL(R) XEON(R) PLATINUM 8573C"
+  },
+  "git_version": "git version 2.51.1",
+  "loom_sha256": "73c878543e7a1829e138b3fae94098f7ee939571e7479f8abcc09795499188a3",
+  "baseline_loom_sha256": "5ef29b66d67b545aff32b64457b5e1d6eff6ff715187b7ad7389ac5eb67a2cba",
+  "harness_sha256": "4b884f1432d0e2be8c2e0e9d392b40c3269ab1927ba6d2d7e29aa7ea73e9939f",
+  "metric_units": {
+    "wall_ms": "milliseconds; complete commit command or Git add+commit",
+    "cpu_ms": "milliseconds",
+    "max_rss_kib": "KiB",
+    "rusage_inblock": "kernel counter units, not bytes",
+    "rusage_oublock": "kernel counter units, not bytes",
+    "metadata_footprints": "logical bytes, allocated bytes"
+  },
+  "conditions": [
+    "fresh repository per engine/sample; identical bytes and nested paths",
+    "Loom uses external SQLite objects with WAL and synchronous=FULL",
+    "candidate and baseline run identical complete commit arguments with explicit scan workers 0; Git runs add+commit",
+    "fixture creation and byte/listing/fsck verification are outside timing",
+    "initial commit is the large changeset; incremental commit changes min(64, file count) files across up to 64 directories",
+    "engine order rotates and every Loom pair must produce identical canonical roots",
+    "OS caches are not flushed; no controlled cold-cache evidence",
+    "local filesystem only; network, remote cache and multi-agent traffic are unmeasured",
+    "no durability setting is relaxed and no power-loss certification is claimed"
+  ],
+  "scenarios": [
+    {
+      "files": 128,
+      "file_bytes": 65536,
+      "directories": 64,
+      "loom_scan_workers": 0,
+      "changed_files": 64,
+      "started_argv": {
+        "baseline": {
+          "initial": [
+            [
+              "/tmp/loom-live-read-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-live-read-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-live-read-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-live-read-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-live-read-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ]
+          ],
+          "incremental": [
+            [
+              "/tmp/loom-live-read-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-live-read-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-live-read-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-live-read-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-live-read-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ]
+          ]
+        },
+        "loom": {
+          "initial": [
+            [
+              "/tmp/loom-live-read-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-live-read-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-live-read-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-live-read-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-live-read-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ]
+          ],
+          "incremental": [
+            [
+              "/tmp/loom-live-read-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-live-read-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-live-read-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-live-read-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-live-read-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ]
+          ]
+        },
+        "git": {
+          "initial": [
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "initial"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "initial"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "initial"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "initial"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "initial"
+              ]
+            ]
+          ],
+          "incremental": [
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "incremental"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "incremental"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "incremental"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "incremental"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "incremental"
+              ]
+            ]
+          ]
+        }
+      },
+      "operations": {
+        "baseline": {
+          "initial": {
+            "wall_ms": {
+              "samples": [
+                419.738607,
+                351.619397,
+                356.378891,
+                503.043492,
+                407.897812
+              ],
+              "p50": 407.897812,
+              "p95": 486.382515,
+              "p99": 499.7112966
+            },
+            "cpu_ms": {
+              "samples": [
+                261.347,
+                243.79899999999998,
+                253.79199999999997,
+                382.899,
+                297.24699999999996
+              ],
+              "p50": 261.347,
+              "p95": 365.7686,
+              "p99": 379.47292
+            },
+            "max_rss_kib": {
+              "samples": [
+                20736.0,
+                38740.0,
+                38868.0,
+                38996.0,
+                39304.0
+              ],
+              "p50": 38868.0,
+              "p95": 39242.4,
+              "p99": 39291.68
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                87440,
+                87440,
+                87440,
+                87488,
+                87488
+              ],
+              "p50": 87440,
+              "p95": 87488.0,
+              "p99": 87488.0
+            }
+          },
+          "incremental": {
+            "wall_ms": {
+              "samples": [
+                425.189064,
+                408.212286,
+                401.573359,
+                651.216043,
+                482.747368
+              ],
+              "p50": 425.189064,
+              "p95": 617.522308,
+              "p99": 644.477296
+            },
+            "cpu_ms": {
+              "samples": [
+                315.416,
+                299.76,
+                297.135,
+                503.86699999999996,
+                373.104
+              ],
+              "p50": 315.416,
+              "p95": 477.71439999999996,
+              "p99": 498.63647999999995
+            },
+            "max_rss_kib": {
+              "samples": [
+                20736.0,
+                38740.0,
+                38868.0,
+                38996.0,
+                39304.0
+              ],
+              "p50": 38868.0,
+              "p95": 39242.4,
+              "p99": 39291.68
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                91840,
+                91840,
+                91600,
+                91648,
+                91648
+              ],
+              "p50": 91648,
+              "p95": 91840.0,
+              "p99": 91840.0
+            }
+          }
+        },
+        "loom": {
+          "initial": {
+            "wall_ms": {
+              "samples": [
+                396.373518,
+                338.426528,
+                349.006873,
+                478.27445,
+                459.543051
+              ],
+              "p50": 396.373518,
+              "p95": 474.5281702,
+              "p99": 477.52519404
+            },
+            "cpu_ms": {
+              "samples": [
+                286.03599999999994,
+                230.664,
+                247.92,
+                364.36400000000003,
+                344.36499999999995
+              ],
+              "p50": 286.03599999999994,
+              "p95": 360.36420000000004,
+              "p99": 363.56404000000003
+            },
+            "max_rss_kib": {
+              "samples": [
+                38472.0,
+                38740.0,
+                38996.0,
+                38996.0,
+                39048.0
+              ],
+              "p50": 38996.0,
+              "p95": 39037.6,
+              "p99": 39045.92
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                79360,
+                79360,
+                79360,
+                79408,
+                79408
+              ],
+              "p50": 79360,
+              "p95": 79408.0,
+              "p99": 79408.0
+            }
+          },
+          "incremental": {
+            "wall_ms": {
+              "samples": [
+                384.670335,
+                367.911555,
+                497.613061,
+                659.584035,
+                503.780258
+              ],
+              "p50": 497.613061,
+              "p95": 628.4232795999999,
+              "p99": 653.35188392
+            },
+            "cpu_ms": {
+              "samples": [
+                271.889,
+                268.002,
+                361.723,
+                437.75299999999993,
+                407.74
+              ],
+              "p50": 361.723,
+              "p95": 431.75039999999996,
+              "p99": 436.55247999999995
+            },
+            "max_rss_kib": {
+              "samples": [
+                38472.0,
+                38740.0,
+                38996.0,
+                38996.0,
+                39048.0
+              ],
+              "p50": 38996.0,
+              "p95": 39037.6,
+              "p99": 39045.92
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                87608,
+                87608,
+                87608,
+                87608,
+                87608
+              ],
+              "p50": 87608,
+              "p95": 87608.0,
+              "p99": 87608.0
+            }
+          }
+        },
+        "git": {
+          "initial": {
+            "wall_ms": {
+              "samples": [
+                110.984707,
+                126.895601,
+                127.113061,
+                126.86226,
+                154.583404
+              ],
+              "p50": 126.895601,
+              "p95": 149.08933539999998,
+              "p99": 153.48459028
+            },
+            "cpu_ms": {
+              "samples": [
+                108.798,
+                124.856,
+                125.364,
+                124.50299999999999,
+                152.373
+              ],
+              "p50": 124.856,
+              "p95": 146.97119999999998,
+              "p99": 151.29264
+            },
+            "max_rss_kib": {
+              "samples": [
+                38740.0,
+                38740.0,
+                38868.0,
+                38996.0,
+                39304.0
+              ],
+              "p50": 38868.0,
+              "p95": 39242.4,
+              "p99": 39291.68
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                1648,
+                1648,
+                1648,
+                1648,
+                1648
+              ],
+              "p50": 1648,
+              "p95": 1648.0,
+              "p99": 1648.0
+            }
+          },
+          "incremental": {
+            "wall_ms": {
+              "samples": [
+                97.746721,
+                94.560003,
+                82.191837,
+                150.383255,
+                136.773842
+              ],
+              "p50": 97.746721,
+              "p95": 147.6613724,
+              "p99": 149.83887848
+            },
+            "cpu_ms": {
+              "samples": [
+                95.101,
+                92.907,
+                78.75799999999998,
+                145.117,
+                135.052
+              ],
+              "p50": 95.101,
+              "p95": 143.10399999999998,
+              "p99": 144.71439999999998
+            },
+            "max_rss_kib": {
+              "samples": [
+                38740.0,
+                38740.0,
+                38868.0,
+                38996.0,
+                39304.0
+              ],
+              "p50": 38868.0,
+              "p95": 39242.4,
+              "p99": 39291.68
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                1120,
+                1120,
+                1120,
+                1120,
+                1120
+              ],
+              "p50": 1120,
+              "p95": 1120.0,
+              "p99": 1120.0
+            }
+          }
+        }
+      },
+      "canonical_roots": {
+        "baseline": [
+          "46bd766baa1bc08b9acbca9ff1e933fe3ed33ac219ab71c581daf5e183b30c87",
+          "46bd766baa1bc08b9acbca9ff1e933fe3ed33ac219ab71c581daf5e183b30c87",
+          "46bd766baa1bc08b9acbca9ff1e933fe3ed33ac219ab71c581daf5e183b30c87",
+          "46bd766baa1bc08b9acbca9ff1e933fe3ed33ac219ab71c581daf5e183b30c87",
+          "46bd766baa1bc08b9acbca9ff1e933fe3ed33ac219ab71c581daf5e183b30c87"
+        ],
+        "loom": [
+          "46bd766baa1bc08b9acbca9ff1e933fe3ed33ac219ab71c581daf5e183b30c87",
+          "46bd766baa1bc08b9acbca9ff1e933fe3ed33ac219ab71c581daf5e183b30c87",
+          "46bd766baa1bc08b9acbca9ff1e933fe3ed33ac219ab71c581daf5e183b30c87",
+          "46bd766baa1bc08b9acbca9ff1e933fe3ed33ac219ab71c581daf5e183b30c87",
+          "46bd766baa1bc08b9acbca9ff1e933fe3ed33ac219ab71c581daf5e183b30c87"
+        ]
+      },
+      "metadata_footprints": {
+        "baseline": [
+          [
+            12926976,
+            12926976
+          ],
+          [
+            12926976,
+            12926976
+          ],
+          [
+            12926976,
+            12926976
+          ],
+          [
+            12926976,
+            12926976
+          ],
+          [
+            12926976,
+            12926976
+          ]
+        ],
+        "loom": [
+          [
+            12926976,
+            12926976
+          ],
+          [
+            12926976,
+            12926976
+          ],
+          [
+            12926976,
+            12926976
+          ],
+          [
+            12926976,
+            12926976
+          ],
+          [
+            12926976,
+            12926976
+          ]
+        ],
+        "git": [
+          [
+            136256,
+            1449984
+          ],
+          [
+            136254,
+            1449984
+          ],
+          [
+            136255,
+            1449984
+          ],
+          [
+            136254,
+            1449984
+          ],
+          [
+            136254,
+            1449984
+          ]
+        ]
+      },
+      "baseline_over_loom_p50": {
+        "initial": 1.029074328825368,
+        "incremental": 0.854457202440673
+      },
+      "git_over_loom_p50": {
+        "initial": 0.32014147070238935,
+        "incremental": 0.1964311804910603
+      }
+    }
+  ]
+}

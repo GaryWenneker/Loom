@@ -2,6 +2,7 @@ name: SQLite batch publication evidence
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - "crates/loom-core/src/storage_backend.rs"
       - "crates/loom-core/src/store.rs"
@@ -15,6 +16,7 @@ permissions:
 
 jobs:
   benchmark:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: checked SQLite object batches
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -48,8 +50,18 @@ jobs:
           python3 benchmarks/sqlite_batch_publication.py \
             --loom "${{ github.workspace }}/candidate-target/release/loom" \
             --baseline-loom "${{ github.workspace }}/baseline-target/release/loom" \
-            --files 32 256 --repeat 7 \
+            --files 32 256 --repeat 7 --scan-workers 0 \
             --output artifacts/sqlite-batch-publication.json
+          python3 benchmarks/sqlite_batch_publication.py \
+            --loom "${{ github.workspace }}/candidate-target/release/loom" \
+            --baseline-loom "${{ github.workspace }}/baseline-target/release/loom" \
+            --files 256 --repeat 5 --scan-workers 1 \
+            --output artifacts/sqlite-batch-serial.json
+          python3 benchmarks/sqlite_batch_publication.py \
+            --loom "${{ github.workspace }}/candidate-target/release/loom" \
+            --baseline-loom "${{ github.workspace }}/baseline-target/release/loom" \
+            --files 2048 --directories 64 --changed-files 64 --repeat 5 --scan-workers 0 \
+            --output artifacts/sqlite-batch-multidir.json
       - name: Record provenance
         run: |
           python3 - <<'PY'
