@@ -119,10 +119,7 @@ impl PortablePlanDirectory {
         Ok(id)
     }
 
-    fn encoded_objects(
-        &self,
-        objects: &mut Vec<(ObjectId, Vec<u8>)>,
-    ) -> Result<ObjectId> {
+    fn encoded_objects(&self, objects: &mut Vec<(ObjectId, Vec<u8>)>) -> Result<ObjectId> {
         let mut entries = Vec::with_capacity(self.files.len() + self.directories.len());
         for (name, object) in &self.files {
             entries.push(crate::PortableTreeEntry {
@@ -1213,12 +1210,10 @@ impl Repository {
                     break;
                 }
             }
-            let prepared = crate::workers::parallel_map_min(
-                &work[start..end],
-                workers,
-                2,
-                &|blob| Self::prepare_migration_blob(&reader, blob),
-            )?;
+            let prepared =
+                crate::workers::parallel_map_min(&work[start..end], workers, 2, &|blob| {
+                    Self::prepare_migration_blob(&reader, blob)
+                })?;
             for blob in prepared {
                 if projection.manifests[&blob.source] != blob.manifest {
                     return Err(Error::Invalid(
@@ -6219,7 +6214,7 @@ mod tests {
         let revision = repository.commit("tester", "source").unwrap();
         fs::write(directory.path().join("a"), b"unstaged").unwrap();
         fs::write(directory.path().join("staged"), b"staged").unwrap();
-        repository.add_paths(&[PathBuf::from("staged")]).unwrap();
+        repository.add_paths(&["staged"]).unwrap();
         let status = repository.status().unwrap();
         let head = repository.head().unwrap();
         let plan = repository.plan_portable_migration(revision, 1).unwrap();

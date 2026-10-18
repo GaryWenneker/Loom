@@ -136,7 +136,10 @@ fn portable_migration_publication_is_exact_idempotent_and_preserves_state() {
             destination.to_str().unwrap(),
         ],
     );
-    assert_eq!(fs::read(destination.join("nested/file")).unwrap(), b"nested");
+    assert_eq!(
+        fs::read(destination.join("nested/file")).unwrap(),
+        b"nested"
+    );
 }
 
 #[test]
