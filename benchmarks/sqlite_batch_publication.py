@@ -371,7 +371,7 @@ def main():
             "fresh repository per engine/sample; identical bytes and nested paths",
             "Loom uses external SQLite objects with WAL and synchronous=FULL",
             f"candidate and baseline run identical complete commit arguments with explicit scan workers {args.scan_workers}; Git runs add+commit",
-            "fixture creation and byte/listing/fsck verification are outside timing",
+            "fixture creation and final repeated verification are outside timing; separately reported read commands are timed and checked",
             f"initial commit is the large changeset; incremental commit changes min({args.changed_files}, file count) files across up to {args.directories} directories",
             "engine order rotates and every Loom pair must produce identical canonical roots",
             "OS caches are not flushed; no controlled cold-cache evidence",
