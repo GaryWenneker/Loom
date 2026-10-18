@@ -208,6 +208,21 @@ fn portable_migration_checkpoint_is_idempotent_and_preserves_workspace_state() {
         ],
     );
     assert_eq!(first, retry);
+    let verified = ok(
+        root,
+        &[
+            "portable-migrate-verify",
+            &format!("@{revision}"),
+            "--workers",
+            "8",
+        ],
+    );
+    assert_eq!(
+        String::from_utf8(verified)
+            .unwrap()
+            .replacen("Verified", "Checkpointed", 1),
+        String::from_utf8(first.clone()).unwrap()
+    );
     let output = String::from_utf8(first).unwrap();
     assert_eq!(
         output
@@ -220,6 +235,22 @@ fn portable_migration_checkpoint_is_idempotent_and_preserves_workspace_state() {
     );
     assert_eq!(ok(root, &["status"]), status);
     ok(root, &["fsck"]);
+}
+
+#[test]
+fn portable_migration_verify_requires_a_durable_checkpoint() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    ok(root, &["init"]);
+    fs::write(root.join("tracked"), b"committed").unwrap();
+    let committed = String::from_utf8(ok(root, &["commit", "-m", "base"])).unwrap();
+    let revision = committed.split_whitespace().last().expect("commit ID");
+    let result = call(
+        root,
+        &["portable-migrate-verify", &format!("@{revision}")],
+    );
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("no portable migration checkpoint"));
 }
 
 #[test]

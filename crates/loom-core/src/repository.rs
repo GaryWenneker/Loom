@@ -1306,6 +1306,33 @@ impl Repository {
         Self::migration_checkpoint_in(&self.db, revision)
     }
 
+    /// Recompute and live-verify a durable prepared-state receipt.
+    ///
+    /// The receipt is never trusted as format authority: canonical v1 history
+    /// is replayed, the exact portable projection is recomputed, and the
+    /// published portable closure is read recursively from the live backend.
+    /// This operation is read-only and leaves refs, staging, format state and
+    /// the worktree unchanged.
+    pub fn verify_portable_migration_checkpoint(
+        &self,
+        revision: ObjectId,
+        requested_workers: usize,
+    ) -> Result<PortableMigrationCheckpoint> {
+        let checkpoint = Self::migration_checkpoint_in(&self.db, revision)?.ok_or_else(|| {
+            Error::Invalid(format!(
+                "no portable migration checkpoint for revision {revision}"
+            ))
+        })?;
+        let recomputed = self.plan_portable_migration(revision, requested_workers)?;
+        if checkpoint.plan != recomputed {
+            return Err(Error::Invalid(format!(
+                "portable migration checkpoint disagrees with canonical revision {revision}"
+            )));
+        }
+        self.portable_tree(checkpoint.plan.root)?;
+        Ok(checkpoint)
+    }
+
     fn migration_checkpoint_in(
         db: &Connection,
         revision: ObjectId,
@@ -3709,6 +3736,23 @@ impl Repository {
             for id in [pending.before, pending.after].into_iter().flatten() {
                 self.get_changeset(id)?;
             }
+        }
+        // Prepared migration receipts are independent durability roots. Read
+        // all keys before recursive verification so no SQLite statement stays
+        // borrowed while history and object storage are inspected.
+        let checkpoint_revisions = {
+            let mut statement = self.db.prepare(
+                "SELECT revision_oid FROM portable_migration_checkpoint ORDER BY revision_oid",
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            let mut revisions = Vec::new();
+            for row in rows {
+                revisions.push(ObjectId::parse(&row?)?);
+            }
+            revisions
+        };
+        for revision in checkpoint_revisions {
+            self.verify_portable_migration_checkpoint(revision, 1)?;
         }
         for (branch, tip) in self.branches()? {
             if let Some(id) = tip {
@@ -6378,6 +6422,13 @@ mod tests {
             repository.portable_migration_checkpoint(revision).unwrap(),
             Some(first)
         );
+        assert_eq!(
+            repository
+                .verify_portable_migration_checkpoint(revision, usize::MAX)
+                .unwrap(),
+            first
+        );
+        repository.fsck().unwrap();
         assert_eq!(repository.status().unwrap(), status);
         assert_eq!(repository.head().unwrap(), head);
         drop(repository);
@@ -6387,6 +6438,60 @@ mod tests {
             reopened.portable_migration_checkpoint(revision).unwrap(),
             Some(first)
         );
+        assert_eq!(
+            reopened
+                .verify_portable_migration_checkpoint(revision, 1)
+                .unwrap(),
+            first
+        );
+    }
+
+    #[test]
+    fn portable_migration_checkpoint_verification_rejects_missing_and_tampered_state() {
+        let missing_directory = tempfile::tempdir().unwrap();
+        let missing = Repository::init(missing_directory.path()).unwrap();
+        fs::write(missing_directory.path().join("a"), b"committed").unwrap();
+        let missing_revision = missing.commit("tester", "source").unwrap();
+        assert!(missing
+            .verify_portable_migration_checkpoint(missing_revision, 1)
+            .is_err());
+
+        let tampered_directory = tempfile::tempdir().unwrap();
+        let tampered = Repository::init(tampered_directory.path()).unwrap();
+        fs::write(tampered_directory.path().join("a"), b"committed").unwrap();
+        let tampered_revision = tampered.commit("tester", "source").unwrap();
+        tampered
+            .checkpoint_portable_migration(tampered_revision, 1)
+            .unwrap();
+        tampered
+            .db
+            .execute(
+                "UPDATE portable_migration_checkpoint SET file_count=file_count+1
+                 WHERE revision_oid=?1",
+                [tampered_revision.to_string()],
+            )
+            .unwrap();
+        assert!(tampered
+            .verify_portable_migration_checkpoint(tampered_revision, 1)
+            .is_err());
+        assert!(tampered.fsck().is_err());
+
+        let closure_directory = tempfile::tempdir().unwrap();
+        let closure = Repository::init(closure_directory.path()).unwrap();
+        fs::write(closure_directory.path().join("a"), b"committed").unwrap();
+        let closure_revision = closure.commit("tester", "source").unwrap();
+        let checkpoint = closure
+            .checkpoint_portable_migration(closure_revision, 1)
+            .unwrap();
+        let tree = closure.portable_tree(checkpoint.plan.root).unwrap();
+        let manifest = closure
+            .portable_blob_manifest(tree.entries[0].object)
+            .unwrap();
+        fs::remove_file(closure.store.path_for_test(manifest.chunks[0])).unwrap();
+        assert!(closure
+            .verify_portable_migration_checkpoint(closure_revision, 1)
+            .is_err());
+        assert!(closure.fsck().is_err());
     }
 
     #[test]

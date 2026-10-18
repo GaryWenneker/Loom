@@ -13,6 +13,7 @@ loom portable-verify @TREE_ID new-workspace --workers 0
 loom portable-migrate-plan @CHANGESET_ID --workers 0
 loom portable-migrate-publish @CHANGESET_ID --workers 0
 loom portable-migrate-checkpoint @CHANGESET_ID --workers 0
+loom portable-migrate-verify @CHANGESET_ID --workers 0
 ```
 
 The object records regular, executable or symbolic-link identity, the exact
@@ -134,6 +135,15 @@ and never overwrites it. A crash before the receipt commit leaves only safe
 additive objects and retry recomputes the same state; a committed receipt means
 the closure was complete and verified when recorded.
 
+`portable-migrate-verify` is the read-only recovery-side check for that
+prepared state. It does not trust the SQLite row: it replays the immutable v1
+revision, live-reads every referenced v1 blob, recomputes the canonical
+portable root and all closure counts, compares the complete receipt, then
+recursively live-reads the recorded portable tree/manifests/chunks. A missing
+receipt, altered count/root, corrupt source closure or missing/corrupt portable
+object fails closed. `fsck` performs the same verification for every receipt.
+Neither path repairs state or changes refs, staging, worktree or format state.
+
 The receipt is not a restore-capable backup, ref update, repository-format
 activation, migration of history, rollback implementation or no-downgrade
 marker. Those remain future migration steps. Receipts are local repository
@@ -195,10 +205,21 @@ previous Loom receive identical commands and worker requests; an older binary
 without the command is classified unsupported. Git `fsck` remains a diagnostic
 closure check and has no equivalent prepared-migration receipt contract.
 
+Its `--operation verify` mode first creates and live-verifies the checkpoint
+outside timing, then measures the complete read-only recomputation, receipt
+comparison and live portable-closure verification. Candidate and supported
+baseline receive identical directory contents, command shapes and explicit
+worker requests; their resulting canonical roots must match. CLI support is
+probed in separate disposable repositories so publication/checkpoint timing is
+not silently converted into a warm idempotent retry. The report retains both
+setup and actually timed argv. Git `fsck` remains a narrower diagnostic with no
+receipt or portable-v2 contract.
+
 The harness records p50/p95/p99 wall/CPU, peak RSS, kernel block counters and
 logical/allocated object-store bytes for small, multi-chunk and above-64-MiB
-payloads. Each sample uses a fresh repository. Verification and idempotent
-retry occur outside the timed section. Inputs contain deterministic distinct
+payloads. Each sample uses a fresh repository. Verify setup occurs outside its
+timed section; plan, publication and checkpoint are each executed only once in
+the timed repository. Inputs contain deterministic distinct
 high-entropy 1 MiB blocks so the large case does not collapse into repeated
 chunks. OS caches are not flushed.
 

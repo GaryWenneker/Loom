@@ -26,15 +26,40 @@ def git_revision(root, files, file_bytes):
                "commit", "--quiet", "-m", "migration fixture"])
 
 
+def supports_operation(binary, operation, worker, file_bytes):
+    """Probe CLI support in a disposable repository, never the timed one."""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        revision = loom_revision(root, binary, 1, file_bytes)
+        if operation == "verify":
+            prepared = subprocess.run(
+                [binary, "portable-migrate-checkpoint", f"@{revision}",
+                 "--workers", str(worker)],
+                cwd=root, env=clean_env(), capture_output=True)
+            if prepared.returncode != 0:
+                return False
+        result = subprocess.run(
+            [binary, f"portable-migrate-{operation}", f"@{revision}",
+             "--workers", str(worker)],
+            cwd=root, env=clean_env(), capture_output=True)
+        return result.returncode == 0
+
+
 def scenario(args, files):
     engines = [f"candidate_w{value}" for value in args.workers]
     engines += [f"baseline_w{value}" for value in args.workers]
     engines += ["git"]
     samples = {engine: [] for engine in engines}
     started = {engine: [] for engine in engines}
+    setup_started = {engine: [] for engine in engines}
     footprints = {engine: [] for engine in engines}
-    support = {str(value): True for value in args.workers}
+    support = {
+        str(value): supports_operation(
+            args.baseline_loom, args.operation, value, args.file_bytes)
+        for value in args.workers
+    }
     roots = {str(value): set() for value in args.workers}
+    baseline_roots = {str(value): set() for value in args.workers}
     for repeat in range(args.repeat):
         order = engines[repeat % len(engines):] + engines[:repeat % len(engines)]
         for engine in order:
@@ -52,23 +77,28 @@ def scenario(args, files):
                     revision = loom_revision(root, binary, files, args.file_bytes)
                     command = [binary, f"portable-migrate-{args.operation}",
                                f"@{revision}", "--workers", worker]
-                    result = subprocess.run(command, cwd=root, env=clean_env(), capture_output=True)
-                    if baseline and result.returncode != 0:
-                        support[worker] = False
-                        started[engine].append(command)
+                    if baseline and not support[worker]:
                         footprints[engine].append(footprint(root / ".loom"))
                         continue
-                    if result.returncode != 0:
-                        raise RuntimeError(result.stderr.decode(errors="replace"))
+                    if args.operation == "verify":
+                        setup = [binary, "portable-migrate-checkpoint",
+                                 f"@{revision}", "--workers", worker]
+                        prepared = subprocess.run(
+                            setup, cwd=root, env=clean_env(), capture_output=True)
+                        if prepared.returncode != 0:
+                            raise RuntimeError(prepared.stderr.decode(errors="replace"))
+                        setup_started[engine].append(setup)
                     sample, measured = measured_run(root, command)
-                    if not baseline:
-                        fields = measured.decode().split()
-                        root_field = 2 if args.operation == "plan" else 3
-                        portable_root = fields[root_field].rstrip(":")
-                        if len(portable_root) != 64 or any(
-                                value not in "0123456789abcdef" for value in portable_root):
-                            raise RuntimeError(
-                                f"invalid portable root in {args.operation} output: {measured!r}")
+                    fields = measured.decode().split()
+                    root_field = 2 if args.operation == "plan" else 3
+                    portable_root = fields[root_field].rstrip(":")
+                    if len(portable_root) != 64 or any(
+                            value not in "0123456789abcdef" for value in portable_root):
+                        raise RuntimeError(
+                            f"invalid portable root in {args.operation} output: {measured!r}")
+                    if baseline:
+                        baseline_roots[worker].add(portable_root)
+                    else:
                         roots[worker].add(portable_root)
                     footprints[engine].append(footprint(root / ".loom"))
                 samples[engine].append(sample)
@@ -78,8 +108,10 @@ def scenario(args, files):
         operations[engine] = (
             {key: distribution(values, key) for key in values[0]} if values else None
         )
-    for values in roots.values():
+    for worker, values in roots.items():
         assert len(values) == 1
+        if support[worker]:
+            assert baseline_roots[worker] == values
     serial = operations["candidate_w1"]["wall_ms"]["p50"]
     git = operations["git"]["wall_ms"]["p50"]
     ratios = {}
@@ -95,7 +127,12 @@ def scenario(args, files):
         "file_bytes": args.file_bytes,
         "repeat": args.repeat,
         "candidate_roots": {key: next(iter(value)) for key, value in roots.items()},
+        "baseline_roots": {
+            key: (next(iter(value)) if value else None)
+            for key, value in baseline_roots.items()
+        },
         "started_argv": started,
+        "setup_argv": setup_started,
         "baseline_support": support,
         "operations": operations,
         "storage_footprints": footprints,
@@ -116,7 +153,8 @@ def main():
     parser.add_argument("--file-bytes", type=int, default=4096)
     parser.add_argument("--workers", nargs="+", type=int, default=[1, 2, 4, 0])
     parser.add_argument("--repeat", type=int, default=5)
-    parser.add_argument("--operation", choices=["plan", "publish", "checkpoint"], default="plan")
+    parser.add_argument(
+        "--operation", choices=["plan", "publish", "checkpoint", "verify"], default="plan")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     report = {
@@ -125,6 +163,9 @@ def main():
         "conditions": [
             "fresh repositories and byte-identical payload directories per sample; setup and commit are outside timing",
             f"candidate and previous Loom receive identical portable-migrate-{args.operation} argv and explicit worker requests",
+            "CLI support is probed in disposable repositories, never by executing the timed operation first",
+            "verify prepares and live-verifies the checkpoint outside timing, then times read-only recomputation and live closure verification",
+            "supported candidate and baseline runs must produce identical canonical portable roots",
             "unsupported previous Loom results have no fabricated version factor",
             "Git fsck is a diagnostic verified Git-closure workload, not portable-v2 planning or durable publication",
             "wait4 wall/CPU/peak RSS/block counters; OS caches are not flushed",
