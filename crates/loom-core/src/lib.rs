@@ -32,7 +32,7 @@ pub use portable_tree::{
     MAX_PORTABLE_TREE_ENTRIES,
 };
 pub use read_pack::ReadPackStats;
-pub use repository::{FileDiff, Repository, StatusEntry, StatusKind};
+pub use repository::{FileDiff, PortableExportStats, Repository, StatusEntry, StatusKind};
 pub use snapshot::{
     Snapshot, SnapshotFiles, SnapshotStats, SparseExportStats, DEFAULT_BULK_BYTES,
     DEFAULT_SNAPSHOT_CACHE_BYTES, MAX_BULK_BYTES, MAX_BULK_PATHS,

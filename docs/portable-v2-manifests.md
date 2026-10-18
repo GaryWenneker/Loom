@@ -8,6 +8,7 @@ loom portable-manifest regular path/to/file
 loom portable-manifest executable path/to/tool
 loom portable-manifest symlink path/to/link
 loom portable-tree path/to/directory --workers 0
+loom portable-export @TREE_ID new-workspace --workers 0
 ```
 
 The object records regular, executable or symbolic-link identity, the exact
@@ -57,6 +58,26 @@ publication occur after every worker has joined. This prevents a worker from
 sharing repository SQLite state and provides backpressure independent of tree
 size.
 
+`portable-export` is the inverse materialization boundary for an immutable
+portable tree. Loom live-verifies the complete manifest/chunk closure before it
+creates the destination and refuses to reuse an existing path. It then creates
+directories serially and streams independent files through provider-aware
+workers: zero requests the existing adaptive policy, explicit requests remain
+bounded by available CPUs, the eight-worker hard cap and the storage read
+session's concurrency limit. Each worker holds at most one canonical 4 MiB
+chunk at a time. Regular files are mode 0644 and executable files mode 0755 on
+Unix. Safe relative symlinks use the host symlink API; hosts that cannot create
+one fail the export instead of silently copying or rewriting it.
+
+Every regular file is opened with exclusive creation and synced after its
+verified bytes and mode are written. Directories are synced on Unix. Only after
+the complete tree succeeds does Loom sync `.loom-portable-complete`, recording
+the root ID and counts, and sync the destination directory. A failed attempt
+may therefore leave an incomplete new directory without a receipt; retry must
+use another absent destination. Export never moves a ref, updates staging,
+changes history or touches the source worktree. The receipt is an explicit
+completion signal, not a signature or remote authorization proof.
+
 ## Benchmark classification
 
 `benchmarks/portable_manifest.py` builds the exact candidate and base in
@@ -75,6 +96,16 @@ command is retained only as a non-equivalent diagnostic control. Git
 `add --all payload` plus `write-tree` is only a diagnostic subset because its
 metadata, live-verification and durability contracts differ.
 
+`benchmarks/portable_export.py` measures complete export of identical canonical
+trees to fresh destinations for worker requests 1, 2, 4 and 0. Candidate and
+previous Loom receive the same `portable-export @TREE_ID DESTINATION --workers
+N` argument shape and independently published trees must have the same root ID.
+A previous binary without the command is classified unsupported, so no version
+speed factor is reported. Git `checkout-index --all` is retained only as an
+external diagnostic: it receives the same native file directory but lacks
+Loom's live closure verification, typed manifests, per-file fsync and completion
+receipt.
+
 The harness records p50/p95/p99 wall/CPU, peak RSS, kernel block counters and
 logical/allocated object-store bytes for small, multi-chunk and above-64-MiB
 payloads. Each sample uses a fresh repository. Verification and idempotent
@@ -89,4 +120,5 @@ policy, history conversion, backup/restore,
 crash recovery, rollback/no-downgrade state, remote transport
 and three-OS golden-vector evidence remain open under issue #13. Refs continue
 to use the existing atomic compare-and-swap path and do not yet reference these
-manifests.
+manifests. Portable export is an isolated materializer, not yet a named sparse
+workspace lifecycle with ownership, lease or remote authority.
