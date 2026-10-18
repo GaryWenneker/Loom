@@ -103,9 +103,36 @@ fn portable_tree_is_canonical_typed_and_repository_independent() {
         fs::read(serial.join(".loom-portable-complete")).unwrap(),
         fs::read(parallel.join(".loom-portable-complete")).unwrap()
     );
+    ok(
+        root,
+        &[
+            "portable-verify",
+            &immutable,
+            serial.to_str().unwrap(),
+            "--workers",
+            "1",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "portable-verify",
+            &immutable,
+            parallel.to_str().unwrap(),
+            "--workers",
+            "8",
+        ],
+    );
     assert!(!call(
         root,
         &["portable-export", &immutable, serial.to_str().unwrap()]
+    )
+    .status
+    .success());
+    fs::write(parallel.join("sub/b"), b"tampered").unwrap();
+    assert!(!call(
+        root,
+        &["portable-verify", &immutable, parallel.to_str().unwrap()]
     )
     .status
     .success());
