@@ -9,6 +9,7 @@ loom portable-manifest executable path/to/tool
 loom portable-manifest symlink path/to/link
 loom portable-tree path/to/directory --workers 0
 loom portable-export @TREE_ID new-workspace --workers 0
+loom portable-verify @TREE_ID new-workspace --workers 0
 ```
 
 The object records regular, executable or symbolic-link identity, the exact
@@ -78,6 +79,18 @@ use another absent destination. Export never moves a ref, updates staging,
 changes history or touches the source worktree. The receipt is an explicit
 completion signal, not a signature or remote authorization proof.
 
+`portable-verify` independently reopens the canonical object closure and the
+materialized workspace. It requires the exact expected directory members,
+regular-file bytes, Unix executable classification where available, safe
+symlink targets and byte-exact completion receipt. Independent files are
+checked with the same provider-aware worker limits as export. A worker retains
+one canonical chunk plus a 64 KiB comparison buffer; file identity and
+directory membership are checked again after reading to reject observed
+concurrent changes. Verification is read-only and never repairs or silently
+accepts a partial workspace. This detects stable corruption and changes
+observed during the pass; it is not an OS-level lease preventing an adversary
+from changing a workspace immediately after successful verification.
+
 ## Benchmark classification
 
 `benchmarks/portable_manifest.py` builds the exact candidate and base in
@@ -105,6 +118,13 @@ speed factor is reported. Git `checkout-index --all` is retained only as an
 external diagnostic: it receives the same native file directory but lacks
 Loom's live closure verification, typed manifests, per-file fsync and completion
 receipt.
+
+`benchmarks/portable_verify.py` measures complete verification of fresh,
+identical exported workspaces for worker requests 1, 2, 4 and 0. A previous
+binary without `portable-verify` is classified unsupported, so no version
+factor is produced. Git `diff --no-index --quiet` compares the same two native
+directory payloads only as a diagnostic subset: it does not verify Loom's
+canonical closure, receipt or portable metadata contract.
 
 The harness records p50/p95/p99 wall/CPU, peak RSS, kernel block counters and
 logical/allocated object-store bytes for small, multi-chunk and above-64-MiB

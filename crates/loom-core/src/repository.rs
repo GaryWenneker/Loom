@@ -187,6 +187,131 @@ fn materialize_portable_file(
     })
 }
 
+fn portable_export_receipt(root: ObjectId, stats: PortableExportStats) -> String {
+    format!(
+        "LOOM-PORTABLE 1\nroot {root}\nfiles {}\ndirectories {}\nsymlinks {}\nbytes {}\n",
+        stats.files, stats.directories, stats.symlinks, stats.bytes
+    )
+}
+
+fn portable_directory_names(path: &Path) -> Result<BTreeSet<String>> {
+    let mut names = BTreeSet::new();
+    for entry in std::fs::read_dir(path)? {
+        let name = entry?
+            .file_name()
+            .into_string()
+            .map_err(|_| Error::Invalid("portable workspace contains a non-UTF-8 name".into()))?;
+        if !names.insert(name) {
+            return Err(Error::Invalid(
+                "portable workspace contains duplicate names".into(),
+            ));
+        }
+    }
+    Ok(names)
+}
+
+fn verify_portable_file(
+    reader: &std::sync::Arc<dyn crate::storage_backend::ObjectReadSession>,
+    work: &PortableExportWork,
+) -> Result<PortableExportFileStats> {
+    let manifest = crate::PortableBlobManifest::decode(&reader.get(work.manifest)?)?;
+    let before = std::fs::symlink_metadata(&work.path)?;
+    if manifest.kind == crate::PortableFileKind::Symlink {
+        if !before.file_type().is_symlink() {
+            return Err(Error::Invalid(format!(
+                "portable workspace entry is not a symlink: {}",
+                work.path.display()
+            )));
+        }
+        let encoded = reader.get(manifest.chunks[0])?;
+        let (kind, expected) = decode_object(&encoded)?;
+        if kind != BLOB || expected.len() as u64 != manifest.logical_bytes {
+            return Err(Error::Invalid(
+                "portable symlink chunk disagrees with manifest".into(),
+            ));
+        }
+        let actual = std::fs::read_link(&work.path)?;
+        let actual = actual
+            .to_str()
+            .ok_or_else(|| Error::Invalid("portable symlink target must be UTF-8".into()))?;
+        if actual.as_bytes() != expected || std::fs::read_link(&work.path)? != Path::new(actual) {
+            return Err(Error::Invalid(format!(
+                "portable workspace symlink disagrees with manifest: {}",
+                work.path.display()
+            )));
+        }
+        return Ok(PortableExportFileStats {
+            symlinks: 1,
+            bytes: manifest.logical_bytes,
+        });
+    }
+    if !before.is_file() || before.file_type().is_symlink() {
+        return Err(Error::Invalid(format!(
+            "portable workspace entry is not a regular file: {}",
+            work.path.display()
+        )));
+    }
+    #[cfg(unix)]
+    if portable_kind(&before) != manifest.kind {
+        return Err(Error::Invalid(format!(
+            "portable workspace executable mode disagrees: {}",
+            work.path.display()
+        )));
+    }
+    if before.len() != manifest.logical_bytes {
+        return Err(Error::Invalid(format!(
+            "portable workspace file length disagrees: {}",
+            work.path.display()
+        )));
+    }
+    let mut input = std::fs::File::open(&work.path)?;
+    let opened = input.metadata()?;
+    if !same_portable_file(&before, &opened) {
+        return Err(Error::Invalid(format!(
+            "portable workspace file changed before verification: {}",
+            work.path.display()
+        )));
+    }
+    let mut buffer = vec![0u8; 64 * 1024];
+    for chunk in &manifest.chunks {
+        let encoded = reader.get(*chunk)?;
+        let (kind, expected) = decode_object(&encoded)?;
+        if kind != BLOB {
+            return Err(Error::Invalid(
+                "portable manifest references a non-blob chunk".into(),
+            ));
+        }
+        for expected_part in expected.chunks(buffer.len()) {
+            std::io::Read::read_exact(&mut input, &mut buffer[..expected_part.len()])?;
+            if &buffer[..expected_part.len()] != expected_part {
+                return Err(Error::Invalid(format!(
+                    "portable workspace file bytes disagree: {}",
+                    work.path.display()
+                )));
+            }
+        }
+    }
+    let mut trailing = [0u8; 1];
+    if std::io::Read::read(&mut input, &mut trailing)? != 0 {
+        return Err(Error::Invalid(format!(
+            "portable workspace file has trailing bytes: {}",
+            work.path.display()
+        )));
+    }
+    let opened_after = input.metadata()?;
+    let after = std::fs::symlink_metadata(&work.path)?;
+    if !same_portable_file(&opened, &opened_after) || !same_portable_file(&opened_after, &after) {
+        return Err(Error::Invalid(format!(
+            "portable workspace file changed during verification: {}",
+            work.path.display()
+        )));
+    }
+    Ok(PortableExportFileStats {
+        symlinks: 0,
+        bytes: manifest.logical_bytes,
+    })
+}
+
 fn bounded_text_merge_workers(
     task_count: usize,
     requested_workers: usize,
@@ -858,6 +983,87 @@ impl Repository {
         Ok(())
     }
 
+    fn verify_portable_directory(
+        reader: &std::sync::Arc<dyn crate::storage_backend::ObjectReadSession>,
+        tree_id: ObjectId,
+        directory: &Path,
+        depth: usize,
+        requested_workers: usize,
+        stats: &mut PortableExportStats,
+    ) -> Result<()> {
+        if depth > 256 {
+            return Err(Error::Invalid(
+                "portable workspace verification nesting limit reached".into(),
+            ));
+        }
+        let metadata = std::fs::symlink_metadata(directory)?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err(Error::Invalid(format!(
+                "portable workspace entry is not a directory: {}",
+                directory.display()
+            )));
+        }
+        let tree = crate::PortableTree::decode(&reader.get(tree_id)?)?;
+        let mut expected_names = tree
+            .entries
+            .iter()
+            .map(|entry| entry.name.clone())
+            .collect::<BTreeSet<_>>();
+        if depth == 0 {
+            expected_names.insert(".loom-portable-complete".into());
+        }
+        let names_before = portable_directory_names(directory)?;
+        if names_before != expected_names {
+            return Err(Error::Invalid(format!(
+                "portable workspace directory entries disagree: {}",
+                directory.display()
+            )));
+        }
+        let mut files = Vec::new();
+        for entry in tree.entries {
+            let target = directory.join(&entry.name);
+            match entry.kind {
+                crate::PortableTreeEntryKind::Directory => {
+                    stats.directories += 1;
+                    Self::verify_portable_directory(
+                        reader,
+                        entry.object,
+                        &target,
+                        depth + 1,
+                        requested_workers,
+                        stats,
+                    )?;
+                }
+                crate::PortableTreeEntryKind::File => files.push(PortableExportWork {
+                    path: target,
+                    manifest: entry.object,
+                }),
+            }
+        }
+        let workers = crate::worktree_scan::worker_limit(
+            requested_workers,
+            std::thread::available_parallelism().map_or(1, usize::from),
+        )
+        .min(reader.max_concurrent_reads().clamp(1, 8));
+        let outcomes = crate::workers::parallel_map_min(&files, workers, 2, &|work| {
+            verify_portable_file(reader, work)
+        })?;
+        stats.files += outcomes.len();
+        for outcome in outcomes {
+            stats.symlinks += outcome.symlinks;
+            stats.bytes = stats.bytes.checked_add(outcome.bytes).ok_or_else(|| {
+                Error::Invalid("portable verification byte count overflow".into())
+            })?;
+        }
+        if portable_directory_names(directory)? != names_before {
+            return Err(Error::Invalid(format!(
+                "portable workspace directory changed during verification: {}",
+                directory.display()
+            )));
+        }
+        Ok(())
+    }
+
     /// Materialize one immutable portable-v2 tree into a newly-created,
     /// isolated directory. The complete object closure is live-verified before
     /// destination creation. File reads then use bounded provider-aware workers,
@@ -906,14 +1112,49 @@ impl Repository {
             .create_new(true)
             .open(destination.join(MARKER))?;
         use std::io::Write;
-        writeln!(marker, "LOOM-PORTABLE 1")?;
-        writeln!(marker, "root {root}")?;
-        writeln!(marker, "files {}", stats.files)?;
-        writeln!(marker, "directories {}", stats.directories)?;
-        writeln!(marker, "symlinks {}", stats.symlinks)?;
-        writeln!(marker, "bytes {}", stats.bytes)?;
+        marker.write_all(portable_export_receipt(root, stats).as_bytes())?;
         marker.sync_all()?;
         sync_directory(destination)?;
+        Ok(stats)
+    }
+
+    /// Verify an exported portable-v2 workspace against its immutable root.
+    /// The object closure, exact directory set, file bytes, portable modes,
+    /// symlink targets and completion receipt must all agree. Reads are bounded
+    /// by the requested, host and provider concurrency limits. No repository or
+    /// workspace data is modified.
+    pub fn verify_portable_export(
+        &self,
+        root: ObjectId,
+        directory: impl AsRef<Path>,
+        requested_workers: usize,
+    ) -> Result<PortableExportStats> {
+        const MARKER: &str = ".loom-portable-complete";
+        self.portable_tree(root)?;
+        let directory = directory.as_ref();
+        let marker_path = directory.join(MARKER);
+        let marker_before = std::fs::read(&marker_path)?;
+        let reader = self.store.read_session()?;
+        let mut stats = PortableExportStats {
+            files: 0,
+            directories: 0,
+            symlinks: 0,
+            bytes: 0,
+        };
+        Self::verify_portable_directory(
+            &reader,
+            root,
+            directory,
+            0,
+            requested_workers,
+            &mut stats,
+        )?;
+        let expected = portable_export_receipt(root, stats);
+        if marker_before != expected.as_bytes() || std::fs::read(&marker_path)? != marker_before {
+            return Err(Error::Invalid(
+                "portable workspace completion receipt disagrees or changed".into(),
+            ));
+        }
         Ok(stats)
     }
 
@@ -5428,6 +5669,18 @@ mod tests {
         let receipt = fs::read_to_string(parallel_path.join(".loom-portable-complete")).unwrap();
         assert!(receipt.contains(&format!("root {root}")));
         assert!(receipt.contains("files 2"));
+        assert_eq!(
+            repository
+                .verify_portable_export(root, &serial_path, 1)
+                .unwrap(),
+            serial
+        );
+        assert_eq!(
+            repository
+                .verify_portable_export(root, &parallel_path, usize::MAX)
+                .unwrap(),
+            parallel
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -5442,6 +5695,23 @@ mod tests {
         }
         assert!(repository
             .export_portable_tree(root, &parallel_path, 1)
+            .is_err());
+        fs::write(serial_path.join("README"), b"tampered contents\n").unwrap();
+        assert!(repository
+            .verify_portable_export(root, &serial_path, 4)
+            .is_err());
+        fs::write(parallel_path.join("unexpected"), b"extra").unwrap();
+        assert!(repository
+            .verify_portable_export(root, &parallel_path, 4)
+            .is_err());
+        fs::remove_file(parallel_path.join("unexpected")).unwrap();
+        fs::write(
+            parallel_path.join(".loom-portable-complete"),
+            b"invalid receipt\n",
+        )
+        .unwrap();
+        assert!(repository
+            .verify_portable_export(root, &parallel_path, 4)
             .is_err());
         assert_eq!(repository.head().unwrap(), None);
         assert!(repository.status().unwrap().is_empty());
@@ -5486,6 +5756,17 @@ mod tests {
             Path::new("target")
         );
         assert_eq!(fs::read(destination.join("link")).unwrap(), b"target");
+        assert_eq!(
+            repository
+                .verify_portable_export(root, &destination, 8)
+                .unwrap(),
+            stats
+        );
+        fs::remove_file(destination.join("link")).unwrap();
+        std::os::unix::fs::symlink("other", destination.join("link")).unwrap();
+        assert!(repository
+            .verify_portable_export(root, &destination, 8)
+            .is_err());
     }
 
     #[test]
