@@ -189,7 +189,11 @@ impl ObjectBackend for SqliteObjectBackend {
         }
     }
     fn get(&self, id: ObjectId) -> Result<Vec<u8>> {
-        Self::read(&self.connection()?, id)
+        // Ordinary immutable queries never need a write-capable handle or the
+        // per-connection synchronous write policy. Open fresh existing state
+        // read-only; publication acknowledgment continues to use the separate
+        // bounded live-read path below.
+        Self::read(&self.read_connection()?, id)
     }
     fn get_batch_live(&self, ids: &[ObjectId], max_bytes: usize) -> Result<Option<Vec<Vec<u8>>>> {
         if ids.len() > crate::store::MAX_PUBLICATION_OBJECTS
@@ -309,7 +313,7 @@ impl ObjectBackend for SqliteObjectBackend {
         }
     }
     fn list_ids(&self) -> Result<Vec<ObjectId>> {
-        let conn = self.connection()?;
+        let conn = self.read_connection()?;
         let mut statement = conn.prepare("SELECT oid FROM loom_storage_objects ORDER BY oid")?;
         let rows = statement.query_map([], |r| r.get::<_, String>(0))?;
         rows.map(|row| ObjectId::parse(&row?)).collect()
@@ -540,10 +544,37 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         let bytes = encode_object(BLOB, b"never acknowledged").unwrap();
         assert!(backend.put_if_absent(object_id(&bytes), &bytes).is_err());
+        assert!(backend.get(object_id(&bytes)).is_err());
+        assert!(backend.list_ids().is_err());
         assert!(backend
             .get_batch_live(&[object_id(&bytes)], bytes.len())
             .is_err());
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn ordinary_queries_use_query_only_connections_and_reject_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("objects.sqlite");
+        let backend = SqliteObjectBackend::open(&path).unwrap();
+        let bytes = encode_object(BLOB, b"read-only query").unwrap();
+        let id = object_id(&bytes);
+        backend.put_if_absent(id, &bytes).unwrap();
+
+        let conn = backend.read_connection().unwrap();
+        assert_eq!(
+            conn.query_row("PRAGMA query_only", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(backend.get(id).unwrap(), bytes);
+        assert_eq!(backend.list_ids().unwrap(), vec![id]);
+
+        drop(conn);
+        std::fs::remove_file(&path).unwrap();
+        Connection::open(&path).unwrap();
+        assert!(backend.get(id).is_err());
+        assert!(backend.list_ids().is_err());
     }
 
     #[test]

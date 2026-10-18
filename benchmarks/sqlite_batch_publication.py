@@ -50,13 +50,19 @@ def command(root, argv, database=None, stdin=None):
     return result.stdout
 
 
-def measured(root, argv, database=None):
-    with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+def measured(root, argv, database=None, stdin=None):
+    with (tempfile.TemporaryFile() as output,
+          tempfile.TemporaryFile() as errors,
+          tempfile.TemporaryFile() as input_stream):
+        if stdin is not None:
+            input_stream.write(stdin)
+            input_stream.seek(0)
         started = time.perf_counter_ns()
         with subprocess.Popen(
             argv,
             cwd=root,
             env=environment(database),
+            stdin=input_stream if stdin is not None else None,
             stdout=output,
             stderr=errors,
         ) as child:
@@ -129,6 +135,8 @@ def scenario(args, files):
     paths = [f"files/{index % args.directories:04x}/{index:08d}.bin" for index in range(files)]
     changed = list(range(min(args.changed_files, files)))
     started_argv = {name: {phase: [] for phase in phases} for name in names}
+    read_samples = {name: {"query": [], "fsck": []} for name in names}
+    read_started_argv = {name: {"query": [], "fsck": []} for name in names}
 
     for repeat in range(args.repeat):
         order = names[repeat % len(names) :] + names[: repeat % len(names)]
@@ -186,15 +194,38 @@ def scenario(args, files):
                 ]
                 if name == "git":
                     revision = command(workspace, ["git", "rev-parse", "HEAD"]).decode().strip()
+                    query = b"".join((revision + ":" + path + "\n").encode() for path in paths)
+                    query_argv = ["git", "cat-file", "--batch"]
+                    query_metrics, query_output = measured(
+                        workspace, query_argv, stdin=query)
+                    parse_git_batch(query_output, expected)
+                    fsck_argv = ["git", "fsck", "--full"]
+                    fsck_metrics, _ = measured(workspace, fsck_argv)
+                    read_samples[name]["query"].append(query_metrics)
+                    read_samples[name]["fsck"].append(fsck_metrics)
+                    read_started_argv[name]["query"].append(query_argv)
+                    read_started_argv[name]["fsck"].append(fsck_argv)
                     listing = command(
                         workspace, ["git", "ls-tree", "-r", "--name-only", "-z", revision]
                     )
                     assert listing == b"".join(path.encode() + b"\0" for path in sorted(paths))
-                    query = b"".join((revision + ":" + path + "\n").encode() for path in paths)
-                    parse_git_batch(command(workspace, ["git", "cat-file", "--batch"], stdin=query), expected)
-                    command(workspace, ["git", "fsck", "--full"])
                     footprints[name].append(footprint([workspace / ".git"]))
                 else:
+                    revision = command(workspace, [binary, "log", "1"], database).decode().split()[1]
+                    requests = b"".join(
+                        json.dumps({"id": index, "op": "cat", "path": path}).encode() + b"\n"
+                        for index, path in enumerate(paths)
+                    )
+                    query_argv = [binary, "query", "--batch", "@" + revision]
+                    query_metrics, query_output = measured(
+                        workspace, query_argv, database, requests)
+                    parse_loom_batch(query_output, expected)
+                    fsck_argv = [binary, "fsck"]
+                    fsck_metrics, _ = measured(workspace, fsck_argv, database)
+                    read_samples[name]["query"].append(query_metrics)
+                    read_samples[name]["fsck"].append(fsck_metrics)
+                    read_started_argv[name]["query"].append(query_argv)
+                    read_started_argv[name]["fsck"].append(fsck_argv)
                     roots[name].append(
                         verify_loom(binary, workspace, database, paths, expected)
                     )
@@ -212,6 +243,16 @@ def scenario(args, files):
         }
         for name, phase_samples in samples.items()
     }
+    read_operations = {
+        name: {
+            operation: {
+                metric: distribution([sample[metric] for sample in values])
+                for metric in values[0]
+            }
+            for operation, values in operation_samples.items()
+        }
+        for name, operation_samples in read_samples.items()
+    }
     return {
         "files": files,
         "file_bytes": args.file_bytes,
@@ -220,6 +261,8 @@ def scenario(args, files):
         "changed_files": len(changed),
         "started_argv": started_argv,
         "operations": operations,
+        "read_operations": read_operations,
+        "read_started_argv": read_started_argv,
         "canonical_roots": roots,
         "metadata_footprints": footprints,
         "baseline_over_loom_p50": {
@@ -231,6 +274,16 @@ def scenario(args, files):
             phase: operations["git"][phase]["wall_ms"]["p50"]
             / operations["loom"][phase]["wall_ms"]["p50"]
             for phase in phases
+        },
+        "baseline_over_loom_read_p50": {
+            operation: read_operations["baseline"][operation]["wall_ms"]["p50"]
+            / read_operations["loom"][operation]["wall_ms"]["p50"]
+            for operation in ("query", "fsck")
+        },
+        "git_over_loom_read_p50": {
+            operation: read_operations["git"][operation]["wall_ms"]["p50"]
+            / read_operations["loom"][operation]["wall_ms"]["p50"]
+            for operation in ("query", "fsck")
         },
     }
 
@@ -275,7 +328,7 @@ def main():
         "baseline_loom_sha256": hashlib.sha256(Path(args.baseline_loom).read_bytes()).hexdigest(),
         "harness_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "metric_units": {
-            "wall_ms": "milliseconds; complete commit command or Git add+commit",
+            "wall_ms": "milliseconds; complete commit, batch query, or integrity command",
             "cpu_ms": "milliseconds",
             "max_rss_kib": "KiB",
             "rusage_inblock": "kernel counter units, not bytes",
@@ -286,7 +339,7 @@ def main():
             "fresh repository per engine/sample; identical bytes and nested paths",
             "Loom uses external SQLite objects with WAL and synchronous=FULL",
             f"candidate and baseline run identical complete commit arguments with explicit scan workers {args.scan_workers}; Git runs add+commit",
-            "fixture creation and byte/listing/fsck verification are outside timing",
+            "fixture creation and final repeated verification are outside timing; the first complete batch query and fsck after both commits are measured and checked",
             f"initial commit is the large changeset; incremental commit changes min({args.changed_files}, file count) files across up to {args.directories} directories",
             "engine order rotates and every Loom pair must produce identical canonical roots",
             "OS caches are not flushed; no controlled cold-cache evidence",
