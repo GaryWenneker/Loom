@@ -245,10 +245,7 @@ fn portable_migration_verify_requires_a_durable_checkpoint() {
     fs::write(root.join("tracked"), b"committed").unwrap();
     let committed = String::from_utf8(ok(root, &["commit", "-m", "base"])).unwrap();
     let revision = committed.split_whitespace().last().expect("commit ID");
-    let result = call(
-        root,
-        &["portable-migrate-verify", &format!("@{revision}")],
-    );
+    let result = call(root, &["portable-migrate-verify", &format!("@{revision}")]);
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("no portable migration checkpoint"));
 }
