@@ -5963,6 +5963,12 @@ mod tests {
         let revision = repository.commit("tester", "portable source").unwrap();
         let status = repository.status().unwrap();
         let objects = repository.store.ids().unwrap();
+        let indexed_before: i64 = repository
+            .db
+            .query_row("SELECT count(*) FROM revision_native_tree", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
 
         let serial = repository.plan_portable_migration(revision, 1).unwrap();
         let parallel = repository
@@ -5980,7 +5986,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(indexed, 0);
+        assert_eq!(indexed, indexed_before);
 
         let shared = repository
             .publish_portable_blob(crate::PortableFileKind::Regular, b"shared bytes")
