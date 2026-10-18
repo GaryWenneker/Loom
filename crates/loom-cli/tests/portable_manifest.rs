@@ -210,7 +210,12 @@ fn portable_migration_checkpoint_is_idempotent_and_preserves_workspace_state() {
     assert_eq!(first, retry);
     let output = String::from_utf8(first).unwrap();
     assert_eq!(
-        output.split_whitespace().nth(3).unwrap().trim_end_matches(':').len(),
+        output
+            .split_whitespace()
+            .nth(3)
+            .unwrap()
+            .trim_end_matches(':')
+            .len(),
         64
     );
     assert_eq!(ok(root, &["status"]), status);
