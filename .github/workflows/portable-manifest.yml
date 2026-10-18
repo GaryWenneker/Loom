@@ -15,6 +15,7 @@ on:
       - "benchmarks/portable_tree.py"
       - "benchmarks/portable_export.py"
       - "benchmarks/portable_verify.py"
+      - "benchmarks/portable_migration_plan.py"
       - "docs/portable-v2-manifests.md"
       - ".github/workflows/portable-manifest.yml"
 
@@ -73,6 +74,11 @@ jobs:
             --baseline-loom "${{ github.workspace }}/baseline-target/release/loom" \
             --files 100 1000 --file-bytes 4096 --workers 1 2 4 0 --repeat 5 \
             --output artifacts/portable-verify.json
+          python3 benchmarks/portable_migration_plan.py \
+            --loom "${{ github.workspace }}/candidate-target/release/loom" \
+            --baseline-loom "${{ github.workspace }}/baseline-target/release/loom" \
+            --files 100 1000 --file-bytes 4096 --workers 1 2 4 0 --repeat 5 \
+            --output artifacts/portable-migration-plan.json
       - name: Record exact provenance
         run: |
           python3 - <<'PY'
@@ -92,6 +98,7 @@ jobs:
               "tree_harness_sha256": hashlib.sha256(Path("candidate/benchmarks/portable_tree.py").read_bytes()).hexdigest(),
               "export_harness_sha256": hashlib.sha256(Path("candidate/benchmarks/portable_export.py").read_bytes()).hexdigest(),
               "verify_harness_sha256": hashlib.sha256(Path("candidate/benchmarks/portable_verify.py").read_bytes()).hexdigest(),
+              "migration_plan_harness_sha256": hashlib.sha256(Path("candidate/benchmarks/portable_migration_plan.py").read_bytes()).hexdigest(),
           }
           Path("candidate/artifacts/provenance.json").write_text(json.dumps(data, indent=2) + "\n")
           PY

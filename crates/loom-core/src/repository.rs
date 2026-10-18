@@ -33,6 +33,79 @@ pub struct PortableExportStats {
     pub bytes: u64,
 }
 
+/// Exact read-only projection of one v1 revision into portable-v2 IDs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PortableMigrationPlan {
+    pub root: ObjectId,
+    pub files: usize,
+    /// Includes the root directory.
+    pub directories: usize,
+    pub logical_bytes: u64,
+    pub chunks: usize,
+    pub objects: usize,
+}
+
+#[derive(Default)]
+struct PortablePlanDirectory {
+    files: BTreeMap<String, ObjectId>,
+    directories: BTreeMap<String, PortablePlanDirectory>,
+}
+
+impl PortablePlanDirectory {
+    fn insert(&mut self, path: &str, manifest: ObjectId) -> Result<()> {
+        let (name, rest) = path
+            .split_once('/')
+            .map_or((path, None), |(name, rest)| (name, Some(rest)));
+        if let Some(rest) = rest {
+            if self.files.contains_key(name) {
+                return Err(Error::Invalid(
+                    "portable migration file/directory collision".into(),
+                ));
+            }
+            self.directories
+                .entry(name.to_owned())
+                .or_default()
+                .insert(rest, manifest)
+        } else {
+            if self.directories.contains_key(name)
+                || self.files.insert(name.to_owned(), manifest).is_some()
+            {
+                return Err(Error::Invalid("portable migration path collision".into()));
+            }
+            Ok(())
+        }
+    }
+
+    fn root_id(
+        &self,
+        objects: &mut HashSet<ObjectId>,
+        directories: &mut usize,
+    ) -> Result<ObjectId> {
+        let mut entries = Vec::with_capacity(self.files.len() + self.directories.len());
+        for (name, object) in &self.files {
+            entries.push(crate::PortableTreeEntry {
+                name: name.clone(),
+                kind: crate::PortableTreeEntryKind::File,
+                object: *object,
+            });
+        }
+        for (name, directory) in &self.directories {
+            entries.push(crate::PortableTreeEntry {
+                name: name.clone(),
+                kind: crate::PortableTreeEntryKind::Directory,
+                object: directory.root_id(objects, directories)?,
+            });
+        }
+        entries.sort_by(|left, right| left.name.cmp(&right.name));
+        let id = object_id(&crate::PortableTree { entries }.encode()?);
+        objects.insert(id);
+        *directories = directories
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("portable migration directory count overflow".into()))?;
+        Ok(id)
+    }
+}
+
 /// File contents before and after a change. None means the file is absent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileDiff {
@@ -925,6 +998,86 @@ impl Repository {
     /// Read and live-verify a complete portable directory closure.
     pub fn portable_tree(&self, id: ObjectId) -> Result<crate::PortableTree> {
         self.portable_tree_inner(id, 0, &mut std::collections::BTreeSet::new())
+    }
+
+    /// Compute the portable-v2 root and closure counts for a v1 revision
+    /// without publishing objects, indexes, refs, staging or workspace state.
+    /// V1 did not record modes, symlinks or empty directories, so every
+    /// tracked path is explicitly projected as a regular file.
+    pub fn plan_portable_migration(
+        &self,
+        revision: ObjectId,
+        requested_workers: usize,
+    ) -> Result<PortableMigrationPlan> {
+        let state = self.state_at(Some(revision))?;
+        let work = state
+            .values()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let reader = self.store.read_session()?;
+        let workers = crate::worktree_scan::worker_limit(
+            requested_workers,
+            std::thread::available_parallelism().map_or(1, usize::from),
+        )
+        .min(reader.max_concurrent_reads().clamp(1, 8));
+        let prepared = crate::workers::parallel_map_min(&work, workers, 2, &|blob| {
+            let encoded = reader.get(*blob)?;
+            let (kind, payload) = decode_object(&encoded)?;
+            if kind != BLOB {
+                return Err(Error::Invalid("v1 revision references a non-blob".into()));
+            }
+            let chunks = payload
+                .chunks(crate::PORTABLE_CHUNK_BYTES)
+                .map(|chunk| encode_object(BLOB, chunk).map(|bytes| object_id(&bytes)))
+                .collect::<Result<Vec<_>>>()?;
+            let manifest = crate::PortableBlobManifest {
+                kind: crate::PortableFileKind::Regular,
+                logical_bytes: payload.len() as u64,
+                chunks: chunks.clone(),
+            };
+            Ok((
+                *blob,
+                object_id(&manifest.encode()?),
+                payload.len() as u64,
+                chunks,
+            ))
+        })?;
+
+        let mut manifests = BTreeMap::new();
+        let mut objects = HashSet::new();
+        let mut blob_sizes = BTreeMap::new();
+        let mut chunk_count = 0usize;
+        for (blob, manifest, bytes, chunks) in prepared {
+            manifests.insert(blob, manifest);
+            blob_sizes.insert(blob, bytes);
+            objects.insert(manifest);
+            for chunk in chunks {
+                objects.insert(chunk);
+                chunk_count = chunk_count.checked_add(1).ok_or_else(|| {
+                    Error::Invalid("portable migration chunk count overflow".into())
+                })?;
+            }
+        }
+        let mut logical_bytes = 0u64;
+        let mut tree = PortablePlanDirectory::default();
+        for (path, blob) in &state {
+            logical_bytes = logical_bytes
+                .checked_add(blob_sizes[blob])
+                .ok_or_else(|| Error::Invalid("portable migration byte count overflow".into()))?;
+            tree.insert(path, manifests[blob])?;
+        }
+        let mut directories = 0usize;
+        let root = tree.root_id(&mut objects, &mut directories)?;
+        Ok(PortableMigrationPlan {
+            root,
+            files: state.len(),
+            directories,
+            logical_bytes,
+            chunks: chunk_count,
+            objects: objects.len(),
+        })
     }
 
     fn materialize_portable_directory(
@@ -5797,6 +5950,96 @@ mod tests {
             .is_err());
         assert!(!destination.exists());
         assert_eq!(repository.head().unwrap(), None);
+    }
+
+    #[test]
+    fn portable_migration_plan_is_deterministic_read_only_and_exact() {
+        let repository_dir = tempfile::tempdir().unwrap();
+        let repository = Repository::init(repository_dir.path()).unwrap();
+        fs::create_dir(repository_dir.path().join("sub")).unwrap();
+        fs::write(repository_dir.path().join("same"), b"shared bytes").unwrap();
+        fs::write(repository_dir.path().join("sub/same"), b"shared bytes").unwrap();
+        fs::write(repository_dir.path().join("sub/other"), b"other bytes").unwrap();
+        let revision = repository.commit("tester", "portable source").unwrap();
+        let status = repository.status().unwrap();
+        let objects = repository.store.ids().unwrap();
+        let indexed_before: i64 = repository
+            .db
+            .query_row("SELECT count(*) FROM revision_native_tree", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+
+        let serial = repository.plan_portable_migration(revision, 1).unwrap();
+        let parallel = repository
+            .plan_portable_migration(revision, usize::MAX)
+            .unwrap();
+        assert_eq!(serial, parallel);
+        assert_eq!(serial.files, 3);
+        assert_eq!(serial.directories, 2);
+        assert_eq!(serial.logical_bytes, 35);
+        assert_eq!(repository.store.ids().unwrap(), objects);
+        assert_eq!(repository.status().unwrap(), status);
+        let indexed: i64 = repository
+            .db
+            .query_row("SELECT count(*) FROM revision_native_tree", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(indexed, indexed_before);
+
+        let shared = repository
+            .publish_portable_blob(crate::PortableFileKind::Regular, b"shared bytes")
+            .unwrap();
+        let other = repository
+            .publish_portable_blob(crate::PortableFileKind::Regular, b"other bytes")
+            .unwrap();
+        let sub = repository
+            .publish_portable_tree(&crate::PortableTree {
+                entries: vec![
+                    crate::PortableTreeEntry {
+                        name: "other".into(),
+                        kind: crate::PortableTreeEntryKind::File,
+                        object: other,
+                    },
+                    crate::PortableTreeEntry {
+                        name: "same".into(),
+                        kind: crate::PortableTreeEntryKind::File,
+                        object: shared,
+                    },
+                ],
+            })
+            .unwrap();
+        let root = repository
+            .publish_portable_tree(&crate::PortableTree {
+                entries: vec![
+                    crate::PortableTreeEntry {
+                        name: "same".into(),
+                        kind: crate::PortableTreeEntryKind::File,
+                        object: shared,
+                    },
+                    crate::PortableTreeEntry {
+                        name: "sub".into(),
+                        kind: crate::PortableTreeEntryKind::Directory,
+                        object: sub,
+                    },
+                ],
+            })
+            .unwrap();
+        assert_eq!(serial.root, root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn portable_migration_plan_rejects_cross_platform_path_collisions() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = Repository::init(directory.path()).unwrap();
+        fs::write(directory.path().join("A"), b"upper").unwrap();
+        fs::write(directory.path().join("a"), b"lower").unwrap();
+        let revision = repository.commit("tester", "collision").unwrap();
+        let before = repository.store.ids().unwrap();
+        assert!(repository.plan_portable_migration(revision, 8).is_err());
+        assert_eq!(repository.store.ids().unwrap(), before);
     }
 
     #[test]
