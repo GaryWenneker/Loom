@@ -12,6 +12,7 @@ loom portable-export @TREE_ID new-workspace --workers 0
 loom portable-verify @TREE_ID new-workspace --workers 0
 loom portable-migrate-plan @CHANGESET_ID --workers 0
 loom portable-migrate-publish @CHANGESET_ID --workers 0
+loom portable-migrate-checkpoint @CHANGESET_ID --workers 0
 ```
 
 The object records regular, executable or symbolic-link identity, the exact
@@ -121,8 +122,23 @@ This is deliberately additive publication, not a format switch. No ref, native
 index, stage row, worktree file or repository version marker changes. Failure
 before preflight completion publishes nothing; a later I/O failure can leave
 only unreachable immutable objects from earlier durable windows, so retry is
-safe. Durable backup, a version-state transaction, crash recovery,
-rollback/restore and no-downgrade enforcement remain future migration steps.
+safe.
+
+`portable-migrate-checkpoint` adds a narrow durable prepared-state boundary.
+It runs the same publication path, recursively live-verifies the root again at
+the receipt boundary, then conditionally inserts an immutable source revision,
+portable root and exact closure counts into the repository's `synchronous=FULL`
+SQLite metadata transaction. An identical retry is idempotent. If that source
+revision already has any different receipt value, the transaction fails closed
+and never overwrites it. A crash before the receipt commit leaves only safe
+additive objects and retry recomputes the same state; a committed receipt means
+the closure was complete and verified when recorded.
+
+The receipt is not a restore-capable backup, ref update, repository-format
+activation, migration of history, rollback implementation or no-downgrade
+marker. Those remain future migration steps. Receipts are local repository
+metadata and therefore must eventually be included in the verified backup
+contract rather than treated as an independent backup.
 
 ## Benchmark classification
 
@@ -173,6 +189,12 @@ worker requests. Candidate and previous Loom again receive identical arguments;
 unsupported previous binaries get no invented version ratio. Git `fsck` remains
 only a closure-check diagnostic and is not presented as equivalent publication.
 
+Its `--operation checkpoint` mode measures that same complete workflow plus the
+final live verification and durable SQLite receipt transaction. Candidate and
+previous Loom receive identical commands and worker requests; an older binary
+without the command is classified unsupported. Git `fsck` remains a diagnostic
+closure check and has no equivalent prepared-migration receipt contract.
+
 The harness records p50/p95/p99 wall/CPU, peak RSS, kernel block counters and
 logical/allocated object-store bytes for small, multi-chunk and above-64-MiB
 payloads. Each sample uses a fresh repository. Verification and idempotent
@@ -182,9 +204,9 @@ chunks. OS caches are not flushed.
 
 ## Remaining migration gates
 
-This remains additive closure publication rather than an applied v1-to-v2 migration. Full Unicode
-collision policy, history conversion, backup/restore,
-crash recovery, rollback/no-downgrade state, remote transport
+This remains prepared additive closure publication rather than an applied v1-to-v2 migration. Full Unicode
+collision policy, history conversion, verified backup/restore,
+activation recovery, rollback/no-downgrade state, remote transport
 and three-OS golden-vector evidence remain open under issue #13. Refs continue
 to use the existing atomic compare-and-swap path and do not yet reference these
 manifests. Portable export is an isolated materializer, not yet a named sparse

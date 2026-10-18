@@ -177,6 +177,47 @@ fn portable_migration_publication_is_exact_idempotent_and_preserves_state() {
 }
 
 #[test]
+fn portable_migration_checkpoint_is_idempotent_and_preserves_workspace_state() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    ok(root, &["init"]);
+    fs::write(root.join("tracked"), b"committed").unwrap();
+    let committed = String::from_utf8(ok(root, &["commit", "-m", "base"])).unwrap();
+    let revision = committed.split_whitespace().last().expect("commit ID");
+    fs::write(root.join("tracked"), b"unstaged").unwrap();
+    fs::write(root.join("staged"), b"staged").unwrap();
+    ok(root, &["add", "staged"]);
+    let status = ok(root, &["status"]);
+
+    let first = ok(
+        root,
+        &[
+            "portable-migrate-checkpoint",
+            &format!("@{revision}"),
+            "--workers",
+            "8",
+        ],
+    );
+    let retry = ok(
+        root,
+        &[
+            "portable-migrate-checkpoint",
+            &format!("@{revision}"),
+            "--workers",
+            "1",
+        ],
+    );
+    assert_eq!(first, retry);
+    let output = String::from_utf8(first).unwrap();
+    assert_eq!(
+        output.split_whitespace().nth(3).unwrap().trim_end_matches(':').len(),
+        64
+    );
+    assert_eq!(ok(root, &["status"]), status);
+    ok(root, &["fsck"]);
+}
+
+#[test]
 fn portable_manifest_streams_files_beyond_the_legacy_cli_cap() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path();

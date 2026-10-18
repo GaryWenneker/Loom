@@ -116,7 +116,7 @@ def main():
     parser.add_argument("--file-bytes", type=int, default=4096)
     parser.add_argument("--workers", nargs="+", type=int, default=[1, 2, 4, 0])
     parser.add_argument("--repeat", type=int, default=5)
-    parser.add_argument("--operation", choices=["plan", "publish"], default="plan")
+    parser.add_argument("--operation", choices=["plan", "publish", "checkpoint"], default="plan")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     report = {
