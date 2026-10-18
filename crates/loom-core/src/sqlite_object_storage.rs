@@ -174,7 +174,10 @@ impl ObjectBackend for SqliteObjectBackend {
                     .0
                     .lock()
                     .map_err(|_| Error::Invalid("SQLite reader lock poisoned".into()))?;
-                SqliteObjectBackend::read(&conn, id)
+                // Reuse the parsed query, never its rows or a read transaction.
+                // The statement is reset before returning to the cache.
+                let mut query = conn.prepare_cached(READ_OBJECT_SQL)?;
+                SqliteObjectBackend::read_bounded(&mut query, id, MAX_OBJECT_SIZE + 15)
             }
         }
         Ok(Some(Arc::new(Reader(Mutex::new(self.read_connection()?)))))
@@ -189,7 +192,7 @@ impl ObjectBackend for SqliteObjectBackend {
         }
     }
     fn get(&self, id: ObjectId) -> Result<Vec<u8>> {
-        Self::read(&self.connection()?, id)
+        Self::read(&self.read_connection()?, id)
     }
     fn get_batch_live(&self, ids: &[ObjectId], max_bytes: usize) -> Result<Option<Vec<Vec<u8>>>> {
         if ids.len() > crate::store::MAX_PUBLICATION_OBJECTS
@@ -309,7 +312,7 @@ impl ObjectBackend for SqliteObjectBackend {
         }
     }
     fn list_ids(&self) -> Result<Vec<ObjectId>> {
-        let conn = self.connection()?;
+        let conn = self.read_connection()?;
         let mut statement = conn.prepare("SELECT oid FROM loom_storage_objects ORDER BY oid")?;
         let rows = statement.query_map([], |r| r.get::<_, String>(0))?;
         rows.map(|row| ObjectId::parse(&row?)).collect()
@@ -444,6 +447,54 @@ mod tests {
     }
 
     #[test]
+    fn cached_reader_observes_commits_deletions_and_recovers_after_read_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("objects.sqlite");
+        let backend = SqliteObjectBackend::open(&path).unwrap();
+        let bytes = encode_object(BLOB, b"first").unwrap();
+        let id = object_id(&bytes);
+        backend.put_if_absent(id, &bytes).unwrap();
+        let reader = backend.open_read_session().unwrap().unwrap();
+        assert_eq!(reader.get(id).unwrap(), bytes);
+
+        let mut writer = Connection::open(&path).unwrap();
+        let tx = writer.transaction().unwrap();
+        tx.execute(
+            "UPDATE loom_storage_objects SET envelope=?1 WHERE oid=?2",
+            params![b"corrupt".as_slice(), id.to_string()],
+        )
+        .unwrap();
+        assert_eq!(reader.get(id).unwrap(), bytes);
+        tx.commit().unwrap();
+        assert!(reader.get(id).is_err());
+        assert!(backend.get(id).is_err());
+        writer
+            .execute(
+                "UPDATE loom_storage_objects SET envelope=?1 WHERE oid=?2",
+                params![&bytes, id.to_string()],
+            )
+            .unwrap();
+        assert_eq!(reader.get(id).unwrap(), bytes);
+
+        let second = encode_object(BLOB, b"second").unwrap();
+        let second_id = object_id(&second);
+        backend.put_if_absent(second_id, &second).unwrap();
+        assert_eq!(reader.get(second_id).unwrap(), second);
+        writer
+            .execute(
+                "DELETE FROM loom_storage_objects WHERE oid=?1",
+                [id.to_string()],
+            )
+            .unwrap();
+        assert!(matches!(reader.get(id), Err(Error::Io(e))
+            if e.kind() == std::io::ErrorKind::NotFound));
+        assert!(matches!(backend.get(id), Err(Error::Io(e))
+            if e.kind() == std::io::ErrorKind::NotFound));
+        assert_eq!(reader.get(second_id).unwrap(), second);
+        assert_eq!(backend.list_ids().unwrap(), vec![second_id]);
+    }
+
+    #[test]
     fn live_readback_allows_one_oversized_canonical_object_without_unbounded_windows() {
         let dir = tempfile::tempdir().unwrap();
         let backend = SqliteObjectBackend::open(dir.path().join("objects.sqlite")).unwrap();
@@ -540,6 +591,8 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         let bytes = encode_object(BLOB, b"never acknowledged").unwrap();
         assert!(backend.put_if_absent(object_id(&bytes), &bytes).is_err());
+        assert!(backend.get(object_id(&bytes)).is_err());
+        assert!(backend.list_ids().is_err());
         assert!(backend
             .get_batch_live(&[object_id(&bytes)], bytes.len())
             .is_err());

@@ -45,6 +45,15 @@ rows without replacing them. SQLite remains in WAL mode with
 Providers that do not implement atomic batches retain the existing bounded
 scalar/parallel fallback.
 
+Ordinary scalar `get`/`exists` and object enumeration also open fresh read-only,
+`query_only` connections. They no longer configure synchronous writes for a read.
+The write connection still requires WAL with `synchronous=FULL`. Missing storage
+is never created by either read path, and corrupt objects remain errors.
+Retained immutable-query sessions reuse one parsed SELECT, not object payloads
+or an open read transaction. Every read still checks the row length, canonical
+envelope and BLAKE3 ID. Publication, closure verification and fsck continue to
+use fresh live storage rather than those retained sessions.
+
 ## Reproduce the comparison
 
 ```sh
@@ -74,5 +83,14 @@ and `fsck` occur outside timing. The report retains p50/p95/p99 wall/CPU, peak
 RSS, POSIX block-I/O counters, and logical/allocated metadata bytes. It does not
 control cold caches or measure network, remote caches, multi-agent contention or
 power-loss recovery.
+
+With `--read-workflows`, schema 3 additionally times complete `fsck`, history,
+listing and batch-content commands after the two commits. Each runs in a new
+process in that order. Batch queries read every file twice with Loom's object
+cache disabled, and record input digests and request counts. Listing can populate
+the derived historical index before the query; these are not cold-query results.
+Output parsing, byte comparison and independent final verification remain
+outside timing. Git history and fsck are diagnostic comparisons because the
+formats and integrity obligations differ.
 
 [Measured complete workflows and retained prototype results](performance-sqlite-live-read-20261018.md).

@@ -50,8 +50,11 @@ def command(root, argv, database=None, stdin=None):
     return result.stdout
 
 
-def measured(root, argv, database=None):
-    with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+def measured(root, argv, database=None, stdin=None):
+    with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors, tempfile.TemporaryFile() as input_file:
+        if stdin is not None:
+            input_file.write(stdin)
+            input_file.seek(0)
         started = time.perf_counter_ns()
         with subprocess.Popen(
             argv,
@@ -59,6 +62,7 @@ def measured(root, argv, database=None):
             env=environment(database),
             stdout=output,
             stderr=errors,
+            stdin=input_file if stdin is not None else subprocess.DEVNULL,
         ) as child:
             timer = threading.Timer(600, child.kill)
             timer.daemon = True
@@ -120,15 +124,60 @@ def verify_loom(binary, workspace, database, paths, expected):
     return json.loads(stats)["root"]
 
 
+def measure_reads(workspace, binary, database, paths, expected):
+    """Time fresh CLI processes, then independently check their complete output."""
+    if database is None:
+        revision = command(workspace, ["git", "rev-parse", "HEAD"]).decode().strip()
+        requests = b"".join(
+            (revision + ":" + path + "\n").encode() for path in paths * 2)
+        commands = {
+            "fsck": ["git", "fsck", "--full"],
+            "history": ["git", "log", "--max-count=10000", "--format=%H %s"],
+            "files": ["git", "ls-tree", "-r", "--name-only", "-z", revision],
+            "query": ["git", "cat-file", "--batch"],
+        }
+        parser = parse_git_batch
+    else:
+        revision = command(workspace, [binary, "log", "1"], database).decode().split()[1]
+        requests = b"".join(
+            json.dumps({"id": index, "op": "cat", "path": path}).encode() + b"\n"
+            for index, path in enumerate(paths * 2))
+        commands = {
+            "fsck": [binary, "fsck"],
+            "history": [binary, "log", "10000"],
+            "files": [binary, "files", "@" + revision, "--null"],
+            "query": [binary, "query", "--batch", "@" + revision, "--cache-bytes", "0"],
+        }
+        parser = parse_loom_batch
+    reads = {}
+    for phase, argv in commands.items():
+        metrics, output = measured(
+            workspace, argv, database, requests if phase == "query" else None)
+        reads[phase] = metrics
+        if phase == "history":
+            history = output.decode()
+            assert "initial" in history and "incremental" in history
+        if phase == "files":
+            assert output == b"".join(path.encode() + b"\0" for path in sorted(paths))
+        if phase == "query":
+            parser(output, expected * 2)
+    return reads, commands, {
+        "sha256": hashlib.sha256(requests).hexdigest(),
+        "bytes": len(requests), "requests": len(paths) * 2,
+    }
+
+
 def scenario(args, files):
     names = ["baseline", "loom", "git"]
     phases = ["initial", "incremental"]
-    samples = {name: {phase: [] for phase in phases} for name in names}
+    read_phases = ["fsck", "history", "files", "query"] if args.read_workflows else []
+    samples = {name: {phase: [] for phase in phases + read_phases} for name in names}
     roots = {name: [] for name in names if name != "git"}
     footprints = {name: [] for name in names}
     paths = [f"files/{index % args.directories:04x}/{index:08d}.bin" for index in range(files)]
     changed = list(range(min(args.changed_files, files)))
-    started_argv = {name: {phase: [] for phase in phases} for name in names}
+    started_argv = {name: {phase: [] for phase in phases + read_phases} for name in names}
+    query_inputs = {name: [] for name in names}
 
     for repeat in range(args.repeat):
         order = names[repeat % len(names) :] + names[: repeat % len(names)]
@@ -184,6 +233,13 @@ def scenario(args, files):
                     content(index, args.file_bytes, int(index in changed))
                     for index in range(files)
                 ]
+                if read_phases:
+                    reads, argv, query_input = measure_reads(
+                        workspace, binary, database, paths, expected)
+                    for phase, metrics in reads.items():
+                        samples[name][phase].append(metrics)
+                        started_argv[name][phase].append(argv[phase])
+                    query_inputs[name].append(query_input)
                 if name == "git":
                     revision = command(workspace, ["git", "rev-parse", "HEAD"]).decode().strip()
                     listing = command(
@@ -219,18 +275,19 @@ def scenario(args, files):
         "loom_scan_workers": args.scan_workers,
         "changed_files": len(changed),
         "started_argv": started_argv,
+        "query_stdin": query_inputs,
         "operations": operations,
         "canonical_roots": roots,
         "metadata_footprints": footprints,
         "baseline_over_loom_p50": {
             phase: operations["baseline"][phase]["wall_ms"]["p50"]
             / operations["loom"][phase]["wall_ms"]["p50"]
-            for phase in phases
+            for phase in phases + read_phases
         },
         "git_over_loom_p50": {
             phase: operations["git"][phase]["wall_ms"]["p50"]
             / operations["loom"][phase]["wall_ms"]["p50"]
-            for phase in phases
+            for phase in phases + read_phases
         },
     }
 
@@ -245,6 +302,7 @@ def main():
     parser.add_argument("--changed-files", type=int, default=8)
     parser.add_argument("--scan-workers", type=int, default=0)
     parser.add_argument("--repeat", type=int, default=7)
+    parser.add_argument("--read-workflows", action="store_true")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     if not hasattr(os, "wait4"):
@@ -255,7 +313,7 @@ def main():
         parser.error("positive directories/changed files and nonnegative workers required")
 
     report = {
-        "schema_version": 2,
+        "schema_version": 3 if args.read_workflows else 2,
         "host": {
             "platform": platform.platform(),
             "cpus": os.cpu_count(),
@@ -275,7 +333,7 @@ def main():
         "baseline_loom_sha256": hashlib.sha256(Path(args.baseline_loom).read_bytes()).hexdigest(),
         "harness_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "metric_units": {
-            "wall_ms": "milliseconds; complete commit command or Git add+commit",
+            "wall_ms": "milliseconds; complete command or Git add+commit",
             "cpu_ms": "milliseconds",
             "max_rss_kib": "KiB",
             "rusage_inblock": "kernel counter units, not bytes",
@@ -292,6 +350,10 @@ def main():
             "OS caches are not flushed; no controlled cold-cache evidence",
             "local filesystem only; network, remote cache and multi-agent traffic are unmeasured",
             "no durability setting is relaxed and no power-loss certification is claimed",
+            "optional read workflows run once per process after two fresh commits, in fsck/history/files/query order; ordinary validation runs afterwards",
+            "query reads every file twice with Loom's object cache disabled; request input is prepared outside timing and its digest is recorded",
+            "files can populate the derived historical lookup used by query; this is not a cold-query benchmark",
+            "Git fsck and history are diagnostics with different object formats and integrity contracts, not portable/native-format equivalence",
         ],
         "scenarios": [],
     }
