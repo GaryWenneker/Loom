@@ -51,6 +51,20 @@ struct PortablePlanDirectory {
     directories: BTreeMap<String, PortablePlanDirectory>,
 }
 
+struct PortableMigrationProjection {
+    plan: PortableMigrationPlan,
+    state: BTreeMap<String, ObjectId>,
+    manifests: BTreeMap<ObjectId, ObjectId>,
+    blob_sizes: BTreeMap<ObjectId, u64>,
+    tree: PortablePlanDirectory,
+}
+
+struct PreparedMigrationBlob {
+    source: ObjectId,
+    manifest: ObjectId,
+    objects: Vec<(ObjectId, Vec<u8>)>,
+}
+
 impl PortablePlanDirectory {
     fn insert(&mut self, path: &str, manifest: ObjectId) -> Result<()> {
         let (name, rest) = path
@@ -102,6 +116,29 @@ impl PortablePlanDirectory {
         *directories = directories
             .checked_add(1)
             .ok_or_else(|| Error::Invalid("portable migration directory count overflow".into()))?;
+        Ok(id)
+    }
+
+    fn encoded_objects(&self, objects: &mut Vec<(ObjectId, Vec<u8>)>) -> Result<ObjectId> {
+        let mut entries = Vec::with_capacity(self.files.len() + self.directories.len());
+        for (name, object) in &self.files {
+            entries.push(crate::PortableTreeEntry {
+                name: name.clone(),
+                kind: crate::PortableTreeEntryKind::File,
+                object: *object,
+            });
+        }
+        for (name, directory) in &self.directories {
+            entries.push(crate::PortableTreeEntry {
+                name: name.clone(),
+                kind: crate::PortableTreeEntryKind::Directory,
+                object: directory.encoded_objects(objects)?,
+            });
+        }
+        entries.sort_by(|left, right| left.name.cmp(&right.name));
+        let encoded = crate::PortableTree { entries }.encode()?;
+        let id = object_id(&encoded);
+        objects.push((id, encoded));
         Ok(id)
     }
 }
@@ -1009,6 +1046,16 @@ impl Repository {
         revision: ObjectId,
         requested_workers: usize,
     ) -> Result<PortableMigrationPlan> {
+        Ok(self
+            .portable_migration_projection(revision, requested_workers)?
+            .plan)
+    }
+
+    fn portable_migration_projection(
+        &self,
+        revision: ObjectId,
+        requested_workers: usize,
+    ) -> Result<PortableMigrationProjection> {
         let state = self.state_at(Some(revision))?;
         let work = state
             .values()
@@ -1070,14 +1117,128 @@ impl Repository {
         }
         let mut directories = 0usize;
         let root = tree.root_id(&mut objects, &mut directories)?;
-        Ok(PortableMigrationPlan {
+        let plan = PortableMigrationPlan {
             root,
             files: state.len(),
             directories,
             logical_bytes,
             chunks: chunk_count,
             objects: objects.len(),
+        };
+        Ok(PortableMigrationProjection {
+            plan,
+            state,
+            manifests,
+            blob_sizes,
+            tree,
         })
+    }
+
+    fn prepare_migration_blob(
+        reader: &std::sync::Arc<dyn crate::storage_backend::ObjectReadSession>,
+        blob: &ObjectId,
+    ) -> Result<PreparedMigrationBlob> {
+        let encoded = reader.get(*blob)?;
+        let (kind, payload) = decode_object(&encoded)?;
+        if kind != BLOB {
+            return Err(Error::Invalid("v1 revision references a non-blob".into()));
+        }
+        let mut objects = Vec::new();
+        let mut chunks = Vec::new();
+        for chunk in payload.chunks(crate::PORTABLE_CHUNK_BYTES) {
+            let encoded = encode_object(BLOB, chunk)?;
+            let id = object_id(&encoded);
+            chunks.push(id);
+            objects.push((id, encoded));
+        }
+        let encoded = crate::PortableBlobManifest {
+            kind: crate::PortableFileKind::Regular,
+            logical_bytes: payload.len() as u64,
+            chunks,
+        }
+        .encode()?;
+        let manifest = object_id(&encoded);
+        objects.push((manifest, encoded));
+        Ok(PreparedMigrationBlob {
+            source: *blob,
+            manifest,
+            objects,
+        })
+    }
+
+    /// Durably publish the exact additive portable-v2 closure described by
+    /// [`Self::plan_portable_migration`]. The full read-only preflight runs
+    /// before publication. Objects are conditionally created in bounded
+    /// transactional windows; refs, indexes, staging and the worktree remain
+    /// unchanged. A retry is idempotent. A later failure may leave only
+    /// unreachable immutable objects from already durable windows.
+    pub fn publish_portable_migration(
+        &self,
+        revision: ObjectId,
+        requested_workers: usize,
+    ) -> Result<PortableMigrationPlan> {
+        let projection = self.portable_migration_projection(revision, requested_workers)?;
+        let work = projection
+            .state
+            .values()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let reader = self.store.read_session()?;
+        let workers = crate::worktree_scan::worker_limit(
+            requested_workers,
+            std::thread::available_parallelism().map_or(1, usize::from),
+        )
+        .min(reader.max_concurrent_reads().clamp(1, 8));
+        let mut publication = self.store.publisher();
+        let mut start = 0usize;
+        while start < work.len() {
+            let mut end = start;
+            let mut bytes = 0u64;
+            while end < work.len() {
+                let next = projection.blob_sizes[&work[end]];
+                if end != start
+                    && (end - start == PORTABLE_PREPARE_WINDOW_FILES
+                        || bytes.saturating_add(next) > PORTABLE_PREPARE_WINDOW_BYTES)
+                {
+                    break;
+                }
+                bytes = bytes.saturating_add(next);
+                end += 1;
+                if next > PORTABLE_PREPARE_WINDOW_BYTES {
+                    break;
+                }
+            }
+            let prepared =
+                crate::workers::parallel_map_min(&work[start..end], workers, 2, &|blob| {
+                    Self::prepare_migration_blob(&reader, blob)
+                })?;
+            for blob in prepared {
+                if projection.manifests[&blob.source] != blob.manifest {
+                    return Err(Error::Invalid(
+                        "portable migration changed after preflight".into(),
+                    ));
+                }
+                for (id, encoded) in blob.objects {
+                    publication.push(id, encoded)?;
+                }
+            }
+            start = end;
+        }
+        let mut trees = Vec::new();
+        let root = projection.tree.encoded_objects(&mut trees)?;
+        if root != projection.plan.root {
+            return Err(Error::Invalid(
+                "portable migration tree changed after preflight".into(),
+            ));
+        }
+        for (id, encoded) in trees {
+            publication.push(id, encoded)?;
+        }
+        publication.finish()?;
+        self.portable_tree(root)?;
+        Ok(projection.plan)
     }
 
     fn materialize_portable_directory(
@@ -6039,7 +6200,36 @@ mod tests {
         let revision = repository.commit("tester", "collision").unwrap();
         let before = repository.store.ids().unwrap();
         assert!(repository.plan_portable_migration(revision, 8).is_err());
+        assert!(repository.publish_portable_migration(revision, 8).is_err());
         assert_eq!(repository.store.ids().unwrap(), before);
+    }
+
+    #[test]
+    fn portable_migration_publication_is_exact_and_idempotent() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = Repository::init(directory.path()).unwrap();
+        fs::create_dir(directory.path().join("sub")).unwrap();
+        fs::write(directory.path().join("a"), b"shared").unwrap();
+        fs::write(directory.path().join("sub/b"), b"shared").unwrap();
+        let revision = repository.commit("tester", "source").unwrap();
+        fs::write(directory.path().join("a"), b"unstaged").unwrap();
+        fs::write(directory.path().join("staged"), b"staged").unwrap();
+        repository.add_paths(&["staged"]).unwrap();
+        let status = repository.status().unwrap();
+        let head = repository.head().unwrap();
+        let plan = repository.plan_portable_migration(revision, 1).unwrap();
+
+        let parallel = repository
+            .publish_portable_migration(revision, usize::MAX)
+            .unwrap();
+        assert_eq!(parallel, plan);
+        repository.portable_tree(plan.root).unwrap();
+        let after_first = repository.store.ids().unwrap();
+        let retry = repository.publish_portable_migration(revision, 1).unwrap();
+        assert_eq!(retry, plan);
+        assert_eq!(repository.store.ids().unwrap(), after_first);
+        assert_eq!(repository.status().unwrap(), status);
+        assert_eq!(repository.head().unwrap(), head);
     }
 
     #[test]

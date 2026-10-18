@@ -19,6 +19,22 @@ fn ok(root: &Path, args: &[&str]) -> Vec<u8> {
     result.stdout
 }
 
+fn ok_with_object_db(root: &Path, object_db: &Path, args: &[&str]) -> Vec<u8> {
+    let result = Command::new(env!("CARGO_BIN_EXE_loom"))
+        .current_dir(root)
+        .env("LOOM_AUTHOR", "portable-manifest-test")
+        .env("LOOM_OBJECT_DB", object_db)
+        .args(args)
+        .output()
+        .expect("execute loom");
+    assert!(
+        result.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    result.stdout
+}
+
 #[test]
 fn portable_manifest_is_typed_idempotent_and_preserves_repository_state() {
     let temporary = tempfile::tempdir().unwrap();
@@ -77,6 +93,87 @@ fn portable_migration_plan_preserves_objects_stage_and_worktree() {
     assert!(String::from_utf8(serial).unwrap().contains("2 files"));
     assert_eq!(ok(root, &["status"]), status);
     ok(root, &["fsck"]);
+}
+
+#[test]
+fn portable_migration_publication_is_exact_idempotent_and_preserves_state() {
+    let temporary = tempfile::tempdir().unwrap();
+    let export = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    let object_db = export.path().join("objects.db");
+    ok(root, &["init", "--object-db", object_db.to_str().unwrap()]);
+    fs::create_dir(root.join("nested")).unwrap();
+    fs::write(root.join("tracked"), b"committed").unwrap();
+    fs::write(root.join("nested/file"), b"nested").unwrap();
+    let committed = String::from_utf8(ok_with_object_db(
+        root,
+        &object_db,
+        &["commit", "-m", "base"],
+    ))
+    .unwrap();
+    let revision = committed.split_whitespace().last().expect("commit ID");
+    fs::write(root.join("tracked"), b"unstaged").unwrap();
+    fs::write(root.join("staged"), b"staged").unwrap();
+    ok_with_object_db(root, &object_db, &["add", "staged"]);
+    let status = ok_with_object_db(root, &object_db, &["status"]);
+    let plan = String::from_utf8(ok_with_object_db(
+        root,
+        &object_db,
+        &["portable-migrate-plan", &format!("@{revision}")],
+    ))
+    .unwrap();
+    let planned_root = plan
+        .split_whitespace()
+        .nth(2)
+        .unwrap()
+        .trim_end_matches(':')
+        .to_owned();
+    let published = String::from_utf8(ok_with_object_db(
+        root,
+        &object_db,
+        &[
+            "portable-migrate-publish",
+            &format!("@{revision}"),
+            "--workers",
+            "8",
+        ],
+    ))
+    .unwrap();
+    let retry = String::from_utf8(ok_with_object_db(
+        root,
+        &object_db,
+        &[
+            "portable-migrate-publish",
+            &format!("@{revision}"),
+            "--workers",
+            "1",
+        ],
+    ))
+    .unwrap();
+    assert_eq!(
+        published
+            .split_whitespace()
+            .nth(3)
+            .map(|root| root.trim_end_matches(':')),
+        Some(planned_root.as_str())
+    );
+    assert_eq!(published, retry);
+    assert_eq!(ok_with_object_db(root, &object_db, &["status"]), status);
+    ok_with_object_db(root, &object_db, &["fsck"]);
+    let destination = export.path().join("workspace");
+    ok_with_object_db(
+        root,
+        &object_db,
+        &[
+            "portable-export",
+            &format!("@{planned_root}"),
+            destination.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(
+        fs::read(destination.join("nested/file")).unwrap(),
+        b"nested"
+    );
 }
 
 #[test]
