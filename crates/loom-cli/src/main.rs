@@ -58,6 +58,7 @@ fn usage() {
     eprintln!("  loom sparse-export @CHANGESET_ID DESTINATION [PREFIX ...]");
     eprintln!("  loom portable-manifest regular|executable|symlink PATH");
     eprintln!("  loom portable-tree DIRECTORY [--workers N]");
+    eprintln!("  loom portable-export @TREE_ID DESTINATION [--workers N]");
 }
 
 fn publish_portable_directory(
@@ -797,6 +798,35 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             };
             let id = publish_portable_directory(&repo, Path::new(raw_path), 0, workers)?;
             println!("{id}");
+        }
+        "portable-export" => {
+            if args.len() != 3 && args.len() != 5 {
+                return Err(
+                    "usage: loom portable-export @TREE_ID DESTINATION [--workers N]".into(),
+                );
+            }
+            let root = ObjectId::parse(
+                args[1]
+                    .strip_prefix('@')
+                    .ok_or("portable-export requires an immutable @TREE_ID")?,
+            )?;
+            let workers = if args.len() == 5 {
+                if args[3] != "--workers" {
+                    return Err(
+                        "usage: loom portable-export @TREE_ID DESTINATION [--workers N]".into(),
+                    );
+                }
+                args[4]
+                    .parse::<usize>()
+                    .map_err(|_| "--workers requires a nonnegative integer")?
+            } else {
+                0
+            };
+            let stats = repo.export_portable_tree(root, &args[2], workers)?;
+            println!(
+                "Exported {} files, {} directories and {} bytes from {}",
+                stats.files, stats.directories, stats.bytes, root
+            );
         }
         _ => {
             usage();

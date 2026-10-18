@@ -57,6 +57,7 @@ fn portable_manifest_streams_files_beyond_the_legacy_cli_cap() {
 #[test]
 fn portable_tree_is_canonical_typed_and_repository_independent() {
     let temporary = tempfile::tempdir().unwrap();
+    let exports = tempfile::tempdir().unwrap();
     let root = temporary.path();
     ok(root, &["init"]);
     fs::write(root.join("tracked"), b"committed").unwrap();
@@ -71,7 +72,45 @@ fn portable_tree_is_canonical_typed_and_repository_independent() {
     let first = ok(root, &["portable-tree", "portable", "--workers", "1"]);
     let retry = ok(root, &["portable-tree", "portable", "--workers", "8"]);
     assert_eq!(first, retry);
-    assert_eq!(String::from_utf8(first).unwrap().trim().len(), 64);
+    let tree = String::from_utf8(first).unwrap();
+    assert_eq!(tree.trim().len(), 64);
+    let immutable = format!("@{}", tree.trim());
+    let serial = exports.path().join("serial");
+    let parallel = exports.path().join("parallel");
+    ok(
+        root,
+        &[
+            "portable-export",
+            &immutable,
+            serial.to_str().unwrap(),
+            "--workers",
+            "1",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "portable-export",
+            &immutable,
+            parallel.to_str().unwrap(),
+            "--workers",
+            "8",
+        ],
+    );
+    assert_eq!(fs::read(serial.join("a")).unwrap(), b"alpha");
+    assert_eq!(fs::read(parallel.join("sub/b")).unwrap(), b"beta");
+    assert_eq!(
+        fs::read(serial.join(".loom-portable-complete")).unwrap(),
+        fs::read(parallel.join(".loom-portable-complete")).unwrap()
+    );
+    assert!(
+        !call(
+            root,
+            &["portable-export", &immutable, serial.to_str().unwrap()]
+        )
+        .status
+        .success()
+    );
     assert_eq!(ok(root, &["status"]), status_before);
     assert!(
         !call(root, &["portable-tree", "portable", "--workers", "bad"])

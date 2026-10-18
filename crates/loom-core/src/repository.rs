@@ -25,6 +25,14 @@ pub struct StatusEntry {
     pub kind: StatusKind,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PortableExportStats {
+    pub files: usize,
+    pub directories: usize,
+    pub symlinks: usize,
+    pub bytes: u64,
+}
+
 /// File contents before and after a change. None means the file is absent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileDiff {
@@ -82,6 +90,101 @@ struct PortableFileWork {
     kind: crate::PortableFileKind,
     path: PathBuf,
     expected: std::fs::Metadata,
+}
+
+struct PortableExportWork {
+    path: PathBuf,
+    manifest: ObjectId,
+}
+
+#[derive(Default)]
+struct PortableExportFileStats {
+    symlinks: usize,
+    bytes: u64,
+}
+
+fn sync_directory(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(path)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+fn materialize_portable_file(
+    reader: &std::sync::Arc<dyn crate::storage_backend::ObjectReadSession>,
+    work: &PortableExportWork,
+) -> Result<PortableExportFileStats> {
+    let manifest = crate::PortableBlobManifest::decode(&reader.get(work.manifest)?)?;
+    if manifest.kind == crate::PortableFileKind::Symlink {
+        let encoded = reader.get(manifest.chunks[0])?;
+        let (kind, target) = decode_object(&encoded)?;
+        if kind != BLOB || target.len() as u64 != manifest.logical_bytes {
+            return Err(Error::Invalid(
+                "portable symlink chunk disagrees with manifest".into(),
+            ));
+        }
+        crate::portable_manifest::validate_symlink_target(target)?;
+        let target = std::str::from_utf8(target)
+            .map_err(|_| Error::Invalid("portable symlink target must be UTF-8".into()))?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, &work.path)?;
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(target, &work.path)?;
+        #[cfg(not(any(unix, windows)))]
+        return Err(Error::Invalid(
+            "portable symlink materialization is unsupported on this host".into(),
+        ));
+        return Ok(PortableExportFileStats {
+            symlinks: 1,
+            bytes: manifest.logical_bytes,
+        });
+    }
+
+    let mut output = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&work.path)?;
+    let mut written = 0u64;
+    for (index, chunk) in manifest.chunks.iter().enumerate() {
+        let encoded = reader.get(*chunk)?;
+        let (kind, payload) = decode_object(&encoded)?;
+        let final_chunk = index + 1 == manifest.chunks.len();
+        if kind != BLOB
+            || (!final_chunk && payload.len() != crate::PORTABLE_CHUNK_BYTES)
+            || (final_chunk && payload.len() > crate::PORTABLE_CHUNK_BYTES)
+        {
+            return Err(Error::Invalid(
+                "portable file chunk disagrees with manifest".into(),
+            ));
+        }
+        std::io::Write::write_all(&mut output, payload)?;
+        written = written
+            .checked_add(payload.len() as u64)
+            .ok_or_else(|| Error::Invalid("portable export byte count overflow".into()))?;
+    }
+    if written != manifest.logical_bytes {
+        return Err(Error::Invalid(
+            "portable file length disagrees with manifest".into(),
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = if manifest.kind == crate::PortableFileKind::Executable {
+            0o755
+        } else {
+            0o644
+        };
+        output.set_permissions(std::fs::Permissions::from_mode(mode))?;
+    }
+    output.sync_all()?;
+    Ok(PortableExportFileStats {
+        symlinks: 0,
+        bytes: written,
+    })
 }
 
 fn bounded_text_merge_workers(
@@ -697,6 +800,121 @@ impl Repository {
     /// Read and live-verify a complete portable directory closure.
     pub fn portable_tree(&self, id: ObjectId) -> Result<crate::PortableTree> {
         self.portable_tree_inner(id, 0, &mut std::collections::BTreeSet::new())
+    }
+
+    fn materialize_portable_directory(
+        reader: &std::sync::Arc<dyn crate::storage_backend::ObjectReadSession>,
+        tree_id: ObjectId,
+        destination: &Path,
+        depth: usize,
+        requested_workers: usize,
+        stats: &mut PortableExportStats,
+    ) -> Result<()> {
+        if depth > 256 {
+            return Err(Error::Invalid(
+                "portable export nesting limit reached".into(),
+            ));
+        }
+        let tree = crate::PortableTree::decode(&reader.get(tree_id)?)?;
+        let mut files = Vec::new();
+        for entry in tree.entries {
+            let target = destination.join(&entry.name);
+            match entry.kind {
+                crate::PortableTreeEntryKind::Directory => {
+                    std::fs::create_dir(&target)?;
+                    stats.directories += 1;
+                    Self::materialize_portable_directory(
+                        reader,
+                        entry.object,
+                        &target,
+                        depth + 1,
+                        requested_workers,
+                        stats,
+                    )?;
+                    sync_directory(&target)?;
+                }
+                crate::PortableTreeEntryKind::File => files.push(PortableExportWork {
+                    path: target,
+                    manifest: entry.object,
+                }),
+            }
+        }
+        let workers = crate::worktree_scan::worker_limit(
+            requested_workers,
+            std::thread::available_parallelism().map_or(1, usize::from),
+        )
+        .min(reader.max_concurrent_reads().clamp(1, 8));
+        let outcomes = crate::workers::parallel_map_min(&files, workers, 2, &|work| {
+            materialize_portable_file(reader, work)
+        })?;
+        stats.files += outcomes.len();
+        for outcome in outcomes {
+            stats.symlinks += outcome.symlinks;
+            stats.bytes = stats
+                .bytes
+                .checked_add(outcome.bytes)
+                .ok_or_else(|| Error::Invalid("portable export byte count overflow".into()))?;
+        }
+        Ok(())
+    }
+
+    /// Materialize one immutable portable-v2 tree into a newly-created,
+    /// isolated directory. The complete object closure is live-verified before
+    /// destination creation. File reads then use bounded provider-aware workers,
+    /// one canonical chunk per worker at a time. Errors leave no completion
+    /// receipt, never overwrite an existing path and never update repository
+    /// history, refs, staging or the source worktree.
+    pub fn export_portable_tree(
+        &self,
+        root: ObjectId,
+        destination: impl AsRef<Path>,
+        requested_workers: usize,
+    ) -> Result<PortableExportStats> {
+        const MARKER: &str = ".loom-portable-complete";
+        let root_tree = self.portable_tree(root)?;
+        if root_tree.entries.iter().any(|entry| entry.name == MARKER) {
+            return Err(Error::Invalid(
+                "portable tree collides with export completion marker".into(),
+            ));
+        }
+        let destination = destination.as_ref();
+        std::fs::create_dir(destination).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                Error::Invalid("portable export destination already exists".into())
+            } else {
+                Error::Io(error)
+            }
+        })?;
+
+        let reader = self.store.read_session()?;
+        let mut stats = PortableExportStats {
+            files: 0,
+            directories: 0,
+            symlinks: 0,
+            bytes: 0,
+        };
+        Self::materialize_portable_directory(
+            &reader,
+            root,
+            destination,
+            0,
+            requested_workers,
+            &mut stats,
+        )?;
+        let mut marker = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(destination.join(MARKER))?;
+        use std::io::Write;
+        writeln!(marker, "LOOM-PORTABLE 1")?;
+        writeln!(marker, "root {root}")?;
+        writeln!(marker, "files {}", stats.files)?;
+        writeln!(marker, "directories {}", stats.directories)?;
+        writeln!(marker, "symlinks {}", stats.symlinks)?;
+        writeln!(marker, "bytes {}", stats.bytes)?;
+        marker.sync_all()?;
+        sync_directory(destination)?;
+        Ok(stats)
     }
 
     fn portable_tree_inner(
@@ -5139,6 +5357,159 @@ mod tests {
             }],
         };
         assert!(repository.publish_portable_tree(&wrong).is_err());
+    }
+
+    #[test]
+    fn portable_export_is_typed_durable_and_ref_independent() {
+        let repository_dir = tempfile::tempdir().unwrap();
+        let export_dir = tempfile::tempdir().unwrap();
+        let repository = Repository::init(repository_dir.path()).unwrap();
+        let regular = repository
+            .publish_portable_blob(crate::PortableFileKind::Regular, b"portable contents\n")
+            .unwrap();
+        let executable = repository
+            .publish_portable_blob(crate::PortableFileKind::Executable, b"#!/bin/sh\nexit 0\n")
+            .unwrap();
+        let empty = repository
+            .publish_portable_tree(&crate::PortableTree { entries: vec![] })
+            .unwrap();
+        let child = repository
+            .publish_portable_tree(&crate::PortableTree {
+                entries: vec![crate::PortableTreeEntry {
+                    name: "tool".into(),
+                    kind: crate::PortableTreeEntryKind::File,
+                    object: executable,
+                }],
+            })
+            .unwrap();
+        let root = repository
+            .publish_portable_tree(&crate::PortableTree {
+                entries: vec![
+                    crate::PortableTreeEntry {
+                        name: "README".into(),
+                        kind: crate::PortableTreeEntryKind::File,
+                        object: regular,
+                    },
+                    crate::PortableTreeEntry {
+                        name: "bin".into(),
+                        kind: crate::PortableTreeEntryKind::Directory,
+                        object: child,
+                    },
+                    crate::PortableTreeEntry {
+                        name: "empty".into(),
+                        kind: crate::PortableTreeEntryKind::Directory,
+                        object: empty,
+                    },
+                ],
+            })
+            .unwrap();
+
+        let serial_path = export_dir.path().join("serial");
+        let parallel_path = export_dir.path().join("parallel");
+        let serial = repository
+            .export_portable_tree(root, &serial_path, 1)
+            .unwrap();
+        let parallel = repository
+            .export_portable_tree(root, &parallel_path, usize::MAX)
+            .unwrap();
+        assert_eq!(serial, parallel);
+        assert_eq!(serial.files, 2);
+        assert_eq!(serial.directories, 2);
+        assert_eq!(serial.symlinks, 0);
+        assert_eq!(fs::read(serial_path.join("README")).unwrap(), b"portable contents\n");
+        assert_eq!(
+            fs::read(parallel_path.join("bin/tool")).unwrap(),
+            b"#!/bin/sh\nexit 0\n"
+        );
+        assert!(parallel_path.join("empty").is_dir());
+        let receipt = fs::read_to_string(parallel_path.join(".loom-portable-complete")).unwrap();
+        assert!(receipt.contains(&format!("root {root}")));
+        assert!(receipt.contains("files 2"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(parallel_path.join("bin/tool"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o755
+            );
+        }
+        assert!(repository
+            .export_portable_tree(root, &parallel_path, 1)
+            .is_err());
+        assert_eq!(repository.head().unwrap(), None);
+        assert!(repository.status().unwrap().is_empty());
+        repository.fsck().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn portable_export_materializes_validated_relative_symlinks() {
+        let repository_dir = tempfile::tempdir().unwrap();
+        let export_dir = tempfile::tempdir().unwrap();
+        let repository = Repository::init(repository_dir.path()).unwrap();
+        let target = repository
+            .publish_portable_blob(crate::PortableFileKind::Regular, b"target")
+            .unwrap();
+        let link = repository
+            .publish_portable_blob(crate::PortableFileKind::Symlink, b"target")
+            .unwrap();
+        let root = repository
+            .publish_portable_tree(&crate::PortableTree {
+                entries: vec![
+                    crate::PortableTreeEntry {
+                        name: "link".into(),
+                        kind: crate::PortableTreeEntryKind::File,
+                        object: link,
+                    },
+                    crate::PortableTreeEntry {
+                        name: "target".into(),
+                        kind: crate::PortableTreeEntryKind::File,
+                        object: target,
+                    },
+                ],
+            })
+            .unwrap();
+        let destination = export_dir.path().join("workspace");
+        let stats = repository
+            .export_portable_tree(root, &destination, 8)
+            .unwrap();
+        assert_eq!(stats.symlinks, 1);
+        assert_eq!(fs::read_link(destination.join("link")).unwrap(), Path::new("target"));
+        assert_eq!(fs::read(destination.join("link")).unwrap(), b"target");
+    }
+
+    #[test]
+    fn portable_export_verifies_closure_before_destination_creation() {
+        let repository_dir = tempfile::tempdir().unwrap();
+        let export_dir = tempfile::tempdir().unwrap();
+        let repository = Repository::init(repository_dir.path()).unwrap();
+        let manifest_id = repository
+            .publish_portable_blob(crate::PortableFileKind::Regular, b"unique missing payload")
+            .unwrap();
+        let chunk = repository
+            .portable_blob_manifest(manifest_id)
+            .unwrap()
+            .chunks[0];
+        let root = repository
+            .publish_portable_tree(&crate::PortableTree {
+                entries: vec![crate::PortableTreeEntry {
+                    name: "file".into(),
+                    kind: crate::PortableTreeEntryKind::File,
+                    object: manifest_id,
+                }],
+            })
+            .unwrap();
+        fs::remove_file(repository.store.path_for_test(chunk)).unwrap();
+        let destination = export_dir.path().join("must-not-exist");
+        assert!(repository
+            .export_portable_tree(root, &destination, 4)
+            .is_err());
+        assert!(!destination.exists());
+        assert_eq!(repository.head().unwrap(), None);
     }
 
     #[test]
