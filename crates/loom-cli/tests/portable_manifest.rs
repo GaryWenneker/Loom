@@ -122,7 +122,12 @@ fn portable_migration_publication_is_exact_idempotent_and_preserves_state() {
         &["portable-migrate-plan", &format!("@{revision}")],
     ))
     .unwrap();
-    let planned_root = plan.split_whitespace().nth(2).unwrap().to_owned();
+    let planned_root = plan
+        .split_whitespace()
+        .nth(2)
+        .unwrap()
+        .trim_end_matches(':')
+        .to_owned();
     let published = String::from_utf8(ok_with_object_db(
         root,
         &object_db,
