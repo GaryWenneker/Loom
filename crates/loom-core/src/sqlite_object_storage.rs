@@ -125,11 +125,17 @@ impl SqliteObjectBackend {
     }
 
     fn read(conn: &Connection, id: ObjectId) -> Result<Vec<u8>> {
-        let row: Option<Option<Vec<u8>>> = conn
-            .query_row(
-                "SELECT CASE WHEN length(envelope)<=?2 THEN envelope ELSE NULL END
+        Self::read_bounded(conn, id, MAX_OBJECT_SIZE + 15)
+    }
+
+    fn read_bounded(conn: &Connection, id: ObjectId, max_bytes: usize) -> Result<Vec<u8>> {
+        let mut query = conn.prepare_cached(
+            "SELECT CASE WHEN length(envelope)<=?2 THEN envelope ELSE NULL END
              FROM loom_storage_objects WHERE oid=?1",
-                params![id.to_string(), (MAX_OBJECT_SIZE + 15) as i64],
+        )?;
+        let row: Option<Option<Vec<u8>>> = query
+            .query_row(
+                params![id.to_string(), max_bytes.min(MAX_OBJECT_SIZE + 15) as i64],
                 |r| r.get(0),
             )
             .optional()?;
@@ -142,7 +148,7 @@ impl SqliteObjectBackend {
             }
             Some(None) => {
                 return Err(Error::Invalid(format!(
-                    "SQLite object exceeds envelope size limit: {id}"
+                    "SQLite object exceeds read byte limit: {id}"
                 )))
             }
             Some(Some(bytes)) => bytes,
@@ -180,6 +186,56 @@ impl ObjectBackend for SqliteObjectBackend {
     }
     fn get(&self, id: ObjectId) -> Result<Vec<u8>> {
         Self::read(&self.connection()?, id)
+    }
+    fn get_batch_live(&self, ids: &[ObjectId], max_bytes: usize) -> Result<Option<Vec<Vec<u8>>>> {
+        if ids.len() > crate::store::MAX_PUBLICATION_OBJECTS
+            || (ids.len() > 1 && max_bytes > crate::store::MAX_PUBLICATION_BYTES)
+            || (ids.len() == 1 && max_bytes > MAX_OBJECT_SIZE + 15)
+        {
+            return Err(Error::Invalid(
+                "live object batch exceeds window bounds".into(),
+            ));
+        }
+        if ids.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        // Fresh per-call connection, no retained read session or transaction.
+        // Each SELECT finishes before the next: committed rows are read live,
+        // while prepare_cached amortizes parsing only within this call.
+        let before = std::fs::symlink_metadata(&self.path)?;
+        let conn = self.read_connection()?;
+        let mut remaining = max_bytes;
+        let mut objects = Vec::with_capacity(ids.len());
+        for id in ids {
+            let bytes = Self::read_bounded(&conn, *id, remaining)?;
+            remaining -= bytes.len();
+            objects.push(bytes);
+        }
+        let after = std::fs::symlink_metadata(&self.path)?;
+        if !after.is_file() || after.file_type().is_symlink() {
+            return Err(Error::Invalid(
+                "SQLite object database changed during readback".into(),
+            ));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if before.dev() != after.dev() || before.ino() != after.ino() {
+                return Err(Error::Invalid(
+                    "SQLite object database changed during readback".into(),
+                ));
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if before.creation_time() != after.creation_time() {
+                return Err(Error::Invalid(
+                    "SQLite object database changed during readback".into(),
+                ));
+            }
+        }
+        Ok(Some(objects))
     }
     fn put_if_absent(&self, id: ObjectId, bytes: &[u8]) -> Result<()> {
         if object_id(bytes) != id {
@@ -221,11 +277,13 @@ impl ObjectBackend for SqliteObjectBackend {
 
         let mut conn = self.connection()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        for (id, bytes) in &unique {
-            tx.execute(
+        {
+            let mut insert = tx.prepare_cached(
                 "INSERT OR IGNORE INTO loom_storage_objects(oid,envelope) VALUES(?1,?2)",
-                params![id.to_string(), bytes],
             )?;
+            for (id, bytes) in &unique {
+                insert.execute(params![id.to_string(), bytes])?;
+            }
         }
         for (id, bytes) in &unique {
             if Self::read(&tx, *id)?.as_slice() != *bytes {
@@ -337,6 +395,63 @@ mod tests {
     }
 
     #[test]
+    fn live_batch_reads_preserve_order_duplicates_budget_and_freshness() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("objects.sqlite");
+        let backend = SqliteObjectBackend::open(&path).unwrap();
+        let bytes: Vec<_> = (0..3)
+            .map(|n| encode_object(BLOB, format!("live-{n}").as_bytes()).unwrap())
+            .collect();
+        let entries: Vec<_> = bytes.iter().map(|b| (object_id(b), b.as_slice())).collect();
+        backend.put_batch_if_absent(&entries).unwrap();
+        let order = [2, 0, 2, 1];
+        let ids: Vec<_> = order.iter().map(|&n| entries[n].0).collect();
+        let expected: Vec<_> = order.iter().map(|&n| bytes[n].clone()).collect();
+        let budget = expected.iter().map(Vec::len).sum::<usize>();
+        assert_eq!(
+            backend.get_batch_live(&ids, budget).unwrap(),
+            Some(expected)
+        );
+        assert!(backend.get_batch_live(&ids, budget - 1).is_err());
+        assert!(backend.get_batch_live(&vec![ids[0]; 129], budget).is_err());
+        assert!(backend
+            .get_batch_live(&ids, crate::store::MAX_PUBLICATION_BYTES + 1)
+            .is_err());
+
+        // A completed batch cannot retain a stale connection or payload cache.
+        let conn = Connection::open(&path).unwrap();
+        conn.execute(
+            "UPDATE loom_storage_objects SET envelope=?1 WHERE oid=?2",
+            params![b"corrupt".as_slice(), ids[0].to_string()],
+        )
+        .unwrap();
+        assert!(backend.get_batch_live(&ids, budget).is_err());
+        conn.execute(
+            "DELETE FROM loom_storage_objects WHERE oid=?1",
+            [ids[0].to_string()],
+        )
+        .unwrap();
+        assert!(matches!(backend.get_batch_live(&ids, budget),
+            Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound));
+    }
+
+    #[test]
+    fn live_readback_allows_one_oversized_canonical_object_without_unbounded_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = SqliteObjectBackend::open(dir.path().join("objects.sqlite")).unwrap();
+        let bytes =
+            encode_object(BLOB, &vec![0x5a; crate::store::MAX_PUBLICATION_BYTES + 1]).unwrap();
+        let id = object_id(&bytes);
+        backend.put_if_absent(id, &bytes).unwrap();
+        assert_eq!(
+            backend.get_batch_live(&[id], bytes.len()).unwrap(),
+            Some(vec![bytes.clone()])
+        );
+        assert!(backend.get_batch_live(&[id], bytes.len() - 1).is_err());
+        assert!(backend.get_batch_live(&[id, id], bytes.len() * 2).is_err());
+    }
+
+    #[test]
     fn batch_failure_rolls_back_every_new_object_and_retry_is_idempotent() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("objects.sqlite");
@@ -417,6 +532,9 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         let bytes = encode_object(BLOB, b"never acknowledged").unwrap();
         assert!(backend.put_if_absent(object_id(&bytes), &bytes).is_err());
+        assert!(backend
+            .get_batch_live(&[object_id(&bytes)], bytes.len())
+            .is_err());
         assert!(!path.exists());
     }
 

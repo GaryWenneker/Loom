@@ -94,6 +94,86 @@ fn selected_set_provider_failure_preserves_prepared_snapshot_and_retries() {
 }
 
 #[test]
+fn corrupt_live_batch_readback_preserves_staging_ref_and_retry() {
+    struct Readback {
+        inner: loom_core::sqlite_object_storage::SqliteObjectBackend,
+        corrupt: AtomicBool,
+        calls: AtomicUsize,
+    }
+    impl ObjectBackend for Readback {
+        fn capabilities(&self) -> StoreCapabilities {
+            self.inner.capabilities()
+        }
+        fn get(&self, id: ObjectId) -> Result<Vec<u8>> {
+            self.inner.get(id)
+        }
+        fn put_if_absent(&self, id: ObjectId, bytes: &[u8]) -> Result<()> {
+            self.inner.put_if_absent(id, bytes)
+        }
+        fn put_batch_if_absent(&self, objects: &[(ObjectId, &[u8])]) -> Result<bool> {
+            self.inner.put_batch_if_absent(objects)
+        }
+        fn get_batch_live(
+            &self,
+            ids: &[ObjectId],
+            max_bytes: usize,
+        ) -> Result<Option<Vec<Vec<u8>>>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let mut bytes = self.inner.get_batch_live(ids, max_bytes)?.unwrap();
+            if self.corrupt.load(Ordering::SeqCst) {
+                bytes[0][0] ^= 1;
+            }
+            Ok(Some(bytes))
+        }
+        fn exists(&self, id: ObjectId) -> Result<bool> {
+            self.inner.exists(id)
+        }
+        fn list_ids(&self) -> Result<Vec<ObjectId>> {
+            self.inner.list_ids()
+        }
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let objects = tempfile::tempdir().unwrap();
+    let backend = Arc::new(Readback {
+        inner: loom_core::sqlite_object_storage::SqliteObjectBackend::open(
+            objects.path().join("objects.sqlite"),
+        )
+        .unwrap(),
+        corrupt: AtomicBool::new(false),
+        calls: AtomicUsize::new(0),
+    });
+    let repo = Repository::init_with_object_backend(root.path(), backend.clone()).unwrap();
+    fs::write(root.path().join("a"), b"base").unwrap();
+    let base = repo.commit("test", "base").unwrap();
+    fs::write(root.path().join("retained"), b"frozen").unwrap();
+    repo.add("retained").unwrap();
+    let staged = repo.diff_staged().unwrap();
+    fs::write(root.path().join("a"), b"changed").unwrap();
+    fs::write(root.path().join("b"), b"new").unwrap();
+
+    backend.corrupt.store(true, Ordering::SeqCst);
+    assert!(repo.add_paths(&["a", "b"]).is_err());
+    assert_eq!(repo.diff_staged().unwrap(), staged);
+    assert_eq!(repo.head().unwrap(), Some(base));
+    backend.corrupt.store(false, Ordering::SeqCst);
+    repo.add_paths(&["a", "b"]).unwrap();
+    let tip = repo.commit("test", "retry live readback").unwrap();
+    for (path, expected) in [
+        ("a", b"changed".as_slice()),
+        ("b", b"new"),
+        ("retained", b"frozen"),
+    ] {
+        assert_eq!(
+            repo.read_revision_file(tip, path).unwrap().unwrap(),
+            expected
+        );
+    }
+    assert!(backend.calls.load(Ordering::SeqCst) > 0);
+    repo.fsck().unwrap();
+}
+
+#[test]
 fn preparation_rejects_a_ref_moved_during_provider_io() {
     let root = tempfile::tempdir().unwrap();
     let objects = tempfile::tempdir().unwrap();

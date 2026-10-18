@@ -126,8 +126,9 @@ def scenario(args, files):
     samples = {name: {phase: [] for phase in phases} for name in names}
     roots = {name: [] for name in names if name != "git"}
     footprints = {name: [] for name in names}
-    paths = [f"files/{index % 32:02x}/{index:08d}.bin" for index in range(files)]
-    changed = list(range(min(8, files)))
+    paths = [f"files/{index % args.directories:04x}/{index:08d}.bin" for index in range(files)]
+    changed = list(range(min(args.changed_files, files)))
+    started_argv = {name: {phase: [] for phase in phases} for name in names}
 
     for repeat in range(args.repeat):
         order = names[repeat % len(names) :] + names[: repeat % len(names)]
@@ -160,12 +161,11 @@ def scenario(args, files):
                                 content(index, args.file_bytes, version)
                             )
                     if name == "git":
+                        add_argv = ["git", "add", "--", "files"]
+                        commit_argv = ["git", "-c", "commit.gpgsign=false", "commit", "-qm", phase]
                         started = time.perf_counter_ns()
-                        add, _ = measured(workspace, ["git", "add", "--", "files"])
-                        commit, _ = measured(
-                            workspace,
-                            ["git", "-c", "commit.gpgsign=false", "commit", "-qm", phase],
-                        )
+                        add, _ = measured(workspace, add_argv)
+                        commit, _ = measured(workspace, commit_argv)
                         metrics = {
                             key: max(add[key], commit[key])
                             if key == "max_rss_kib"
@@ -173,10 +173,11 @@ def scenario(args, files):
                             for key in add
                         }
                         metrics["wall_ms"] = (time.perf_counter_ns() - started) / 1e6
+                        started_argv[name][phase].append([add_argv, commit_argv])
                     else:
-                        metrics, _ = measured(
-                            workspace, [binary, "commit", "-m", phase], database
-                        )
+                        commit_argv = [binary, "commit", "--scan-workers", str(args.scan_workers), "-m", phase]
+                        metrics, _ = measured(workspace, commit_argv, database)
+                        started_argv[name][phase].append(commit_argv)
                     samples[name][phase].append(metrics)
 
                 expected = [
@@ -213,7 +214,11 @@ def scenario(args, files):
     }
     return {
         "files": files,
+        "file_bytes": args.file_bytes,
+        "directories": args.directories,
+        "loom_scan_workers": args.scan_workers,
         "changed_files": len(changed),
+        "started_argv": started_argv,
         "operations": operations,
         "canonical_roots": roots,
         "metadata_footprints": footprints,
@@ -236,6 +241,9 @@ def main():
     parser.add_argument("--baseline-loom", required=True, type=lambda path: str(Path(path).resolve()))
     parser.add_argument("--files", nargs="+", type=int, default=[32, 256])
     parser.add_argument("--file-bytes", type=int, default=256)
+    parser.add_argument("--directories", type=int, default=32)
+    parser.add_argument("--changed-files", type=int, default=8)
+    parser.add_argument("--scan-workers", type=int, default=0)
     parser.add_argument("--repeat", type=int, default=7)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
@@ -243,9 +251,11 @@ def main():
         parser.error("POSIX wait4 is required")
     if min(args.files) < 1 or args.repeat < 1 or not 32 <= args.file_bytes <= 1024 * 1024:
         parser.error("positive files/repeat and file bytes 32..1048576 required")
+    if args.directories < 1 or args.changed_files < 1 or args.scan_workers < 0:
+        parser.error("positive directories/changed files and nonnegative workers required")
 
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "host": {
             "platform": platform.platform(),
             "cpus": os.cpu_count(),
@@ -275,9 +285,9 @@ def main():
         "conditions": [
             "fresh repository per engine/sample; identical bytes and nested paths",
             "Loom uses external SQLite objects with WAL and synchronous=FULL",
-            "candidate and baseline run complete commit commands; Git runs add+commit",
+            f"candidate and baseline run identical complete commit arguments with explicit scan workers {args.scan_workers}; Git runs add+commit",
             "fixture creation and byte/listing/fsck verification are outside timing",
-            "initial commit is the large changeset; incremental commit changes eight files",
+            f"initial commit is the large changeset; incremental commit changes min({args.changed_files}, file count) files across up to {args.directories} directories",
             "engine order rotates and every Loom pair must produce identical canonical roots",
             "OS caches are not flushed; no controlled cold-cache evidence",
             "local filesystem only; network, remote cache and multi-agent traffic are unmeasured",

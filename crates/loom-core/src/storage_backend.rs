@@ -33,6 +33,18 @@ pub struct StoreCapabilities {
 pub trait ObjectBackend: Send + Sync {
     fn capabilities(&self) -> StoreCapabilities;
     fn get(&self, id: ObjectId) -> Result<Vec<u8>>;
+    /// Optionally read a bounded publication window from live storage in input
+    /// order. Open fresh storage state for every call: retained read sessions or
+    /// caches cannot acknowledge publication. No snapshot or connection may be
+    /// retained across calls. Return None to request the scalar get fallback.
+    ///
+    /// The caller supplies a total canonical-byte budget. Implementations must
+    /// enforce it before allocating object payloads and return every requested
+    /// object, including duplicates. Core independently validates all returned
+    /// bytes; a successful provider call alone never acknowledges publication.
+    fn get_batch_live(&self, _ids: &[ObjectId], _max_bytes: usize) -> Result<Option<Vec<Vec<u8>>>> {
+        Ok(None)
+    }
     fn put_if_absent(&self, id: ObjectId, canonical_envelope: &[u8]) -> Result<()>;
     /// Optionally publish one already bounded window in a single durable
     /// backend transaction. Returning false asks the core to use the scalar
