@@ -5416,7 +5416,10 @@ mod tests {
         assert_eq!(serial.files, 2);
         assert_eq!(serial.directories, 2);
         assert_eq!(serial.symlinks, 0);
-        assert_eq!(fs::read(serial_path.join("README")).unwrap(), b"portable contents\n");
+        assert_eq!(
+            fs::read(serial_path.join("README")).unwrap(),
+            b"portable contents\n"
+        );
         assert_eq!(
             fs::read(parallel_path.join("bin/tool")).unwrap(),
             b"#!/bin/sh\nexit 0\n"
@@ -5478,7 +5481,10 @@ mod tests {
             .export_portable_tree(root, &destination, 8)
             .unwrap();
         assert_eq!(stats.symlinks, 1);
-        assert_eq!(fs::read_link(destination.join("link")).unwrap(), Path::new("target"));
+        assert_eq!(
+            fs::read_link(destination.join("link")).unwrap(),
+            Path::new("target")
+        );
         assert_eq!(fs::read(destination.join("link")).unwrap(), b"target");
     }
 

@@ -103,14 +103,12 @@ fn portable_tree_is_canonical_typed_and_repository_independent() {
         fs::read(serial.join(".loom-portable-complete")).unwrap(),
         fs::read(parallel.join(".loom-portable-complete")).unwrap()
     );
-    assert!(
-        !call(
-            root,
-            &["portable-export", &immutable, serial.to_str().unwrap()]
-        )
-        .status
-        .success()
-    );
+    assert!(!call(
+        root,
+        &["portable-export", &immutable, serial.to_str().unwrap()]
+    )
+    .status
+    .success());
     assert_eq!(ok(root, &["status"]), status_before);
     assert!(
         !call(root, &["portable-tree", "portable", "--workers", "bad"])
