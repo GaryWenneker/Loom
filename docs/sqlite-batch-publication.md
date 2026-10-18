@@ -27,8 +27,15 @@ SQLite checks row lengths against the remaining budget before loading payloads.
 Readback buffers are additional to the publication buffers, not a total RSS cap.
 The database path is rechecked before return; Unix also compares device/inode,
 and Windows checks creation time. These observations do not constitute a lease
-or protection from every concurrent filesystem substitution. Existing scalar
-reads, live closure verification and fsck retain their normal contracts.
+or protection from every concurrent filesystem substitution. Ordinary scalar
+reads and authoritative enumeration now open fresh `READ_ONLY`,
+`query_only=ON` connections. They no longer request a write-capable handle or
+reapply `synchronous=FULL` merely to execute `SELECT`; every returned object is
+still hash- and envelope-verified. Missing storage is never recreated by reads;
+missing schemas, corrupt bytes and missing requested rows fail closed. These
+checks do not pin the lifetime identity of a valid replacement database. Write transactions retain WAL plus
+`synchronous=FULL`. Live closure verification and fsck retain their normal
+contracts.
 
 Typed external-closure verification also reuses this live-read contract for
 one object at a time. For SQLite, one validated live read proves both existence
@@ -45,10 +52,6 @@ rows without replacing them. SQLite remains in WAL mode with
 Providers that do not implement atomic batches retain the existing bounded
 scalar/parallel fallback.
 
-Ordinary scalar `get`/`exists` and object enumeration also open fresh read-only,
-`query_only` connections. They no longer configure synchronous writes for a read.
-The write connection still requires WAL with `synchronous=FULL`. Missing storage
-is never created by either read path, and corrupt objects remain errors.
 Retained immutable-query sessions reuse one parsed SELECT, not object payloads
 or an open read transaction. Every read still checks the row length, canonical
 envelope and BLAKE3 ID. Publication, closure verification and fsck continue to
@@ -67,7 +70,9 @@ python3 benchmarks/sqlite_batch_publication.py \
 
 Each sample creates a fresh external SQLite object database and worktree. It
 measures a complete initial commit followed by an eight-file incremental commit.
-The previous Loom executable receives the identical SQLite workload. Git is an
+After both commits, it separately measures and validates one complete all-file
+batch query and one full integrity check. The previous Loom executable receives
+identical paths, worker requests and read/integrity commands. Git is an
 external baseline using `add` plus `commit`; its storage transaction contract is
 not identical, so the comparison describes end-to-end user work rather than
 equivalent internal database operations.
@@ -78,8 +83,9 @@ Schema 2 records the actual measured arguments, file size, directory count and
 explicit worker request. Every repeat starts fresh repositories and measures initial publication and
 the defined incremental commit.
 
-Fixture creation, full byte reads, path listing, canonical Loom root comparison
-and `fsck` occur outside timing. The report retains p50/p95/p99 wall/CPU, peak
+Fixture creation, path listing, canonical Loom root comparison and the repeated
+final verification occur outside timing. The first complete batch query and
+`fsck` after both commits are timed and checked. The report retains p50/p95/p99 wall/CPU, peak
 RSS, POSIX block-I/O counters, and logical/allocated metadata bytes. It does not
 control cold caches or measure network, remote caches, multi-agent contention or
 power-loss recovery.

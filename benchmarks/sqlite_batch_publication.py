@@ -124,12 +124,13 @@ def verify_loom(binary, workspace, database, paths, expected):
     return json.loads(stats)["root"]
 
 
-def measure_reads(workspace, binary, database, paths, expected):
+def measure_reads(workspace, binary, database, paths, expected, extended):
     """Time fresh CLI processes, then independently check their complete output."""
+    rounds = 2 if extended else 1
     if database is None:
         revision = command(workspace, ["git", "rev-parse", "HEAD"]).decode().strip()
         requests = b"".join(
-            (revision + ":" + path + "\n").encode() for path in paths * 2)
+            (revision + ":" + path + "\n").encode() for path in paths * rounds)
         commands = {
             "fsck": ["git", "fsck", "--full"],
             "history": ["git", "log", "--max-count=10000", "--format=%H %s"],
@@ -141,14 +142,18 @@ def measure_reads(workspace, binary, database, paths, expected):
         revision = command(workspace, [binary, "log", "1"], database).decode().split()[1]
         requests = b"".join(
             json.dumps({"id": index, "op": "cat", "path": path}).encode() + b"\n"
-            for index, path in enumerate(paths * 2))
+            for index, path in enumerate(paths * rounds))
         commands = {
             "fsck": [binary, "fsck"],
             "history": [binary, "log", "10000"],
             "files": [binary, "files", "@" + revision, "--null"],
             "query": [binary, "query", "--batch", "@" + revision, "--cache-bytes", "0"],
         }
+        if not extended:
+            commands["query"] = commands["query"][:-2]
         parser = parse_loom_batch
+    if not extended:
+        commands = {phase: commands[phase] for phase in ("query", "fsck")}
     reads = {}
     for phase, argv in commands.items():
         metrics, output = measured(
@@ -160,17 +165,17 @@ def measure_reads(workspace, binary, database, paths, expected):
         if phase == "files":
             assert output == b"".join(path.encode() + b"\0" for path in sorted(paths))
         if phase == "query":
-            parser(output, expected * 2)
+            parser(output, expected * rounds)
     return reads, commands, {
         "sha256": hashlib.sha256(requests).hexdigest(),
-        "bytes": len(requests), "requests": len(paths) * 2,
+        "bytes": len(requests), "requests": len(paths) * rounds,
     }
 
 
 def scenario(args, files):
     names = ["baseline", "loom", "git"]
     phases = ["initial", "incremental"]
-    read_phases = ["fsck", "history", "files", "query"] if args.read_workflows else []
+    read_phases = ["fsck", "history", "files", "query"] if args.read_workflows else ["query", "fsck"]
     samples = {name: {phase: [] for phase in phases + read_phases} for name in names}
     roots = {name: [] for name in names if name != "git"}
     footprints = {name: [] for name in names}
@@ -235,7 +240,7 @@ def scenario(args, files):
                 ]
                 if read_phases:
                     reads, argv, query_input = measure_reads(
-                        workspace, binary, database, paths, expected)
+                        workspace, binary, database, paths, expected, args.read_workflows)
                     for phase, metrics in reads.items():
                         samples[name][phase].append(metrics)
                         started_argv[name][phase].append(argv[phase])
@@ -276,6 +281,24 @@ def scenario(args, files):
         "changed_files": len(changed),
         "started_argv": started_argv,
         "query_stdin": query_inputs,
+        "read_operations": {
+            name: {phase: operations[name][phase] for phase in read_phases}
+            for name in names
+        },
+        "read_started_argv": {
+            name: {phase: started_argv[name][phase] for phase in read_phases}
+            for name in names
+        },
+        "baseline_over_loom_read_p50": {
+            phase: operations["baseline"][phase]["wall_ms"]["p50"]
+            / operations["loom"][phase]["wall_ms"]["p50"]
+            for phase in read_phases
+        },
+        "git_over_loom_read_p50": {
+            phase: operations["git"][phase]["wall_ms"]["p50"]
+            / operations["loom"][phase]["wall_ms"]["p50"]
+            for phase in read_phases
+        },
         "operations": operations,
         "canonical_roots": roots,
         "metadata_footprints": footprints,
@@ -290,6 +313,10 @@ def scenario(args, files):
             for phase in phases + read_phases
         },
     }
+
+
+def read_order(args):
+    return "fsck/history/files/query" if args.read_workflows else "query/fsck"
 
 
 def main():
@@ -313,7 +340,7 @@ def main():
         parser.error("positive directories/changed files and nonnegative workers required")
 
     report = {
-        "schema_version": 3 if args.read_workflows else 2,
+        "schema_version": 3,
         "host": {
             "platform": platform.platform(),
             "cpus": os.cpu_count(),
@@ -350,8 +377,8 @@ def main():
             "OS caches are not flushed; no controlled cold-cache evidence",
             "local filesystem only; network, remote cache and multi-agent traffic are unmeasured",
             "no durability setting is relaxed and no power-loss certification is claimed",
-            "optional read workflows run once per process after two fresh commits, in fsck/history/files/query order; ordinary validation runs afterwards",
-            "query reads every file twice with Loom's object cache disabled; request input is prepared outside timing and its digest is recorded",
+            f"read workflows run once per process after two fresh commits in {read_order(args)} order; final validation runs afterwards",
+            "extended queries read every file twice with Loom's object cache disabled; ordinary queries retain one pass and the default cache; input preparation is outside timing and its digest is recorded",
             "files can populate the derived historical lookup used by query; this is not a cold-query benchmark",
             "Git fsck and history are diagnostics with different object formats and integrity contracts, not portable/native-format equivalence",
         ],
