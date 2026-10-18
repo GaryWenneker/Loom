@@ -5976,7 +5976,9 @@ mod tests {
         assert_eq!(repository.status().unwrap(), status);
         let indexed: i64 = repository
             .db
-            .query_row("SELECT count(*) FROM revision_native_tree", [], |row| row.get(0))
+            .query_row("SELECT count(*) FROM revision_native_tree", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(indexed, 0);
 

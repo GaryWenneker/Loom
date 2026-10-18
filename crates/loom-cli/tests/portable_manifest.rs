@@ -49,23 +49,29 @@ fn portable_migration_plan_preserves_objects_stage_and_worktree() {
     fs::create_dir(root.join("nested")).unwrap();
     fs::write(root.join("tracked"), b"committed").unwrap();
     fs::write(root.join("nested/file"), b"nested").unwrap();
-    let committed = String::from_utf8(ok(root, &["commit", "-m", "base"]))
-        .unwrap();
-    let revision = committed
-        .split_whitespace()
-        .last()
-        .expect("commit ID");
+    let committed = String::from_utf8(ok(root, &["commit", "-m", "base"])).unwrap();
+    let revision = committed.split_whitespace().last().expect("commit ID");
     fs::write(root.join("tracked"), b"unstaged").unwrap();
     fs::write(root.join("staged"), b"staged").unwrap();
     ok(root, &["add", "staged"]);
     let status = ok(root, &["status"]);
     let serial = ok(
         root,
-        &["portable-migrate-plan", &format!("@{revision}"), "--workers", "1"],
+        &[
+            "portable-migrate-plan",
+            &format!("@{revision}"),
+            "--workers",
+            "1",
+        ],
     );
     let parallel = ok(
         root,
-        &["portable-migrate-plan", &format!("@{revision}"), "--workers", "8"],
+        &[
+            "portable-migrate-plan",
+            &format!("@{revision}"),
+            "--workers",
+            "8",
+        ],
     );
     assert_eq!(serial, parallel);
     assert!(String::from_utf8(serial).unwrap().contains("2 files"));

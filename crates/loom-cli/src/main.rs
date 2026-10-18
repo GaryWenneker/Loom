@@ -859,9 +859,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         "portable-migrate-plan" => {
             if args.len() != 2 && args.len() != 4 {
-                return Err(
-                    "usage: loom portable-migrate-plan @CHANGESET_ID [--workers N]".into(),
-                );
+                return Err("usage: loom portable-migrate-plan @CHANGESET_ID [--workers N]".into());
             }
             let revision = ObjectId::parse(
                 args[1]
