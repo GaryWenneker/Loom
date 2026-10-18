@@ -1,0 +1,5105 @@
+{
+  "schema_version": 3,
+  "host": {
+    "platform": "Linux-6.18.55-x86_64-with-glibc2.39",
+    "cpus": 9,
+    "cpu_model": "AMD EPYC 9V74 80-Core Processor"
+  },
+  "git_version": "git version 2.51.1",
+  "loom_sha256": "5e38942b25d97ada7f65222879a0f92457a6d3cfcdc1fd6aae8bb90ca58d69dd",
+  "baseline_loom_sha256": "827c546ffff1da8b42c203c405840388e2fc2fe7634c79bd6fc06c77f2ded6ef",
+  "harness_sha256": "4f84ce2e262e4a904ca0f7676a6fdfcebbcb52e8498ac75b158bad00237a3d45",
+  "metric_units": {
+    "wall_ms": "milliseconds; complete command or Git add+commit",
+    "cpu_ms": "milliseconds",
+    "max_rss_kib": "KiB",
+    "rusage_inblock": "kernel counter units, not bytes",
+    "rusage_oublock": "kernel counter units, not bytes",
+    "metadata_footprints": "logical bytes, allocated bytes"
+  },
+  "conditions": [
+    "fresh repository per engine/sample; identical bytes and nested paths",
+    "Loom uses external SQLite objects with WAL and synchronous=FULL",
+    "candidate and baseline run identical complete commit arguments with explicit scan workers 0; Git runs add+commit",
+    "fixture creation and byte/listing/fsck verification are outside timing",
+    "initial commit is the large changeset; incremental commit changes min(8, file count) files across up to 32 directories",
+    "engine order rotates and every Loom pair must produce identical canonical roots",
+    "OS caches are not flushed; no controlled cold-cache evidence",
+    "local filesystem only; network, remote cache and multi-agent traffic are unmeasured",
+    "no durability setting is relaxed and no power-loss certification is claimed",
+    "optional read workflows run once per process after two fresh commits, in fsck/history/files/query order; ordinary validation runs afterwards",
+    "query reads every file twice with Loom's object cache disabled; request input is prepared outside timing and its digest is recorded",
+    "files can populate the derived historical lookup used by query; this is not a cold-query benchmark",
+    "Git fsck and history are diagnostics with different object formats and integrity contracts, not portable/native-format equivalence"
+  ],
+  "scenarios": [
+    {
+      "files": 32,
+      "file_bytes": 256,
+      "directories": 32,
+      "loom_scan_workers": 0,
+      "changed_files": 8,
+      "started_argv": {
+        "baseline": {
+          "initial": [
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ]
+          ],
+          "incremental": [
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ]
+          ],
+          "fsck": [
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "fsck"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "fsck"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "fsck"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "fsck"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "fsck"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "fsck"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "fsck"
+            ]
+          ],
+          "history": [
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "log",
+              "10000"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "log",
+              "10000"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "log",
+              "10000"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "log",
+              "10000"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "log",
+              "10000"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "log",
+              "10000"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "log",
+              "10000"
+            ]
+          ],
+          "files": [
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "files",
+              "@0c202713c8cd1ca17528f22f66975af881f0456317b09a53f4120f28e6abdf80",
+              "--null"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "files",
+              "@b35fab81e5c2ec25f91fa8f085784fdf8e1b3b55fd280d9febd952f99b4d2039",
+              "--null"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "files",
+              "@2006c5537dc87e14b14b8d9e1862debab93087c4674d29abcf1fa166e365909d",
+              "--null"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "files",
+              "@2006c5537dc87e14b14b8d9e1862debab93087c4674d29abcf1fa166e365909d",
+              "--null"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "files",
+              "@25e5fe08060af08f01da663c2f65cb5e3ceb46a71958a2d7d1749ba7ac2f3728",
+              "--null"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "files",
+              "@25e5fe08060af08f01da663c2f65cb5e3ceb46a71958a2d7d1749ba7ac2f3728",
+              "--null"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "files",
+              "@9a9ec9522069230548d64507e741669661f18fbf7c29e4ed0d615674b1caf09b",
+              "--null"
+            ]
+          ],
+          "query": [
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "query",
+              "--batch",
+              "@0c202713c8cd1ca17528f22f66975af881f0456317b09a53f4120f28e6abdf80",
+              "--cache-bytes",
+              "0"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "query",
+              "--batch",
+              "@b35fab81e5c2ec25f91fa8f085784fdf8e1b3b55fd280d9febd952f99b4d2039",
+              "--cache-bytes",
+              "0"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "query",
+              "--batch",
+              "@2006c5537dc87e14b14b8d9e1862debab93087c4674d29abcf1fa166e365909d",
+              "--cache-bytes",
+              "0"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "query",
+              "--batch",
+              "@2006c5537dc87e14b14b8d9e1862debab93087c4674d29abcf1fa166e365909d",
+              "--cache-bytes",
+              "0"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "query",
+              "--batch",
+              "@25e5fe08060af08f01da663c2f65cb5e3ceb46a71958a2d7d1749ba7ac2f3728",
+              "--cache-bytes",
+              "0"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "query",
+              "--batch",
+              "@25e5fe08060af08f01da663c2f65cb5e3ceb46a71958a2d7d1749ba7ac2f3728",
+              "--cache-bytes",
+              "0"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "query",
+              "--batch",
+              "@9a9ec9522069230548d64507e741669661f18fbf7c29e4ed0d615674b1caf09b",
+              "--cache-bytes",
+              "0"
+            ]
+          ]
+        },
+        "loom": {
+          "initial": [
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ]
+          ],
+          "incremental": [
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ]
+          ],
+          "fsck": [
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "fsck"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "fsck"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "fsck"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "fsck"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "fsck"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "fsck"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "fsck"
+            ]
+          ],
+          "history": [
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "log",
+              "10000"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "log",
+              "10000"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "log",
+              "10000"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "log",
+              "10000"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "log",
+              "10000"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "log",
+              "10000"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "log",
+              "10000"
+            ]
+          ],
+          "files": [
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "files",
+              "@0c202713c8cd1ca17528f22f66975af881f0456317b09a53f4120f28e6abdf80",
+              "--null"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "files",
+              "@b35fab81e5c2ec25f91fa8f085784fdf8e1b3b55fd280d9febd952f99b4d2039",
+              "--null"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "files",
+              "@2006c5537dc87e14b14b8d9e1862debab93087c4674d29abcf1fa166e365909d",
+              "--null"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "files",
+              "@1e994a6a8045c31fb84166ba0e69db2163ddb8b10fcab0215cb3c21a36b0cb4d",
+              "--null"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "files",
+              "@1e994a6a8045c31fb84166ba0e69db2163ddb8b10fcab0215cb3c21a36b0cb4d",
+              "--null"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "files",
+              "@9a9ec9522069230548d64507e741669661f18fbf7c29e4ed0d615674b1caf09b",
+              "--null"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "files",
+              "@109d49487fd6864471856774d8f650ab8fe12b0afc2c2098b4cf36d6a5e4ead5",
+              "--null"
+            ]
+          ],
+          "query": [
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "query",
+              "--batch",
+              "@0c202713c8cd1ca17528f22f66975af881f0456317b09a53f4120f28e6abdf80",
+              "--cache-bytes",
+              "0"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "query",
+              "--batch",
+              "@b35fab81e5c2ec25f91fa8f085784fdf8e1b3b55fd280d9febd952f99b4d2039",
+              "--cache-bytes",
+              "0"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "query",
+              "--batch",
+              "@2006c5537dc87e14b14b8d9e1862debab93087c4674d29abcf1fa166e365909d",
+              "--cache-bytes",
+              "0"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "query",
+              "--batch",
+              "@1e994a6a8045c31fb84166ba0e69db2163ddb8b10fcab0215cb3c21a36b0cb4d",
+              "--cache-bytes",
+              "0"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "query",
+              "--batch",
+              "@1e994a6a8045c31fb84166ba0e69db2163ddb8b10fcab0215cb3c21a36b0cb4d",
+              "--cache-bytes",
+              "0"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "query",
+              "--batch",
+              "@9a9ec9522069230548d64507e741669661f18fbf7c29e4ed0d615674b1caf09b",
+              "--cache-bytes",
+              "0"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "query",
+              "--batch",
+              "@109d49487fd6864471856774d8f650ab8fe12b0afc2c2098b4cf36d6a5e4ead5",
+              "--cache-bytes",
+              "0"
+            ]
+          ]
+        },
+        "git": {
+          "initial": [
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "initial"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "initial"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "initial"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "initial"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "initial"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "initial"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "initial"
+              ]
+            ]
+          ],
+          "incremental": [
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "incremental"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "incremental"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "incremental"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "incremental"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "incremental"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "incremental"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "incremental"
+              ]
+            ]
+          ],
+          "fsck": [
+            [
+              "git",
+              "fsck",
+              "--full"
+            ],
+            [
+              "git",
+              "fsck",
+              "--full"
+            ],
+            [
+              "git",
+              "fsck",
+              "--full"
+            ],
+            [
+              "git",
+              "fsck",
+              "--full"
+            ],
+            [
+              "git",
+              "fsck",
+              "--full"
+            ],
+            [
+              "git",
+              "fsck",
+              "--full"
+            ],
+            [
+              "git",
+              "fsck",
+              "--full"
+            ]
+          ],
+          "history": [
+            [
+              "git",
+              "log",
+              "--max-count=10000",
+              "--format=%H %s"
+            ],
+            [
+              "git",
+              "log",
+              "--max-count=10000",
+              "--format=%H %s"
+            ],
+            [
+              "git",
+              "log",
+              "--max-count=10000",
+              "--format=%H %s"
+            ],
+            [
+              "git",
+              "log",
+              "--max-count=10000",
+              "--format=%H %s"
+            ],
+            [
+              "git",
+              "log",
+              "--max-count=10000",
+              "--format=%H %s"
+            ],
+            [
+              "git",
+              "log",
+              "--max-count=10000",
+              "--format=%H %s"
+            ],
+            [
+              "git",
+              "log",
+              "--max-count=10000",
+              "--format=%H %s"
+            ]
+          ],
+          "files": [
+            [
+              "git",
+              "ls-tree",
+              "-r",
+              "--name-only",
+              "-z",
+              "df40a2817c40d2f691f75a8f5304bfd663215a44"
+            ],
+            [
+              "git",
+              "ls-tree",
+              "-r",
+              "--name-only",
+              "-z",
+              "d457729cd44df2e82bfdc5eb5b9f7e1c56e99540"
+            ],
+            [
+              "git",
+              "ls-tree",
+              "-r",
+              "--name-only",
+              "-z",
+              "d457729cd44df2e82bfdc5eb5b9f7e1c56e99540"
+            ],
+            [
+              "git",
+              "ls-tree",
+              "-r",
+              "--name-only",
+              "-z",
+              "44becd65bc49a35f7c3aeabc9dde636faee27afb"
+            ],
+            [
+              "git",
+              "ls-tree",
+              "-r",
+              "--name-only",
+              "-z",
+              "b1a46bad6279923fa2d9cf5351b4bc95cac126b0"
+            ],
+            [
+              "git",
+              "ls-tree",
+              "-r",
+              "--name-only",
+              "-z",
+              "b1a46bad6279923fa2d9cf5351b4bc95cac126b0"
+            ],
+            [
+              "git",
+              "ls-tree",
+              "-r",
+              "--name-only",
+              "-z",
+              "8f70ddacbd18fdeeeb577f2f2dcbd0ac46b3d6c3"
+            ]
+          ],
+          "query": [
+            [
+              "git",
+              "cat-file",
+              "--batch"
+            ],
+            [
+              "git",
+              "cat-file",
+              "--batch"
+            ],
+            [
+              "git",
+              "cat-file",
+              "--batch"
+            ],
+            [
+              "git",
+              "cat-file",
+              "--batch"
+            ],
+            [
+              "git",
+              "cat-file",
+              "--batch"
+            ],
+            [
+              "git",
+              "cat-file",
+              "--batch"
+            ],
+            [
+              "git",
+              "cat-file",
+              "--batch"
+            ]
+          ]
+        }
+      },
+      "query_stdin": {
+        "baseline": [
+          {
+            "sha256": "b8c9d3035416bc44b437ccf3aa0f96f63c5fecfe486fd8cfc4407fece39fd1c5",
+            "bytes": 3766,
+            "requests": 64
+          },
+          {
+            "sha256": "b8c9d3035416bc44b437ccf3aa0f96f63c5fecfe486fd8cfc4407fece39fd1c5",
+            "bytes": 3766,
+            "requests": 64
+          },
+          {
+            "sha256": "b8c9d3035416bc44b437ccf3aa0f96f63c5fecfe486fd8cfc4407fece39fd1c5",
+            "bytes": 3766,
+            "requests": 64
+          },
+          {
+            "sha256": "b8c9d3035416bc44b437ccf3aa0f96f63c5fecfe486fd8cfc4407fece39fd1c5",
+            "bytes": 3766,
+            "requests": 64
+          },
+          {
+            "sha256": "b8c9d3035416bc44b437ccf3aa0f96f63c5fecfe486fd8cfc4407fece39fd1c5",
+            "bytes": 3766,
+            "requests": 64
+          },
+          {
+            "sha256": "b8c9d3035416bc44b437ccf3aa0f96f63c5fecfe486fd8cfc4407fece39fd1c5",
+            "bytes": 3766,
+            "requests": 64
+          },
+          {
+            "sha256": "b8c9d3035416bc44b437ccf3aa0f96f63c5fecfe486fd8cfc4407fece39fd1c5",
+            "bytes": 3766,
+            "requests": 64
+          }
+        ],
+        "loom": [
+          {
+            "sha256": "b8c9d3035416bc44b437ccf3aa0f96f63c5fecfe486fd8cfc4407fece39fd1c5",
+            "bytes": 3766,
+            "requests": 64
+          },
+          {
+            "sha256": "b8c9d3035416bc44b437ccf3aa0f96f63c5fecfe486fd8cfc4407fece39fd1c5",
+            "bytes": 3766,
+            "requests": 64
+          },
+          {
+            "sha256": "b8c9d3035416bc44b437ccf3aa0f96f63c5fecfe486fd8cfc4407fece39fd1c5",
+            "bytes": 3766,
+            "requests": 64
+          },
+          {
+            "sha256": "b8c9d3035416bc44b437ccf3aa0f96f63c5fecfe486fd8cfc4407fece39fd1c5",
+            "bytes": 3766,
+            "requests": 64
+          },
+          {
+            "sha256": "b8c9d3035416bc44b437ccf3aa0f96f63c5fecfe486fd8cfc4407fece39fd1c5",
+            "bytes": 3766,
+            "requests": 64
+          },
+          {
+            "sha256": "b8c9d3035416bc44b437ccf3aa0f96f63c5fecfe486fd8cfc4407fece39fd1c5",
+            "bytes": 3766,
+            "requests": 64
+          },
+          {
+            "sha256": "b8c9d3035416bc44b437ccf3aa0f96f63c5fecfe486fd8cfc4407fece39fd1c5",
+            "bytes": 3766,
+            "requests": 64
+          }
+        ],
+        "git": [
+          {
+            "sha256": "7b1c975e27ee89aa02beba1975f984a44409933f9cf74e89224b0892f7ba05f1",
+            "bytes": 4160,
+            "requests": 64
+          },
+          {
+            "sha256": "bacb958b0ebf17125bcbd0864d81a20601712f2b771ce140c25e9d7851a37806",
+            "bytes": 4160,
+            "requests": 64
+          },
+          {
+            "sha256": "bacb958b0ebf17125bcbd0864d81a20601712f2b771ce140c25e9d7851a37806",
+            "bytes": 4160,
+            "requests": 64
+          },
+          {
+            "sha256": "9db8af5240d8a6028cd900fe37fac35f5d0f228fab26312f20cec75b64c91918",
+            "bytes": 4160,
+            "requests": 64
+          },
+          {
+            "sha256": "43bd7cf53dcc1cab40a71b37925152f81b3c40c9334d7a766924bdf65f27aaef",
+            "bytes": 4160,
+            "requests": 64
+          },
+          {
+            "sha256": "43bd7cf53dcc1cab40a71b37925152f81b3c40c9334d7a766924bdf65f27aaef",
+            "bytes": 4160,
+            "requests": 64
+          },
+          {
+            "sha256": "b05fa9eed9352fc7aa26b6792d084604b39f38687fb1e3ae55121a328d8bc8e3",
+            "bytes": 4160,
+            "requests": 64
+          }
+        ]
+      },
+      "operations": {
+        "baseline": {
+          "initial": {
+            "wall_ms": {
+              "samples": [
+                99.697943,
+                104.993885,
+                108.521709,
+                109.310958,
+                105.867051,
+                100.869801,
+                169.866497
+              ],
+              "p50": 105.867051,
+              "p95": 151.69983529999996,
+              "p99": 166.23316465999997
+            },
+            "cpu_ms": {
+              "samples": [
+                57.010999999999996,
+                61.974999999999994,
+                55.959999999999994,
+                57.800000000000004,
+                55.55499999999999,
+                54.36000000000001,
+                79.633
+              ],
+              "p50": 57.010999999999996,
+              "p95": 74.33559999999999,
+              "p99": 78.57351999999999
+            },
+            "max_rss_kib": {
+              "samples": [
+                20872.0,
+                20872.0,
+                20872.0,
+                20872.0,
+                21000.0,
+                21000.0,
+                21000.0
+              ],
+              "p50": 20872.0,
+              "p95": 21000.0,
+              "p99": 21000.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                12784,
+                12744,
+                12744,
+                12744,
+                12744,
+                12744,
+                12744
+              ],
+              "p50": 12744,
+              "p95": 12772.0,
+              "p99": 12781.6
+            }
+          },
+          "incremental": {
+            "wall_ms": {
+              "samples": [
+                50.337654,
+                49.43637,
+                52.67165,
+                60.424465,
+                57.172779,
+                50.518412,
+                53.751948
+              ],
+              "p50": 52.67165,
+              "p95": 59.4489592,
+              "p99": 60.22936384
+            },
+            "cpu_ms": {
+              "samples": [
+                35.235,
+                33.139,
+                37.119,
+                37.724,
+                36.31699999999999,
+                32.785999999999994,
+                36.379999999999995
+              ],
+              "p50": 36.31699999999999,
+              "p95": 37.5425,
+              "p99": 37.6877
+            },
+            "max_rss_kib": {
+              "samples": [
+                20872.0,
+                20872.0,
+                20872.0,
+                20872.0,
+                21000.0,
+                21000.0,
+                21000.0
+              ],
+              "p50": 20872.0,
+              "p95": 21000.0,
+              "p99": 21000.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                9824,
+                9824,
+                9824,
+                9824,
+                9824,
+                9824,
+                9824
+              ],
+              "p50": 9824,
+              "p95": 9824.0,
+              "p99": 9824.0
+            }
+          },
+          "fsck": {
+            "wall_ms": {
+              "samples": [
+                141.835743,
+                124.311715,
+                137.627629,
+                136.609017,
+                129.328051,
+                152.27444,
+                146.432378
+              ],
+              "p50": 137.627629,
+              "p95": 150.5218214,
+              "p99": 151.92391628
+            },
+            "cpu_ms": {
+              "samples": [
+                140.431,
+                123.107,
+                136.631,
+                135.11599999999999,
+                127.85499999999999,
+                150.499,
+                145.13799999999998
+              ],
+              "p50": 136.631,
+              "p95": 148.89069999999998,
+              "p99": 150.17734
+            },
+            "max_rss_kib": {
+              "samples": [
+                20872.0,
+                20872.0,
+                20872.0,
+                20872.0,
+                21000.0,
+                21000.0,
+                21000.0
+              ],
+              "p50": 20872.0,
+              "p95": 21000.0,
+              "p99": 21000.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                26352,
+                26352,
+                26352,
+                26352,
+                26352,
+                26352,
+                26352
+              ],
+              "p50": 26352,
+              "p95": 26352.0,
+              "p99": 26352.0
+            }
+          },
+          "history": {
+            "wall_ms": {
+              "samples": [
+                7.808503,
+                8.513667,
+                7.847862,
+                7.542752,
+                7.776825,
+                9.15821,
+                8.925768
+              ],
+              "p50": 7.847862,
+              "p95": 9.0884774,
+              "p99": 9.144263480000001
+            },
+            "cpu_ms": {
+              "samples": [
+                7.5329999999999995,
+                8.216999999999999,
+                7.553,
+                7.236999999999999,
+                7.365,
+                8.865,
+                8.534
+              ],
+              "p50": 7.553,
+              "p95": 8.7657,
+              "p99": 8.84514
+            },
+            "max_rss_kib": {
+              "samples": [
+                20872.0,
+                20872.0,
+                20872.0,
+                20872.0,
+                21000.0,
+                21000.0,
+                21000.0
+              ],
+              "p50": 20872.0,
+              "p95": 21000.0,
+              "p99": 21000.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                2608,
+                2608,
+                2608,
+                2608,
+                2608,
+                2608,
+                2608
+              ],
+              "p50": 2608,
+              "p95": 2608.0,
+              "p99": 2608.0
+            }
+          },
+          "files": {
+            "wall_ms": {
+              "samples": [
+                9.189266,
+                10.647588,
+                9.094645,
+                9.037758,
+                9.710774,
+                9.664114,
+                10.713789
+              ],
+              "p50": 9.664114,
+              "p95": 10.6939287,
+              "p99": 10.70981694
+            },
+            "cpu_ms": {
+              "samples": [
+                7.286,
+                9.049999999999999,
+                7.513,
+                7.300999999999999,
+                7.596,
+                7.572,
+                7.404999999999999
+              ],
+              "p50": 7.513,
+              "p95": 8.613799999999998,
+              "p99": 8.962759999999998
+            },
+            "max_rss_kib": {
+              "samples": [
+                20872.0,
+                20872.0,
+                20872.0,
+                20872.0,
+                21000.0,
+                21000.0,
+                21000.0
+              ],
+              "p50": 20872.0,
+              "p95": 21000.0,
+              "p99": 21000.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                2736,
+                2736,
+                2736,
+                2736,
+                2736,
+                2736,
+                2736
+              ],
+              "p50": 2736,
+              "p95": 2736.0,
+              "p99": 2736.0
+            }
+          },
+          "query": {
+            "wall_ms": {
+              "samples": [
+                4.794365,
+                4.003882,
+                4.256933,
+                4.534027,
+                4.480121,
+                4.255822,
+                4.343284
+              ],
+              "p50": 4.343284,
+              "p95": 4.7162636,
+              "p99": 4.77874472
+            },
+            "cpu_ms": {
+              "samples": [
+                4.584,
+                3.7649999999999997,
+                3.994,
+                4.293,
+                4.161,
+                4.023,
+                4.032
+              ],
+              "p50": 4.032,
+              "p95": 4.4967,
+              "p99": 4.56654
+            },
+            "max_rss_kib": {
+              "samples": [
+                20872.0,
+                20872.0,
+                20872.0,
+                20872.0,
+                21000.0,
+                21000.0,
+                21000.0
+              ],
+              "p50": 20872.0,
+              "p95": 21000.0,
+              "p99": 21000.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                288,
+                288,
+                288,
+                288,
+                288,
+                288,
+                288
+              ],
+              "p50": 288,
+              "p95": 288.0,
+              "p99": 288.0
+            }
+          }
+        },
+        "loom": {
+          "initial": {
+            "wall_ms": {
+              "samples": [
+                80.493293,
+                112.007724,
+                90.944465,
+                93.660723,
+                80.345572,
+                93.58513,
+                109.553774
+              ],
+              "p50": 93.58513,
+              "p95": 111.27153899999999,
+              "p99": 111.86048699999999
+            },
+            "cpu_ms": {
+              "samples": [
+                41.373,
+                48.561,
+                42.132000000000005,
+                41.754,
+                39.788,
+                43.546,
+                46.82699999999999
+              ],
+              "p50": 42.132000000000005,
+              "p95": 48.0408,
+              "p99": 48.456959999999995
+            },
+            "max_rss_kib": {
+              "samples": [
+                20872.0,
+                20872.0,
+                20872.0,
+                20872.0,
+                21000.0,
+                21000.0,
+                21000.0
+              ],
+              "p50": 20872.0,
+              "p95": 21000.0,
+              "p99": 21000.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                12200,
+                12192,
+                12192,
+                12192,
+                12192,
+                12192,
+                12192
+              ],
+              "p50": 12192,
+              "p95": 12197.6,
+              "p99": 12199.52
+            }
+          },
+          "incremental": {
+            "wall_ms": {
+              "samples": [
+                44.581463,
+                45.906322,
+                46.634551,
+                40.055363,
+                53.736487,
+                44.822977,
+                50.42295
+              ],
+              "p50": 45.906322,
+              "p95": 52.74242589999999,
+              "p99": 53.537674779999996
+            },
+            "cpu_ms": {
+              "samples": [
+                30.534,
+                31.334,
+                26.105999999999998,
+                28.331000000000003,
+                33.032,
+                27.339000000000002,
+                30.104
+              ],
+              "p50": 30.104,
+              "p95": 32.5226,
+              "p99": 32.930119999999995
+            },
+            "max_rss_kib": {
+              "samples": [
+                20872.0,
+                20872.0,
+                20872.0,
+                20872.0,
+                21000.0,
+                21000.0,
+                21000.0
+              ],
+              "p50": 20872.0,
+              "p95": 21000.0,
+              "p99": 21000.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                9568,
+                9568,
+                9568,
+                9568,
+                9568,
+                9568,
+                9568
+              ],
+              "p50": 9568,
+              "p95": 9568.0,
+              "p99": 9568.0
+            }
+          },
+          "fsck": {
+            "wall_ms": {
+              "samples": [
+                50.638783,
+                61.544279,
+                53.610167,
+                45.336001,
+                43.691801,
+                51.970137,
+                45.183688
+              ],
+              "p50": 50.638783,
+              "p95": 59.16404539999999,
+              "p99": 61.06823228
+            },
+            "cpu_ms": {
+              "samples": [
+                50.367999999999995,
+                61.193,
+                53.33599999999999,
+                45.06,
+                43.439,
+                51.624,
+                44.808
+              ],
+              "p50": 50.367999999999995,
+              "p95": 58.83589999999999,
+              "p99": 60.721579999999996
+            },
+            "max_rss_kib": {
+              "samples": [
+                20872.0,
+                20872.0,
+                20872.0,
+                20872.0,
+                21000.0,
+                21000.0,
+                21000.0
+              ],
+              "p50": 20872.0,
+              "p95": 21000.0,
+              "p99": 21000.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                23368,
+                23368,
+                23368,
+                23368,
+                23368,
+                23368,
+                23368
+              ],
+              "p50": 23368,
+              "p95": 23368.0,
+              "p99": 23368.0
+            }
+          },
+          "history": {
+            "wall_ms": {
+              "samples": [
+                8.051319,
+                11.474355,
+                7.155337,
+                8.874195,
+                7.518005,
+                8.029589,
+                7.995149
+              ],
+              "p50": 8.029589,
+              "p95": 10.694306999999998,
+              "p99": 11.318345399999998
+            },
+            "cpu_ms": {
+              "samples": [
+                7.723,
+                11.165,
+                6.816999999999999,
+                8.527,
+                7.239,
+                7.470999999999999,
+                7.640999999999999
+              ],
+              "p50": 7.640999999999999,
+              "p95": 10.373599999999998,
+              "p99": 11.006719999999998
+            },
+            "max_rss_kib": {
+              "samples": [
+                20872.0,
+                20872.0,
+                20872.0,
+                20872.0,
+                21000.0,
+                21000.0,
+                21000.0
+              ],
+              "p50": 20872.0,
+              "p95": 21000.0,
+              "p99": 21000.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                2592,
+                2592,
+                2592,
+                2592,
+                2592,
+                2592,
+                2592
+              ],
+              "p50": 2592,
+              "p95": 2592.0,
+              "p99": 2592.0
+            }
+          },
+          "files": {
+            "wall_ms": {
+              "samples": [
+                8.697349,
+                10.52043,
+                10.978786,
+                10.612139,
+                9.135775,
+                9.637027,
+                9.838091
+              ],
+              "p50": 9.838091,
+              "p95": 10.8687919,
+              "p99": 10.95678718
+            },
+            "cpu_ms": {
+              "samples": [
+                7.109,
+                8.432,
+                9.007,
+                8.67,
+                7.552,
+                7.395,
+                7.452999999999999
+              ],
+              "p50": 7.552,
+              "p95": 8.905899999999999,
+              "p99": 8.98678
+            },
+            "max_rss_kib": {
+              "samples": [
+                20872.0,
+                20872.0,
+                20872.0,
+                20872.0,
+                21000.0,
+                21000.0,
+                21000.0
+              ],
+              "p50": 20872.0,
+              "p95": 21000.0,
+              "p99": 21000.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                2720,
+                2720,
+                2720,
+                2720,
+                2720,
+                2720,
+                2720
+              ],
+              "p50": 2720,
+              "p95": 2720.0,
+              "p99": 2720.0
+            }
+          },
+          "query": {
+            "wall_ms": {
+              "samples": [
+                3.084084,
+                3.722417,
+                3.397523,
+                3.448473,
+                3.055491,
+                3.299914,
+                4.375162
+              ],
+              "p50": 3.397523,
+              "p95": 4.1793385,
+              "p99": 4.3359973
+            },
+            "cpu_ms": {
+              "samples": [
+                2.832,
+                3.4029999999999996,
+                3.166,
+                3.189,
+                2.84,
+                3.072,
+                4.156
+              ],
+              "p50": 3.166,
+              "p95": 3.930099999999999,
+              "p99": 4.1108199999999995
+            },
+            "max_rss_kib": {
+              "samples": [
+                20872.0,
+                20872.0,
+                20872.0,
+                20872.0,
+                21000.0,
+                21000.0,
+                21000.0
+              ],
+              "p50": 20872.0,
+              "p95": 21000.0,
+              "p99": 21000.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                272,
+                272,
+                272,
+                272,
+                272,
+                272,
+                272
+              ],
+              "p50": 272,
+              "p95": 272.0,
+              "p99": 272.0
+            }
+          }
+        },
+        "git": {
+          "initial": {
+            "wall_ms": {
+              "samples": [
+                29.242276,
+                27.024129,
+                25.224373,
+                38.46323,
+                33.661444,
+                32.905058,
+                37.252921
+              ],
+              "p50": 32.905058,
+              "p95": 38.1001373,
+              "p99": 38.39061146
+            },
+            "cpu_ms": {
+              "samples": [
+                27.595,
+                25.844,
+                24.192999999999998,
+                37.381,
+                32.319,
+                31.883,
+                35.806
+              ],
+              "p50": 31.883,
+              "p95": 36.9085,
+              "p99": 37.2865
+            },
+            "max_rss_kib": {
+              "samples": [
+                20872.0,
+                20872.0,
+                20872.0,
+                20872.0,
+                21000.0,
+                21000.0,
+                21000.0
+              ],
+              "p50": 20872.0,
+              "p95": 21000.0,
+              "p99": 21000.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                2112,
+                768,
+                840,
+                888,
+                608,
+                648,
+                592
+              ],
+              "p50": 768,
+              "p95": 1744.7999999999993,
+              "p99": 2038.5599999999995
+            }
+          },
+          "incremental": {
+            "wall_ms": {
+              "samples": [
+                12.921308,
+                13.367061,
+                15.094797,
+                13.00751,
+                13.52159,
+                14.00974,
+                13.669185
+              ],
+              "p50": 13.52159,
+              "p95": 14.769279899999999,
+              "p99": 15.02969358
+            },
+            "cpu_ms": {
+              "samples": [
+                11.567999999999998,
+                12.097000000000001,
+                13.716,
+                11.918,
+                12.363,
+                12.202,
+                12.469999999999999
+              ],
+              "p50": 12.202,
+              "p95": 13.342199999999998,
+              "p99": 13.641239999999998
+            },
+            "max_rss_kib": {
+              "samples": [
+                20872.0,
+                20872.0,
+                20872.0,
+                20872.0,
+                21000.0,
+                21000.0,
+                21000.0
+              ],
+              "p50": 20872.0,
+              "p95": 21000.0,
+              "p99": 21000.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                480,
+                256,
+                240,
+                184,
+                184,
+                192,
+                184
+              ],
+              "p50": 192,
+              "p95": 412.79999999999984,
+              "p99": 466.5599999999999
+            }
+          },
+          "fsck": {
+            "wall_ms": {
+              "samples": [
+                7.893742,
+                7.914262,
+                7.929875,
+                7.948123,
+                8.163629,
+                6.559478,
+                7.095794
+              ],
+              "p50": 7.914262,
+              "p95": 8.0989772,
+              "p99": 8.15069864
+            },
+            "cpu_ms": {
+              "samples": [
+                7.6530000000000005,
+                7.760999999999999,
+                7.68,
+                7.787,
+                8.003,
+                6.366999999999999,
+                6.942
+              ],
+              "p50": 7.68,
+              "p95": 7.9382,
+              "p99": 7.99004
+            },
+            "max_rss_kib": {
+              "samples": [
+                20872.0,
+                20872.0,
+                20872.0,
+                20872.0,
+                21000.0,
+                21000.0,
+                21000.0
+              ],
+              "p50": 20872.0,
+              "p95": 21000.0,
+              "p99": 21000.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            }
+          },
+          "history": {
+            "wall_ms": {
+              "samples": [
+                1.812455,
+                1.467455,
+                1.435186,
+                1.483969,
+                1.699925,
+                1.432021,
+                1.505515
+              ],
+              "p50": 1.483969,
+              "p95": 1.7786959999999998,
+              "p99": 1.8057032
+            },
+            "cpu_ms": {
+              "samples": [
+                1.516,
+                1.264,
+                1.1869999999999998,
+                1.2779999999999998,
+                1.421,
+                1.202,
+                1.286
+              ],
+              "p50": 1.2779999999999998,
+              "p95": 1.4875,
+              "p99": 1.5103
+            },
+            "max_rss_kib": {
+              "samples": [
+                20872.0,
+                20872.0,
+                20872.0,
+                20872.0,
+                21000.0,
+                21000.0,
+                21000.0
+              ],
+              "p50": 20872.0,
+              "p95": 21000.0,
+              "p99": 21000.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8
+              ],
+              "p50": 8,
+              "p95": 8.0,
+              "p99": 8.0
+            }
+          },
+          "files": {
+            "wall_ms": {
+              "samples": [
+                1.719495,
+                2.044184,
+                1.686385,
+                1.487044,
+                1.841609,
+                1.582057,
+                1.489596
+              ],
+              "p50": 1.686385,
+              "p95": 1.9834114999999999,
+              "p99": 2.0320294999999997
+            },
+            "cpu_ms": {
+              "samples": [
+                1.504,
+                1.838,
+                1.356,
+                1.282,
+                1.615,
+                1.337,
+                1.283
+              ],
+              "p50": 1.356,
+              "p95": 1.7711,
+              "p99": 1.82462
+            },
+            "max_rss_kib": {
+              "samples": [
+                20872.0,
+                20872.0,
+                20872.0,
+                20872.0,
+                21000.0,
+                21000.0,
+                21000.0
+              ],
+              "p50": 20872.0,
+              "p95": 21000.0,
+              "p99": 21000.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8
+              ],
+              "p50": 8,
+              "p95": 8.0,
+              "p99": 8.0
+            }
+          },
+          "query": {
+            "wall_ms": {
+              "samples": [
+                4.176292,
+                4.073126,
+                3.936581,
+                3.977382,
+                4.331997,
+                3.709267,
+                3.842296
+              ],
+              "p50": 3.977382,
+              "p95": 4.2852855000000005,
+              "p99": 4.3226547
+            },
+            "cpu_ms": {
+              "samples": [
+                3.9490000000000003,
+                3.8789999999999996,
+                3.7329999999999997,
+                3.7779999999999996,
+                3.885,
+                3.485,
+                3.548
+              ],
+              "p50": 3.7779999999999996,
+              "p95": 3.9298,
+              "p99": 3.9451600000000004
+            },
+            "max_rss_kib": {
+              "samples": [
+                20872.0,
+                20872.0,
+                20872.0,
+                20872.0,
+                21000.0,
+                21000.0,
+                21000.0
+              ],
+              "p50": 20872.0,
+              "p95": 21000.0,
+              "p99": 21000.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                40,
+                40,
+                40,
+                40,
+                40,
+                40,
+                40
+              ],
+              "p50": 40,
+              "p95": 40.0,
+              "p99": 40.0
+            }
+          }
+        }
+      },
+      "canonical_roots": {
+        "baseline": [
+          "aa6a4213d031f2085022c969c032c0bfef92730981ad5cbb9d22f23980b2000f",
+          "aa6a4213d031f2085022c969c032c0bfef92730981ad5cbb9d22f23980b2000f",
+          "aa6a4213d031f2085022c969c032c0bfef92730981ad5cbb9d22f23980b2000f",
+          "aa6a4213d031f2085022c969c032c0bfef92730981ad5cbb9d22f23980b2000f",
+          "aa6a4213d031f2085022c969c032c0bfef92730981ad5cbb9d22f23980b2000f",
+          "aa6a4213d031f2085022c969c032c0bfef92730981ad5cbb9d22f23980b2000f",
+          "aa6a4213d031f2085022c969c032c0bfef92730981ad5cbb9d22f23980b2000f"
+        ],
+        "loom": [
+          "aa6a4213d031f2085022c969c032c0bfef92730981ad5cbb9d22f23980b2000f",
+          "aa6a4213d031f2085022c969c032c0bfef92730981ad5cbb9d22f23980b2000f",
+          "aa6a4213d031f2085022c969c032c0bfef92730981ad5cbb9d22f23980b2000f",
+          "aa6a4213d031f2085022c969c032c0bfef92730981ad5cbb9d22f23980b2000f",
+          "aa6a4213d031f2085022c969c032c0bfef92730981ad5cbb9d22f23980b2000f",
+          "aa6a4213d031f2085022c969c032c0bfef92730981ad5cbb9d22f23980b2000f",
+          "aa6a4213d031f2085022c969c032c0bfef92730981ad5cbb9d22f23980b2000f"
+        ]
+      },
+      "metadata_footprints": {
+        "baseline": [
+          [
+            180224,
+            184320
+          ],
+          [
+            180224,
+            184320
+          ],
+          [
+            180224,
+            184320
+          ],
+          [
+            180224,
+            184320
+          ],
+          [
+            180224,
+            184320
+          ],
+          [
+            180224,
+            184320
+          ],
+          [
+            180224,
+            184320
+          ]
+        ],
+        "loom": [
+          [
+            180224,
+            184320
+          ],
+          [
+            180224,
+            184320
+          ],
+          [
+            180224,
+            184320
+          ],
+          [
+            180224,
+            184320
+          ],
+          [
+            180224,
+            184320
+          ],
+          [
+            180224,
+            184320
+          ],
+          [
+            180224,
+            184320
+          ]
+        ],
+        "git": [
+          [
+            37188,
+            454656
+          ],
+          [
+            37187,
+            454656
+          ],
+          [
+            37187,
+            454656
+          ],
+          [
+            37187,
+            454656
+          ],
+          [
+            37188,
+            454656
+          ],
+          [
+            37188,
+            454656
+          ],
+          [
+            37187,
+            454656
+          ]
+        ]
+      },
+      "baseline_over_loom_p50": {
+        "initial": 1.1312379541493398,
+        "incremental": 1.147372468654753,
+        "fsck": 2.7178305015742583,
+        "history": 0.9773678328990438,
+        "files": 0.9823159797973,
+        "query": 1.2783677991289535
+      },
+      "git_over_loom_p50": {
+        "initial": 0.3516056236711964,
+        "incremental": 0.29454744817064626,
+        "fsck": 0.1562885506154443,
+        "history": 0.18481257259867226,
+        "files": 0.17141384441351476,
+        "query": 1.1706711036246111
+      }
+    },
+    {
+      "files": 256,
+      "file_bytes": 256,
+      "directories": 32,
+      "loom_scan_workers": 0,
+      "changed_files": 8,
+      "started_argv": {
+        "baseline": {
+          "initial": [
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ]
+          ],
+          "incremental": [
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ]
+          ],
+          "fsck": [
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "fsck"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "fsck"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "fsck"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "fsck"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "fsck"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "fsck"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "fsck"
+            ]
+          ],
+          "history": [
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "log",
+              "10000"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "log",
+              "10000"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "log",
+              "10000"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "log",
+              "10000"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "log",
+              "10000"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "log",
+              "10000"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "log",
+              "10000"
+            ]
+          ],
+          "files": [
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "files",
+              "@213e63e5ef525574ec4e1ebb3db97f3291613a62406233be0eef14a1dc463540",
+              "--null"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "files",
+              "@f2dd68e4105d08b84a37c79e95a4db56203c836dde86d745d835b91638b6e604",
+              "--null"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "files",
+              "@a8a13a4a9489e0508d41ef1a958417b247a9ff3b3257142990865a3bed7248da",
+              "--null"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "files",
+              "@c5b2f0bdb474514d6d99423849029f335ceee4456c49b0337a23beabe1c80499",
+              "--null"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "files",
+              "@046da2a5d685e73a13a4fbc569799f71a87fb043f5dc315e49c33ace7f7b1f2c",
+              "--null"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "files",
+              "@d510427060de4e3ea72a43deb843b780aa2a55208b2ca2722148566f184495a5",
+              "--null"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "files",
+              "@88828f9e1948661d59c5a3d692cfa3c7b672a18f5ce1af4fa069a6a8919f2069",
+              "--null"
+            ]
+          ],
+          "query": [
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "query",
+              "--batch",
+              "@213e63e5ef525574ec4e1ebb3db97f3291613a62406233be0eef14a1dc463540",
+              "--cache-bytes",
+              "0"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "query",
+              "--batch",
+              "@f2dd68e4105d08b84a37c79e95a4db56203c836dde86d745d835b91638b6e604",
+              "--cache-bytes",
+              "0"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "query",
+              "--batch",
+              "@a8a13a4a9489e0508d41ef1a958417b247a9ff3b3257142990865a3bed7248da",
+              "--cache-bytes",
+              "0"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "query",
+              "--batch",
+              "@c5b2f0bdb474514d6d99423849029f335ceee4456c49b0337a23beabe1c80499",
+              "--cache-bytes",
+              "0"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "query",
+              "--batch",
+              "@046da2a5d685e73a13a4fbc569799f71a87fb043f5dc315e49c33ace7f7b1f2c",
+              "--cache-bytes",
+              "0"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "query",
+              "--batch",
+              "@d510427060de4e3ea72a43deb843b780aa2a55208b2ca2722148566f184495a5",
+              "--cache-bytes",
+              "0"
+            ],
+            [
+              "/tmp/loom-ro-baseline-target/release/loom",
+              "query",
+              "--batch",
+              "@88828f9e1948661d59c5a3d692cfa3c7b672a18f5ce1af4fa069a6a8919f2069",
+              "--cache-bytes",
+              "0"
+            ]
+          ]
+        },
+        "loom": {
+          "initial": [
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "initial"
+            ]
+          ],
+          "incremental": [
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "commit",
+              "--scan-workers",
+              "0",
+              "-m",
+              "incremental"
+            ]
+          ],
+          "fsck": [
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "fsck"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "fsck"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "fsck"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "fsck"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "fsck"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "fsck"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "fsck"
+            ]
+          ],
+          "history": [
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "log",
+              "10000"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "log",
+              "10000"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "log",
+              "10000"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "log",
+              "10000"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "log",
+              "10000"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "log",
+              "10000"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "log",
+              "10000"
+            ]
+          ],
+          "files": [
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "files",
+              "@7d337215e263782668b17594db809f9b7bd2e9e90a56613a3e3c86948511248d",
+              "--null"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "files",
+              "@35f50dd613ee8f9fafc1eb692cc8348b65583d1012818de08449e7cd32fe0085",
+              "--null"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "files",
+              "@864f2d1e1648bac3b970f24e660e804c18eeb00d77add9ff3daafe3f73fbe150",
+              "--null"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "files",
+              "@c906101f38fd79c1cb290d876a92ffdad1d7f49e7e42929bf51152768e6ee092",
+              "--null"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "files",
+              "@5251618beef05848ec718fc2f900c029998542ffba3716dbc162eb7631512c79",
+              "--null"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "files",
+              "@3b4424057edeb5bfe9a27b77268b297af86dfc0dd6b5e79da677bee462cd35fc",
+              "--null"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "files",
+              "@8a30fe9125ccb37720676aa0140119dc41927b01e8c661733e65e4c035ad2b3d",
+              "--null"
+            ]
+          ],
+          "query": [
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "query",
+              "--batch",
+              "@7d337215e263782668b17594db809f9b7bd2e9e90a56613a3e3c86948511248d",
+              "--cache-bytes",
+              "0"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "query",
+              "--batch",
+              "@35f50dd613ee8f9fafc1eb692cc8348b65583d1012818de08449e7cd32fe0085",
+              "--cache-bytes",
+              "0"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "query",
+              "--batch",
+              "@864f2d1e1648bac3b970f24e660e804c18eeb00d77add9ff3daafe3f73fbe150",
+              "--cache-bytes",
+              "0"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "query",
+              "--batch",
+              "@c906101f38fd79c1cb290d876a92ffdad1d7f49e7e42929bf51152768e6ee092",
+              "--cache-bytes",
+              "0"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "query",
+              "--batch",
+              "@5251618beef05848ec718fc2f900c029998542ffba3716dbc162eb7631512c79",
+              "--cache-bytes",
+              "0"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "query",
+              "--batch",
+              "@3b4424057edeb5bfe9a27b77268b297af86dfc0dd6b5e79da677bee462cd35fc",
+              "--cache-bytes",
+              "0"
+            ],
+            [
+              "/tmp/loom-ro-candidate-target/release/loom",
+              "query",
+              "--batch",
+              "@8a30fe9125ccb37720676aa0140119dc41927b01e8c661733e65e4c035ad2b3d",
+              "--cache-bytes",
+              "0"
+            ]
+          ]
+        },
+        "git": {
+          "initial": [
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "initial"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "initial"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "initial"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "initial"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "initial"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "initial"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "initial"
+              ]
+            ]
+          ],
+          "incremental": [
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "incremental"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "incremental"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "incremental"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "incremental"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "incremental"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "incremental"
+              ]
+            ],
+            [
+              [
+                "git",
+                "add",
+                "--",
+                "files"
+              ],
+              [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "incremental"
+              ]
+            ]
+          ],
+          "fsck": [
+            [
+              "git",
+              "fsck",
+              "--full"
+            ],
+            [
+              "git",
+              "fsck",
+              "--full"
+            ],
+            [
+              "git",
+              "fsck",
+              "--full"
+            ],
+            [
+              "git",
+              "fsck",
+              "--full"
+            ],
+            [
+              "git",
+              "fsck",
+              "--full"
+            ],
+            [
+              "git",
+              "fsck",
+              "--full"
+            ],
+            [
+              "git",
+              "fsck",
+              "--full"
+            ]
+          ],
+          "history": [
+            [
+              "git",
+              "log",
+              "--max-count=10000",
+              "--format=%H %s"
+            ],
+            [
+              "git",
+              "log",
+              "--max-count=10000",
+              "--format=%H %s"
+            ],
+            [
+              "git",
+              "log",
+              "--max-count=10000",
+              "--format=%H %s"
+            ],
+            [
+              "git",
+              "log",
+              "--max-count=10000",
+              "--format=%H %s"
+            ],
+            [
+              "git",
+              "log",
+              "--max-count=10000",
+              "--format=%H %s"
+            ],
+            [
+              "git",
+              "log",
+              "--max-count=10000",
+              "--format=%H %s"
+            ],
+            [
+              "git",
+              "log",
+              "--max-count=10000",
+              "--format=%H %s"
+            ]
+          ],
+          "files": [
+            [
+              "git",
+              "ls-tree",
+              "-r",
+              "--name-only",
+              "-z",
+              "89eb2f56347395d8a67edd21e050c215c2a1df7a"
+            ],
+            [
+              "git",
+              "ls-tree",
+              "-r",
+              "--name-only",
+              "-z",
+              "2b6a9c6c4922a3b396f491d36bd82c144c3475e5"
+            ],
+            [
+              "git",
+              "ls-tree",
+              "-r",
+              "--name-only",
+              "-z",
+              "83f7e0299974f24d55ca06377637fed8c70e0e84"
+            ],
+            [
+              "git",
+              "ls-tree",
+              "-r",
+              "--name-only",
+              "-z",
+              "6c1b27bc4db13e1ab91db61f57b100e3be6409e3"
+            ],
+            [
+              "git",
+              "ls-tree",
+              "-r",
+              "--name-only",
+              "-z",
+              "21773e0a7c2189f5f1c0e67e85684b4f8c9f13d2"
+            ],
+            [
+              "git",
+              "ls-tree",
+              "-r",
+              "--name-only",
+              "-z",
+              "bbb3bc63890751c4a89b7e5505c11b8e0df6e6ff"
+            ],
+            [
+              "git",
+              "ls-tree",
+              "-r",
+              "--name-only",
+              "-z",
+              "b2db35d4c32d4f4a4eaf85db2859901f9a009000"
+            ]
+          ],
+          "query": [
+            [
+              "git",
+              "cat-file",
+              "--batch"
+            ],
+            [
+              "git",
+              "cat-file",
+              "--batch"
+            ],
+            [
+              "git",
+              "cat-file",
+              "--batch"
+            ],
+            [
+              "git",
+              "cat-file",
+              "--batch"
+            ],
+            [
+              "git",
+              "cat-file",
+              "--batch"
+            ],
+            [
+              "git",
+              "cat-file",
+              "--batch"
+            ],
+            [
+              "git",
+              "cat-file",
+              "--batch"
+            ]
+          ]
+        }
+      },
+      "query_stdin": {
+        "baseline": [
+          {
+            "sha256": "c95712b9f057f8213b6a710e7cd844656b10686d9e7f2834796010511fb4ce25",
+            "bytes": 30610,
+            "requests": 512
+          },
+          {
+            "sha256": "c95712b9f057f8213b6a710e7cd844656b10686d9e7f2834796010511fb4ce25",
+            "bytes": 30610,
+            "requests": 512
+          },
+          {
+            "sha256": "c95712b9f057f8213b6a710e7cd844656b10686d9e7f2834796010511fb4ce25",
+            "bytes": 30610,
+            "requests": 512
+          },
+          {
+            "sha256": "c95712b9f057f8213b6a710e7cd844656b10686d9e7f2834796010511fb4ce25",
+            "bytes": 30610,
+            "requests": 512
+          },
+          {
+            "sha256": "c95712b9f057f8213b6a710e7cd844656b10686d9e7f2834796010511fb4ce25",
+            "bytes": 30610,
+            "requests": 512
+          },
+          {
+            "sha256": "c95712b9f057f8213b6a710e7cd844656b10686d9e7f2834796010511fb4ce25",
+            "bytes": 30610,
+            "requests": 512
+          },
+          {
+            "sha256": "c95712b9f057f8213b6a710e7cd844656b10686d9e7f2834796010511fb4ce25",
+            "bytes": 30610,
+            "requests": 512
+          }
+        ],
+        "loom": [
+          {
+            "sha256": "c95712b9f057f8213b6a710e7cd844656b10686d9e7f2834796010511fb4ce25",
+            "bytes": 30610,
+            "requests": 512
+          },
+          {
+            "sha256": "c95712b9f057f8213b6a710e7cd844656b10686d9e7f2834796010511fb4ce25",
+            "bytes": 30610,
+            "requests": 512
+          },
+          {
+            "sha256": "c95712b9f057f8213b6a710e7cd844656b10686d9e7f2834796010511fb4ce25",
+            "bytes": 30610,
+            "requests": 512
+          },
+          {
+            "sha256": "c95712b9f057f8213b6a710e7cd844656b10686d9e7f2834796010511fb4ce25",
+            "bytes": 30610,
+            "requests": 512
+          },
+          {
+            "sha256": "c95712b9f057f8213b6a710e7cd844656b10686d9e7f2834796010511fb4ce25",
+            "bytes": 30610,
+            "requests": 512
+          },
+          {
+            "sha256": "c95712b9f057f8213b6a710e7cd844656b10686d9e7f2834796010511fb4ce25",
+            "bytes": 30610,
+            "requests": 512
+          },
+          {
+            "sha256": "c95712b9f057f8213b6a710e7cd844656b10686d9e7f2834796010511fb4ce25",
+            "bytes": 30610,
+            "requests": 512
+          }
+        ],
+        "git": [
+          {
+            "sha256": "e8f6d4166838d8727aa54fc6dd337a851fc4a9f94d9017639985d70f71fbc8c3",
+            "bytes": 33280,
+            "requests": 512
+          },
+          {
+            "sha256": "ddd2d181b98f733b24f84ee90c0d77a3f98df79cc518018ffcf5412eacb3ea93",
+            "bytes": 33280,
+            "requests": 512
+          },
+          {
+            "sha256": "1a34dfda0c6a4cd55a196cbe227d0cafe988343889c85e53c15402434f063f9b",
+            "bytes": 33280,
+            "requests": 512
+          },
+          {
+            "sha256": "981df21625b87a83f74e3efee92b42d63b7f88c41ea1e80524ec97823b588a04",
+            "bytes": 33280,
+            "requests": 512
+          },
+          {
+            "sha256": "50f6110ee7d90339ba4bb99079a3eda6adcc8f2eec83b7536fa57da65bd61486",
+            "bytes": 33280,
+            "requests": 512
+          },
+          {
+            "sha256": "53b790f8faec8310c466a105e3bc4f23184502d49ab09735f9a87fd10c0c0388",
+            "bytes": 33280,
+            "requests": 512
+          },
+          {
+            "sha256": "6272456985a819eec6435edcd27a11f00782317ae025a4b2e4d1ac476b5f6a49",
+            "bytes": 33280,
+            "requests": 512
+          }
+        ]
+      },
+      "operations": {
+        "baseline": {
+          "initial": {
+            "wall_ms": {
+              "samples": [
+                301.794339,
+                240.596889,
+                254.735342,
+                254.745597,
+                263.464869,
+                255.383569,
+                282.949
+              ],
+              "p50": 255.383569,
+              "p95": 296.14073729999996,
+              "p99": 300.66361866
+            },
+            "cpu_ms": {
+              "samples": [
+                229.185,
+                198.862,
+                206.41199999999998,
+                202.119,
+                214.134,
+                203.16299999999998,
+                216.84499999999997
+              ],
+              "p50": 206.41199999999998,
+              "p95": 225.48299999999998,
+              "p99": 228.44459999999998
+            },
+            "max_rss_kib": {
+              "samples": [
+                21000.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0
+              ],
+              "p50": 21128.0,
+              "p95": 21128.0,
+              "p99": 21128.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                40768,
+                40752,
+                40752,
+                40752,
+                40752,
+                40752,
+                40752
+              ],
+              "p50": 40752,
+              "p95": 40763.2,
+              "p99": 40767.04
+            }
+          },
+          "incremental": {
+            "wall_ms": {
+              "samples": [
+                104.752931,
+                119.687312,
+                185.136278,
+                157.568339,
+                100.898845,
+                113.99069,
+                114.329246
+              ],
+              "p50": 114.329246,
+              "p95": 176.86589629999997,
+              "p99": 183.48220166
+            },
+            "cpu_ms": {
+              "samples": [
+                87.5,
+                102.658,
+                96.26299999999999,
+                112.69399999999999,
+                84.838,
+                100.06099999999999,
+                95.078
+              ],
+              "p50": 96.26299999999999,
+              "p95": 109.68319999999999,
+              "p99": 112.09183999999999
+            },
+            "max_rss_kib": {
+              "samples": [
+                21000.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0
+              ],
+              "p50": 21128.0,
+              "p95": 21128.0,
+              "p99": 21128.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                34992,
+                34992,
+                34992,
+                34992,
+                34992,
+                34992,
+                34992
+              ],
+              "p50": 34992,
+              "p95": 34992.0,
+              "p99": 34992.0
+            }
+          },
+          "fsck": {
+            "wall_ms": {
+              "samples": [
+                808.446178,
+                780.792251,
+                808.453113,
+                782.541888,
+                817.526291,
+                759.729596,
+                816.784428
+              ],
+              "p50": 808.446178,
+              "p95": 817.3037321,
+              "p99": 817.48177922
+            },
+            "cpu_ms": {
+              "samples": [
+                800.5360000000001,
+                773.002,
+                799.7099999999999,
+                773.252,
+                808.1229999999999,
+                751.811,
+                806.264
+              ],
+              "p50": 799.7099999999999,
+              "p95": 807.5653,
+              "p99": 808.0114599999999
+            },
+            "max_rss_kib": {
+              "samples": [
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0
+              ],
+              "p50": 21128.0,
+              "p95": 21128.0,
+              "p99": 21128.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                114160,
+                114160,
+                114160,
+                114160,
+                114160,
+                114160,
+                114160
+              ],
+              "p50": 114160,
+              "p95": 114160.0,
+              "p99": 114160.0
+            }
+          },
+          "history": {
+            "wall_ms": {
+              "samples": [
+                31.662859,
+                34.787113,
+                31.121155,
+                32.217792,
+                31.458081,
+                37.627518,
+                32.183062
+              ],
+              "p50": 32.183062,
+              "p95": 36.7753965,
+              "p99": 37.4570937
+            },
+            "cpu_ms": {
+              "samples": [
+                31.201,
+                34.478,
+                30.766,
+                31.79,
+                31.134999999999994,
+                37.269,
+                31.831
+              ],
+              "p50": 31.79,
+              "p95": 36.4317,
+              "p99": 37.10154
+            },
+            "max_rss_kib": {
+              "samples": [
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0
+              ],
+              "p50": 21128.0,
+              "p95": 21128.0,
+              "p99": 21128.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                15152,
+                15152,
+                15152,
+                15152,
+                15152,
+                15152,
+                15152
+              ],
+              "p50": 15152,
+              "p95": 15152.0,
+              "p99": 15152.0
+            }
+          },
+          "files": {
+            "wall_ms": {
+              "samples": [
+                39.208738,
+                39.985041,
+                33.481224,
+                36.678379,
+                35.788403,
+                34.881479,
+                32.919262
+              ],
+              "p50": 35.788403,
+              "p95": 39.7521501,
+              "p99": 39.938462820000005
+            },
+            "cpu_ms": {
+              "samples": [
+                33.957,
+                37.852,
+                30.822,
+                34.351,
+                34.044,
+                33.195,
+                30.955999999999996
+              ],
+              "p50": 33.957,
+              "p95": 36.8017,
+              "p99": 37.64194
+            },
+            "max_rss_kib": {
+              "samples": [
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0
+              ],
+              "p50": 21128.0,
+              "p95": 21128.0,
+              "p99": 21128.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                15544,
+                15544,
+                15544,
+                15544,
+                15544,
+                15544,
+                15544
+              ],
+              "p50": 15544,
+              "p95": 15544.0,
+              "p99": 15544.0
+            }
+          },
+          "query": {
+            "wall_ms": {
+              "samples": [
+                17.239987,
+                16.986838,
+                17.557598,
+                15.96859,
+                16.738349,
+                17.508096,
+                34.341465
+              ],
+              "p50": 17.239987,
+              "p95": 29.306304899999986,
+              "p99": 33.33443297999999
+            },
+            "cpu_ms": {
+              "samples": [
+                16.944999999999997,
+                16.691,
+                17.266999999999996,
+                15.6,
+                16.467,
+                17.226,
+                33.971000000000004
+              ],
+              "p50": 16.944999999999997,
+              "p95": 28.959799999999987,
+              "p99": 32.968759999999996
+            },
+            "max_rss_kib": {
+              "samples": [
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0
+              ],
+              "p50": 21128.0,
+              "p95": 21128.0,
+              "p99": 21128.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                568,
+                568,
+                568,
+                568,
+                568,
+                568,
+                568
+              ],
+              "p50": 568,
+              "p95": 568.0,
+              "p99": 568.0
+            }
+          }
+        },
+        "loom": {
+          "initial": {
+            "wall_ms": {
+              "samples": [
+                167.264223,
+                152.802292,
+                152.297542,
+                149.442707,
+                171.502195,
+                164.158013,
+                150.289722
+              ],
+              "p50": 152.802292,
+              "p95": 170.23080339999999,
+              "p99": 171.24791668
+            },
+            "cpu_ms": {
+              "samples": [
+                116.206,
+                97.498,
+                100.813,
+                105.581,
+                113.27999999999999,
+                114.893,
+                97.835
+              ],
+              "p50": 105.581,
+              "p95": 115.8121,
+              "p99": 116.12722000000001
+            },
+            "max_rss_kib": {
+              "samples": [
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0
+              ],
+              "p50": 21128.0,
+              "p95": 21128.0,
+              "p99": 21128.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                38408,
+                38408,
+                38408,
+                38424,
+                38408,
+                38408,
+                38408
+              ],
+              "p50": 38408,
+              "p95": 38419.2,
+              "p99": 38423.04
+            }
+          },
+          "incremental": {
+            "wall_ms": {
+              "samples": [
+                118.182891,
+                90.712909,
+                111.944445,
+                98.715813,
+                108.700624,
+                89.777308,
+                100.445138
+              ],
+              "p50": 100.445138,
+              "p95": 116.31135719999999,
+              "p99": 117.80858423999999
+            },
+            "cpu_ms": {
+              "samples": [
+                97.229,
+                74.125,
+                94.152,
+                80.92699999999999,
+                91.02799999999999,
+                74.946,
+                81.77
+              ],
+              "p50": 81.77,
+              "p95": 96.3059,
+              "p99": 97.04438
+            },
+            "max_rss_kib": {
+              "samples": [
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0
+              ],
+              "p50": 21128.0,
+              "p95": 21128.0,
+              "p99": 21128.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                34736,
+                34736,
+                34736,
+                34736,
+                34736,
+                34736,
+                34736
+              ],
+              "p50": 34736,
+              "p95": 34736.0,
+              "p99": 34736.0
+            }
+          },
+          "fsck": {
+            "wall_ms": {
+              "samples": [
+                216.41589,
+                194.602117,
+                222.446741,
+                243.396734,
+                189.397521,
+                190.464828,
+                186.830673
+              ],
+              "p50": 194.602117,
+              "p95": 237.1117361,
+              "p99": 242.13973442
+            },
+            "cpu_ms": {
+              "samples": [
+                215.941,
+                194.03199999999998,
+                221.87800000000001,
+                242.93300000000002,
+                188.94099999999997,
+                189.992,
+                186.42399999999998
+              ],
+              "p50": 194.03199999999998,
+              "p95": 236.6165,
+              "p99": 241.6697
+            },
+            "max_rss_kib": {
+              "samples": [
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0
+              ],
+              "p50": 21128.0,
+              "p95": 21128.0,
+              "p99": 21128.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                101768,
+                101768,
+                101768,
+                101768,
+                101768,
+                101768,
+                101768
+              ],
+              "p50": 101768,
+              "p95": 101768.0,
+              "p99": 101768.0
+            }
+          },
+          "history": {
+            "wall_ms": {
+              "samples": [
+                31.751256,
+                35.70683,
+                32.829515,
+                32.120617,
+                38.952417,
+                33.658332,
+                31.035112
+              ],
+              "p50": 32.829515,
+              "p95": 37.97874089999999,
+              "p99": 38.75768178
+            },
+            "cpu_ms": {
+              "samples": [
+                31.31,
+                35.37899999999999,
+                32.416,
+                31.65,
+                38.531,
+                33.01,
+                30.726999999999997
+              ],
+              "p50": 32.416,
+              "p95": 37.58539999999999,
+              "p99": 38.341879999999996
+            },
+            "max_rss_kib": {
+              "samples": [
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0
+              ],
+              "p50": 21128.0,
+              "p95": 21128.0,
+              "p99": 21128.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                15136,
+                15136,
+                15136,
+                15136,
+                15136,
+                15136,
+                15136
+              ],
+              "p50": 15136,
+              "p95": 15136.0,
+              "p99": 15136.0
+            }
+          },
+          "files": {
+            "wall_ms": {
+              "samples": [
+                33.785974,
+                41.28692,
+                35.548465,
+                32.275119,
+                34.984936,
+                35.342019,
+                33.671044
+              ],
+              "p50": 34.984936,
+              "p95": 39.565383499999996,
+              "p99": 40.9426127
+            },
+            "cpu_ms": {
+              "samples": [
+                31.933999999999997,
+                38.586999999999996,
+                33.72899999999999,
+                30.087999999999997,
+                33.147999999999996,
+                33.04899999999999,
+                31.403
+              ],
+              "p50": 33.04899999999999,
+              "p95": 37.12959999999999,
+              "p99": 38.295519999999996
+            },
+            "max_rss_kib": {
+              "samples": [
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0
+              ],
+              "p50": 21128.0,
+              "p95": 21128.0,
+              "p99": 21128.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                15528,
+                15528,
+                15528,
+                15528,
+                15528,
+                15528,
+                15528
+              ],
+              "p50": 15528,
+              "p95": 15528.0,
+              "p99": 15528.0
+            }
+          },
+          "query": {
+            "wall_ms": {
+              "samples": [
+                10.58522,
+                12.087767,
+                12.855716,
+                11.641374,
+                12.655073,
+                11.050287,
+                11.701158
+              ],
+              "p50": 11.701158,
+              "p95": 12.795523099999999,
+              "p99": 12.843677419999999
+            },
+            "cpu_ms": {
+              "samples": [
+                10.308,
+                11.440999999999999,
+                12.546,
+                11.373999999999999,
+                12.334999999999999,
+                10.78,
+                11.344999999999999
+              ],
+              "p50": 11.373999999999999,
+              "p95": 12.4827,
+              "p99": 12.533339999999999
+            },
+            "max_rss_kib": {
+              "samples": [
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0
+              ],
+              "p50": 21128.0,
+              "p95": 21128.0,
+              "p99": 21128.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                552,
+                552,
+                552,
+                552,
+                552,
+                552,
+                552
+              ],
+              "p50": 552,
+              "p95": 552.0,
+              "p99": 552.0
+            }
+          }
+        },
+        "git": {
+          "initial": {
+            "wall_ms": {
+              "samples": [
+                101.609568,
+                125.048722,
+                118.986294,
+                112.754417,
+                110.320511,
+                105.23829,
+                106.715037
+              ],
+              "p50": 110.320511,
+              "p95": 123.2299936,
+              "p99": 124.68497631999999
+            },
+            "cpu_ms": {
+              "samples": [
+                100.378,
+                123.407,
+                117.544,
+                110.939,
+                107.74299999999998,
+                103.09899999999999,
+                105.238
+              ],
+              "p50": 107.74299999999998,
+              "p95": 121.6481,
+              "p99": 123.05521999999999
+            },
+            "max_rss_kib": {
+              "samples": [
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0
+              ],
+              "p50": 21128.0,
+              "p95": 21128.0,
+              "p99": 21128.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                2856,
+                2464,
+                2528,
+                2624,
+                2456,
+                2456,
+                2456
+              ],
+              "p50": 2464,
+              "p95": 2786.3999999999996,
+              "p99": 2842.08
+            }
+          },
+          "incremental": {
+            "wall_ms": {
+              "samples": [
+                15.572755,
+                13.208437,
+                20.986021,
+                19.928972,
+                15.508656,
+                18.277603,
+                16.155791
+              ],
+              "p50": 16.155791,
+              "p95": 20.6689063,
+              "p99": 20.922598060000002
+            },
+            "cpu_ms": {
+              "samples": [
+                14.419,
+                12.329,
+                19.062,
+                18.758,
+                14.254,
+                17.212,
+                14.681999999999999
+              ],
+              "p50": 14.681999999999999,
+              "p95": 18.9708,
+              "p99": 19.043760000000002
+            },
+            "max_rss_kib": {
+              "samples": [
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0
+              ],
+              "p50": 21128.0,
+              "p95": 21128.0,
+              "p99": 21128.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                336,
+                264,
+                264,
+                264,
+                264,
+                264,
+                264
+              ],
+              "p50": 264,
+              "p95": 314.4,
+              "p99": 331.67999999999995
+            }
+          },
+          "fsck": {
+            "wall_ms": {
+              "samples": [
+                8.784652,
+                9.852164,
+                25.492491,
+                13.793931,
+                9.760419,
+                9.405802,
+                12.716209
+              ],
+              "p50": 9.852164,
+              "p95": 21.982922999999992,
+              "p99": 24.790577399999997
+            },
+            "cpu_ms": {
+              "samples": [
+                8.579999999999998,
+                9.648,
+                25.262999999999998,
+                13.582999999999998,
+                9.579,
+                9.216,
+                12.566
+              ],
+              "p50": 9.648,
+              "p95": 21.75899999999999,
+              "p99": 24.56219999999999
+            },
+            "max_rss_kib": {
+              "samples": [
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0
+              ],
+              "p50": 21128.0,
+              "p95": 21128.0,
+              "p99": 21128.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            }
+          },
+          "history": {
+            "wall_ms": {
+              "samples": [
+                1.489678,
+                1.581696,
+                1.74289,
+                1.553152,
+                1.450598,
+                2.974152,
+                1.497832
+              ],
+              "p50": 1.553152,
+              "p95": 2.604773399999999,
+              "p99": 2.9002762799999995
+            },
+            "cpu_ms": {
+              "samples": [
+                1.188,
+                1.333,
+                1.4169999999999998,
+                1.274,
+                1.19,
+                2.734,
+                1.2550000000000001
+              ],
+              "p50": 1.274,
+              "p95": 2.338899999999999,
+              "p99": 2.6549799999999992
+            },
+            "max_rss_kib": {
+              "samples": [
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0
+              ],
+              "p50": 21128.0,
+              "p95": 21128.0,
+              "p99": 21128.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8
+              ],
+              "p50": 8,
+              "p95": 8.0,
+              "p99": 8.0
+            }
+          },
+          "files": {
+            "wall_ms": {
+              "samples": [
+                1.455476,
+                1.804001,
+                1.606373,
+                2.358747,
+                2.388762,
+                2.050423,
+                1.626756
+              ],
+              "p50": 1.804001,
+              "p95": 2.3797574999999997,
+              "p99": 2.3869610999999997
+            },
+            "cpu_ms": {
+              "samples": [
+                1.276,
+                1.5939999999999999,
+                1.3840000000000001,
+                2.106,
+                2.149,
+                1.756,
+                1.4069999999999998
+              ],
+              "p50": 1.5939999999999999,
+              "p95": 2.1361,
+              "p99": 2.14642
+            },
+            "max_rss_kib": {
+              "samples": [
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0
+              ],
+              "p50": 21128.0,
+              "p95": 21128.0,
+              "p99": 21128.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                16,
+                16,
+                16,
+                16,
+                16,
+                16,
+                16
+              ],
+              "p50": 16,
+              "p95": 16.0,
+              "p99": 16.0
+            }
+          },
+          "query": {
+            "wall_ms": {
+              "samples": [
+                23.11927,
+                24.489007,
+                25.909499,
+                21.892663,
+                26.534042,
+                31.495293,
+                21.118802
+              ],
+              "p50": 24.489007,
+              "p95": 30.006917699999995,
+              "p99": 31.197617939999997
+            },
+            "cpu_ms": {
+              "samples": [
+                22.601,
+                24.235,
+                25.668999999999997,
+                21.596999999999998,
+                26.24,
+                31.214,
+                20.842
+              ],
+              "p50": 24.235,
+              "p95": 29.721799999999995,
+              "p99": 30.915559999999996
+            },
+            "max_rss_kib": {
+              "samples": [
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0,
+                21128.0
+              ],
+              "p50": 21128.0,
+              "p95": 21128.0,
+              "p99": 21128.0
+            },
+            "rusage_inblock": {
+              "samples": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "p50": 0,
+              "p95": 0.0,
+              "p99": 0.0
+            },
+            "rusage_oublock": {
+              "samples": [
+                312,
+                312,
+                312,
+                312,
+                312,
+                312,
+                312
+              ],
+              "p50": 312,
+              "p95": 312.0,
+              "p99": 312.0
+            }
+          }
+        }
+      },
+      "canonical_roots": {
+        "baseline": [
+          "85b16c1ebd33e2f59cdc98f283d6e3ec083df41d159ddc8ade0505be39a5396a",
+          "85b16c1ebd33e2f59cdc98f283d6e3ec083df41d159ddc8ade0505be39a5396a",
+          "85b16c1ebd33e2f59cdc98f283d6e3ec083df41d159ddc8ade0505be39a5396a",
+          "85b16c1ebd33e2f59cdc98f283d6e3ec083df41d159ddc8ade0505be39a5396a",
+          "85b16c1ebd33e2f59cdc98f283d6e3ec083df41d159ddc8ade0505be39a5396a",
+          "85b16c1ebd33e2f59cdc98f283d6e3ec083df41d159ddc8ade0505be39a5396a",
+          "85b16c1ebd33e2f59cdc98f283d6e3ec083df41d159ddc8ade0505be39a5396a"
+        ],
+        "loom": [
+          "85b16c1ebd33e2f59cdc98f283d6e3ec083df41d159ddc8ade0505be39a5396a",
+          "85b16c1ebd33e2f59cdc98f283d6e3ec083df41d159ddc8ade0505be39a5396a",
+          "85b16c1ebd33e2f59cdc98f283d6e3ec083df41d159ddc8ade0505be39a5396a",
+          "85b16c1ebd33e2f59cdc98f283d6e3ec083df41d159ddc8ade0505be39a5396a",
+          "85b16c1ebd33e2f59cdc98f283d6e3ec083df41d159ddc8ade0505be39a5396a",
+          "85b16c1ebd33e2f59cdc98f283d6e3ec083df41d159ddc8ade0505be39a5396a",
+          "85b16c1ebd33e2f59cdc98f283d6e3ec083df41d159ddc8ade0505be39a5396a"
+        ]
+      },
+      "metadata_footprints": {
+        "baseline": [
+          [
+            376832,
+            376832
+          ],
+          [
+            376832,
+            376832
+          ],
+          [
+            376832,
+            376832
+          ],
+          [
+            376832,
+            376832
+          ],
+          [
+            376832,
+            376832
+          ],
+          [
+            376832,
+            376832
+          ],
+          [
+            376832,
+            376832
+          ]
+        ],
+        "loom": [
+          [
+            376832,
+            376832
+          ],
+          [
+            376832,
+            376832
+          ],
+          [
+            376832,
+            376832
+          ],
+          [
+            376832,
+            376832
+          ],
+          [
+            376832,
+            376832
+          ],
+          [
+            376832,
+            376832
+          ],
+          [
+            376832,
+            376832
+          ]
+        ],
+        "git": [
+          [
+            77016,
+            1392640
+          ],
+          [
+            77018,
+            1392640
+          ],
+          [
+            77017,
+            1392640
+          ],
+          [
+            77016,
+            1392640
+          ],
+          [
+            77017,
+            1392640
+          ],
+          [
+            77018,
+            1392640
+          ],
+          [
+            77016,
+            1392640
+          ]
+        ]
+      },
+      "baseline_over_loom_p50": {
+        "initial": 1.6713333658633864,
+        "incremental": 1.1382257845073596,
+        "fsck": 4.154354487315264,
+        "history": 0.9803087861639137,
+        "files": 1.0229660846028132,
+        "query": 1.473357337795114
+      },
+      "git_over_loom_p50": {
+        "initial": 0.7219820433059996,
+        "incremental": 0.1608419413988958,
+        "fsck": 0.05062721902454946,
+        "history": 0.047309623672478866,
+        "files": 0.05156507932442695,
+        "query": 2.0928703808631592
+      }
+    }
+  ]
+}

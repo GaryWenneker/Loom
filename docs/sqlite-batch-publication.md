@@ -100,3 +100,5 @@ outside timing. Git history and fsck are diagnostic comparisons because the
 formats and integrity obligations differ.
 
 [Measured complete workflows and retained prototype results](performance-sqlite-live-read-20261018.md).
+
+[Isolated parsed-statement comparison and retained combined measurements](performance-sqlite-statements-20261018.md).
