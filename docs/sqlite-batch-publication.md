@@ -74,3 +74,5 @@ and `fsck` occur outside timing. The report retains p50/p95/p99 wall/CPU, peak
 RSS, POSIX block-I/O counters, and logical/allocated metadata bytes. It does not
 control cold caches or measure network, remote caches, multi-agent contention or
 power-loss recovery.
+
+[Measured complete workflows and retained prototype results](performance-sqlite-live-read-20261018.md).
