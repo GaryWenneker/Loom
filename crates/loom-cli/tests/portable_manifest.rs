@@ -19,6 +19,22 @@ fn ok(root: &Path, args: &[&str]) -> Vec<u8> {
     result.stdout
 }
 
+fn ok_with_object_db(root: &Path, object_db: &Path, args: &[&str]) -> Vec<u8> {
+    let result = Command::new(env!("CARGO_BIN_EXE_loom"))
+        .current_dir(root)
+        .env("LOOM_AUTHOR", "portable-manifest-test")
+        .env("LOOM_OBJECT_DB", object_db)
+        .args(args)
+        .output()
+        .expect("execute loom");
+    assert!(
+        result.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    result.stdout
+}
+
 #[test]
 fn portable_manifest_is_typed_idempotent_and_preserves_repository_state() {
     let temporary = tempfile::tempdir().unwrap();
@@ -89,20 +105,27 @@ fn portable_migration_publication_is_exact_idempotent_and_preserves_state() {
     fs::create_dir(root.join("nested")).unwrap();
     fs::write(root.join("tracked"), b"committed").unwrap();
     fs::write(root.join("nested/file"), b"nested").unwrap();
-    let committed = String::from_utf8(ok(root, &["commit", "-m", "base"])).unwrap();
+    let committed = String::from_utf8(ok_with_object_db(
+        root,
+        &object_db,
+        &["commit", "-m", "base"],
+    ))
+    .unwrap();
     let revision = committed.split_whitespace().last().expect("commit ID");
     fs::write(root.join("tracked"), b"unstaged").unwrap();
     fs::write(root.join("staged"), b"staged").unwrap();
-    ok(root, &["add", "staged"]);
-    let status = ok(root, &["status"]);
-    let plan = String::from_utf8(ok(
+    ok_with_object_db(root, &object_db, &["add", "staged"]);
+    let status = ok_with_object_db(root, &object_db, &["status"]);
+    let plan = String::from_utf8(ok_with_object_db(
         root,
+        &object_db,
         &["portable-migrate-plan", &format!("@{revision}")],
     ))
     .unwrap();
     let planned_root = plan.split_whitespace().nth(2).unwrap().to_owned();
-    let published = String::from_utf8(ok(
+    let published = String::from_utf8(ok_with_object_db(
         root,
+        &object_db,
         &[
             "portable-migrate-publish",
             &format!("@{revision}"),
@@ -111,8 +134,9 @@ fn portable_migration_publication_is_exact_idempotent_and_preserves_state() {
         ],
     ))
     .unwrap();
-    let retry = String::from_utf8(ok(
+    let retry = String::from_utf8(ok_with_object_db(
         root,
+        &object_db,
         &[
             "portable-migrate-publish",
             &format!("@{revision}"),
@@ -126,11 +150,12 @@ fn portable_migration_publication_is_exact_idempotent_and_preserves_state() {
         Some(planned_root.as_str())
     );
     assert_eq!(published, retry);
-    assert_eq!(ok(root, &["status"]), status);
-    ok(root, &["fsck"]);
+    assert_eq!(ok_with_object_db(root, &object_db, &["status"]), status);
+    ok_with_object_db(root, &object_db, &["fsck"]);
     let destination = export.path().join("workspace");
-    ok(
+    ok_with_object_db(
         root,
+        &object_db,
         &[
             "portable-export",
             &format!("@{planned_root}"),
