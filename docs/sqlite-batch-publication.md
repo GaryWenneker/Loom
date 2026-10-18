@@ -31,8 +31,9 @@ or protection from every concurrent filesystem substitution. Ordinary scalar
 reads and authoritative enumeration now open fresh `READ_ONLY`,
 `query_only=ON` connections. They no longer request a write-capable handle or
 reapply `synchronous=FULL` merely to execute `SELECT`; every returned object is
-still hash- and envelope-verified, and a missing or replaced database is never
-recreated or acknowledged. Write transactions retain WAL plus
+still hash- and envelope-verified. Missing storage is never recreated by reads;
+missing schemas, corrupt bytes and missing requested rows fail closed. These
+checks do not pin the lifetime identity of a valid replacement database. Write transactions retain WAL plus
 `synchronous=FULL`. Live closure verification and fsck retain their normal
 contracts.
 
@@ -50,6 +51,11 @@ rows without replacing them. SQLite remains in WAL mode with
 `synchronous=FULL`; no sync or durability control is disabled for performance.
 Providers that do not implement atomic batches retain the existing bounded
 scalar/parallel fallback.
+
+Retained immutable-query sessions reuse one parsed SELECT, not object payloads
+or an open read transaction. Every read still checks the row length, canonical
+envelope and BLAKE3 ID. Publication, closure verification and fsck continue to
+use fresh live storage rather than those retained sessions.
 
 ## Reproduce the comparison
 
@@ -84,4 +90,15 @@ RSS, POSIX block-I/O counters, and logical/allocated metadata bytes. It does not
 control cold caches or measure network, remote caches, multi-agent contention or
 power-loss recovery.
 
+With `--read-workflows`, schema 3 additionally times complete `fsck`, history,
+listing and batch-content commands after the two commits. Each runs in a new
+process in that order. Batch queries read every file twice with Loom's object
+cache disabled, and record input digests and request counts. Listing can populate
+the derived historical index before the query; these are not cold-query results.
+Output parsing, byte comparison and independent final verification remain
+outside timing. Git history and fsck are diagnostic comparisons because the
+formats and integrity obligations differ.
+
 [Measured complete workflows and retained prototype results](performance-sqlite-live-read-20261018.md).
+
+[Isolated parsed-statement comparison and retained combined measurements](performance-sqlite-statements-20261018.md).

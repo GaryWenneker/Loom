@@ -174,7 +174,10 @@ impl ObjectBackend for SqliteObjectBackend {
                     .0
                     .lock()
                     .map_err(|_| Error::Invalid("SQLite reader lock poisoned".into()))?;
-                SqliteObjectBackend::read(&conn, id)
+                // Reuse the parsed query, never its rows or a read transaction.
+                // The statement is reset before returning to the cache.
+                let mut query = conn.prepare_cached(READ_OBJECT_SQL)?;
+                SqliteObjectBackend::read_bounded(&mut query, id, MAX_OBJECT_SIZE + 15)
             }
         }
         Ok(Some(Arc::new(Reader(Mutex::new(self.read_connection()?)))))
@@ -445,6 +448,54 @@ mod tests {
         .unwrap();
         assert!(matches!(backend.get_batch_live(&ids, budget),
             Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound));
+    }
+
+    #[test]
+    fn cached_reader_observes_commits_deletions_and_recovers_after_read_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("objects.sqlite");
+        let backend = SqliteObjectBackend::open(&path).unwrap();
+        let bytes = encode_object(BLOB, b"first").unwrap();
+        let id = object_id(&bytes);
+        backend.put_if_absent(id, &bytes).unwrap();
+        let reader = backend.open_read_session().unwrap().unwrap();
+        assert_eq!(reader.get(id).unwrap(), bytes);
+
+        let mut writer = Connection::open(&path).unwrap();
+        let tx = writer.transaction().unwrap();
+        tx.execute(
+            "UPDATE loom_storage_objects SET envelope=?1 WHERE oid=?2",
+            params![b"corrupt".as_slice(), id.to_string()],
+        )
+        .unwrap();
+        assert_eq!(reader.get(id).unwrap(), bytes);
+        tx.commit().unwrap();
+        assert!(reader.get(id).is_err());
+        assert!(backend.get(id).is_err());
+        writer
+            .execute(
+                "UPDATE loom_storage_objects SET envelope=?1 WHERE oid=?2",
+                params![&bytes, id.to_string()],
+            )
+            .unwrap();
+        assert_eq!(reader.get(id).unwrap(), bytes);
+
+        let second = encode_object(BLOB, b"second").unwrap();
+        let second_id = object_id(&second);
+        backend.put_if_absent(second_id, &second).unwrap();
+        assert_eq!(reader.get(second_id).unwrap(), second);
+        writer
+            .execute(
+                "DELETE FROM loom_storage_objects WHERE oid=?1",
+                [id.to_string()],
+            )
+            .unwrap();
+        assert!(matches!(reader.get(id), Err(Error::Io(e))
+            if e.kind() == std::io::ErrorKind::NotFound));
+        assert!(matches!(backend.get(id), Err(Error::Io(e))
+            if e.kind() == std::io::ErrorKind::NotFound));
+        assert_eq!(reader.get(second_id).unwrap(), second);
+        assert_eq!(backend.list_ids().unwrap(), vec![second_id]);
     }
 
     #[test]

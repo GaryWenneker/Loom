@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "datasets": {
+    "combined": {
+      "classification": "combined read-only scalar connections plus parsed-statement reuse, before #109 integration; not isolated statement reuse",
+      "candidate_commit": "668e049e3f61c026b67921d4c7aa2fe2237bd622",
+      "candidate_tree": "0ad6300fcbb6504ad632d62842fbc2cf982e0e79",
+      "local_source_commit": "486d1fb107a32c503e5ca46e3d3475afaa405105",
+      "baseline_commit": "c13e3bafb6fdbbc833a4d76b27df5c7a024e4662",
+      "baseline_tree": "705bcf5edccacac6d758ab2dc44cbffd8654c6da",
+      "candidate_binary_sha256": "5e38942b25d97ada7f65222879a0f92457a6d3cfcdc1fd6aae8bb90ca58d69dd",
+      "baseline_binary_sha256": "827c546ffff1da8b42c203c405840388e2fc2fe7634c79bd6fc06c77f2ded6ef",
+      "harness_sha256": "4f84ce2e262e4a904ca0f7676a6fdfcebbcb52e8498ac75b158bad00237a3d45"
+    },
+    "isolated": {
+      "classification": "isolated parsed-statement reuse, baseline already includes scalar read-only connections",
+      "candidate_commit": "97a132b4980f99763a70c537467a972f199f9e92",
+      "candidate_tree": "ea342d4a1c8c37ce94bf1fcec5766e508d7a51a8",
+      "local_source_commit": "d762a970ae8d2862a7aff9923905736cbe3a6cfb",
+      "baseline_commit": "aef258a5c6d1f04e94d6509f6a67cd93acbad206",
+      "baseline_tree": "16a75e3206cff57cefabebe3593ce31ec8fe17f3",
+      "candidate_binary_sha256": "6937b4eeb7d1d4ed8f3d7cd5566cbb40d8108a89d100226191b90d441f126a69",
+      "baseline_binary_sha256": "a442d4abbf159ace09faa086011e0299582bb29864f15130bef4859f53fafae0",
+      "harness_sha256": "14585569d7eb785d901d283349299e5ec12ad52ce7f7961d3e4392115c1be46b"
+    }
+  },
+  "raw_sha256": {
+    "sqlite-statement-combined-auto-20261018.json": "73c1924d6c8ba1bbf15b1fdd50117bacac2c93ea17f6c6693eedded5a47fbb9d",
+    "sqlite-statement-combined-multidir-20261018.json": "8441e5abd681dcf8bfda52a4d9cb4c8d1118bf79bea3a6e2377c29ac92b1de81",
+    "sqlite-statement-combined-payload-20261018.json": "511b9b69b5c53e3265b827d8d425477ab820e58386f3762fad2d92ba8e397c13",
+    "sqlite-statement-combined-serial-20261018.json": "320e4cd543886b65100fc241c0a5fae8d1f896f4cd925e029be60ba417638a52",
+    "sqlite-statement-isolated-auto-20261018.json": "4e5614a522ebb200dc582a585e06de79637cff020a1039337350c8852f50350f",
+    "sqlite-statement-isolated-multidir-20261018.json": "372e2a78822c427f08c2f4c11fc7665055055cd4f6412fb555d1b0af413851fd",
+    "sqlite-statement-isolated-payload-20261018.json": "5ffbb9b5cb8e3d509787a09ecc59678c076d9bcde5f5bbf6cf9521e9209461a4",
+    "sqlite-statement-isolated-serial-20261018.json": "9e70563e2db186d565bd46a2ddfbd0a720a8755b8aea6c8fdd7244814e7804c9"
+  },
+  "comparison_helper_sha256": "4b0109c4bb6ab33a8bc1f32ab354dce10f6305e96ae81fd3df8f25a8ca1905ec"
+}
