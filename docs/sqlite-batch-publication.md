@@ -30,6 +30,15 @@ and Windows checks creation time. These observations do not constitute a lease
 or protection from every concurrent filesystem substitution. Existing scalar
 reads, live closure verification and fsck retain their normal contracts.
 
+Typed external-closure verification also reuses this live-read contract for
+one object at a time. For SQLite, one validated live read proves both existence
+and canonical bytes; it replaces the previous `exists` read followed by another
+`get` of the same row. The core still verifies the expected object kind and
+recursively visits the complete closure. A provider may opt in only if its live
+read proves presence on every required copy. Replicated providers keep their
+default `None` implementation and therefore the original all-replica existence
+check plus verified read. No cross-call existence or closure cache is added.
+
 Retries are idempotent: an already committed batch verifies the same immutable
 rows without replacing them. SQLite remains in WAL mode with
 `synchronous=FULL`; no sync or durability control is disabled for performance.

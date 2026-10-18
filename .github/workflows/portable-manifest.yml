@@ -2,6 +2,7 @@ name: Portable manifest evidence
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - "crates/loom-core/src/format.rs"
       - "crates/loom-core/src/portable_manifest.rs"
@@ -24,6 +25,7 @@ permissions:
 
 jobs:
   benchmark:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: checked portable manifests
     runs-on: ubuntu-latest
     timeout-minutes: 30

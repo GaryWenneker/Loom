@@ -42,6 +42,9 @@ pub trait ObjectBackend: Send + Sync {
     /// enforce it before allocating object payloads and return every requested
     /// object, including duplicates. Core independently validates all returned
     /// bytes; a successful provider call alone never acknowledges publication.
+    /// Returning Some must satisfy the same presence obligation as exists for
+    /// every configured replica, so it may also certify typed object closure.
+    /// Multi-copy providers that cannot prove that must retain the None default.
     fn get_batch_live(&self, _ids: &[ObjectId], _max_bytes: usize) -> Result<Option<Vec<Vec<u8>>>> {
         Ok(None)
     }

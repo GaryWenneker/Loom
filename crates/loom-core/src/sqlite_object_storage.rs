@@ -7,6 +7,9 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBeha
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+const READ_OBJECT_SQL: &str = "SELECT CASE WHEN length(envelope)<=?2 THEN envelope ELSE NULL END
+     FROM loom_storage_objects WHERE oid=?1";
+
 pub struct SqliteObjectBackend {
     path: PathBuf,
 }
@@ -125,14 +128,15 @@ impl SqliteObjectBackend {
     }
 
     fn read(conn: &Connection, id: ObjectId) -> Result<Vec<u8>> {
-        Self::read_bounded(conn, id, MAX_OBJECT_SIZE + 15)
+        let mut query = conn.prepare(READ_OBJECT_SQL)?;
+        Self::read_bounded(&mut query, id, MAX_OBJECT_SIZE + 15)
     }
 
-    fn read_bounded(conn: &Connection, id: ObjectId, max_bytes: usize) -> Result<Vec<u8>> {
-        let mut query = conn.prepare_cached(
-            "SELECT CASE WHEN length(envelope)<=?2 THEN envelope ELSE NULL END
-             FROM loom_storage_objects WHERE oid=?1",
-        )?;
+    fn read_bounded(
+        query: &mut rusqlite::Statement<'_>,
+        id: ObjectId,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>> {
         let row: Option<Option<Vec<u8>>> = query
             .query_row(
                 params![id.to_string(), max_bytes.min(MAX_OBJECT_SIZE + 15) as i64],
@@ -201,13 +205,14 @@ impl ObjectBackend for SqliteObjectBackend {
         }
         // Fresh per-call connection, no retained read session or transaction.
         // Each SELECT finishes before the next: committed rows are read live,
-        // while prepare_cached amortizes parsing only within this call.
+        // while one prepared statement amortizes parsing within this call.
         let before = std::fs::symlink_metadata(&self.path)?;
         let conn = self.read_connection()?;
+        let mut query = conn.prepare(READ_OBJECT_SQL)?;
         let mut remaining = max_bytes;
         let mut objects = Vec::with_capacity(ids.len());
         for id in ids {
-            let bytes = Self::read_bounded(&conn, *id, remaining)?;
+            let bytes = Self::read_bounded(&mut query, *id, remaining)?;
             remaining -= bytes.len();
             objects.push(bytes);
         }
@@ -278,16 +283,19 @@ impl ObjectBackend for SqliteObjectBackend {
         let mut conn = self.connection()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         {
-            let mut insert = tx.prepare_cached(
+            let mut insert = tx.prepare(
                 "INSERT OR IGNORE INTO loom_storage_objects(oid,envelope) VALUES(?1,?2)",
             )?;
             for (id, bytes) in &unique {
                 insert.execute(params![id.to_string(), bytes])?;
             }
         }
-        for (id, bytes) in &unique {
-            if Self::read(&tx, *id)?.as_slice() != *bytes {
-                return Err(Error::Invalid("SQLite immutable object collision".into()));
+        {
+            let mut query = tx.prepare(READ_OBJECT_SQL)?;
+            for (id, bytes) in &unique {
+                if Self::read_bounded(&mut query, *id, MAX_OBJECT_SIZE + 15)?.as_slice() != *bytes {
+                    return Err(Error::Invalid("SQLite immutable object collision".into()));
+                }
             }
         }
         tx.commit()?;
