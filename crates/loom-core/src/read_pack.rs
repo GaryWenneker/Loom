@@ -87,6 +87,12 @@ impl ReadPack {
         self.index.len() / RECORD
     }
     pub(crate) fn open(path: &Path) -> Result<Self> {
+        Self::open_with_index_reservation(path, |_| Ok(()))
+    }
+    pub(crate) fn open_with_index_reservation(
+        path: &Path,
+        reserve: impl FnOnce(usize) -> Result<()>,
+    ) -> Result<Self> {
         let mut file = open_file(path)?;
         let size = file.metadata()?.len();
         if size > MAX_BYTES || size < (MAGIC.len() + FOOTER_SIZE) as u64 {
@@ -112,7 +118,9 @@ impl ReadPack {
         {
             return Err(invalid());
         }
-        let mut bytes = vec![0; count as usize * RECORD];
+        let index_bytes = count as usize * RECORD;
+        reserve(index_bytes)?;
+        let mut bytes = vec![0; index_bytes];
         file.seek(SeekFrom::Start(start))?;
         file.read_exact(&mut bytes)?;
         if blake3::hash(&bytes).as_bytes() != &footer[24..] {

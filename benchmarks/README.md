@@ -183,12 +183,13 @@ python3 benchmarks/compare_git.py --loom /absolute/new-loom \
 ```
 
 The previous binary initializes the same fixture; `--baseline-multi` requires a
-baseline with `cat_many` support (main #79 or later). Compare identical native
-groups in `baseline_multi`, `loom_multi` and `loom_pack_multi`, and the existing
-line interface separately. The pack is built once; build milliseconds and file
-bytes are reported outside query timing. All live objects remain. Each timed
-query starts a fresh process and loads/checks the index again. Git packing and
-commit-graph preparation are likewise outside its query timing. Schema 3 retains
+baseline with `cat_many` support (main #79 or later). Candidate and baseline
+each build a separate pack from the identical revision. Compare matching
+`baseline_pack_multi` and `loom_pack_multi` groups; unpacked grouped and line
+interfaces remain separate controls. Both pack build times and byte sizes are
+reported outside query timing. All live objects remain. Each timed query starts
+a fresh process and loads/checks the index again. Git packing and
+commit-graph preparation are likewise outside its query timing. Schema 5 retains
 unpacked results and all single-command/status controls, including regressions.
 `unpacked_over_packed_p50` compares the same new binary with/without the explicit
 pack. Repeat with `--layout nested --directories 1024 --files 10000` to check
