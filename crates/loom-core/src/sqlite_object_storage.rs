@@ -15,6 +15,23 @@ const READ_OBJECT_SQL: &str = "SELECT CASE WHEN length(envelope)<=?2 THEN envelo
      FROM loom_storage_objects WHERE oid=?1";
 const LOCK_RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const LOCK_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
+const WRITE_GATE_STRIPES: usize = 64;
+
+fn write_gates() -> &'static [Mutex<()>; WRITE_GATE_STRIPES] {
+    static GATES: std::sync::OnceLock<[Mutex<()>; WRITE_GATE_STRIPES]> =
+        std::sync::OnceLock::new();
+    GATES.get_or_init(|| std::array::from_fn(|_| Mutex::new(())))
+}
+
+fn write_gate(path: &Path) -> Result<std::sync::MutexGuard<'static, ()>> {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hash);
+    let stripe = hash.finish() as usize % WRITE_GATE_STRIPES;
+    write_gates()[stripe]
+        .lock()
+        .map_err(|_| Error::Invalid("SQLite write gate poisoned".into()))
+}
 
 fn is_retryable_lock_code(code: ErrorCode) -> bool {
     matches!(
@@ -111,6 +128,7 @@ impl SqliteWriteSession {
 
 impl ObjectWriteSession for SqliteWriteSession {
     fn put_batch_if_absent(&mut self, objects: &[(ObjectId, &[u8])]) -> Result<bool> {
+        let _gate = write_gate(&self.path)?;
         self.check_identity()?;
         SqliteObjectBackend::write_batch(&mut self.connection, objects)?;
         self.check_identity()?;
@@ -164,6 +182,7 @@ impl SqliteObjectBackend {
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = checked_path(path.as_ref())?;
+        let _gate = write_gate(&path)?;
         let conn = Connection::open(&path)?;
         conn.busy_timeout(LOCK_RETRY_TIMEOUT)?;
         // Concurrent initializers can need a journal-mode lock upgrade, which
@@ -400,6 +419,7 @@ impl ObjectBackend for SqliteObjectBackend {
             ));
         }
         decode_object(bytes)?;
+        let _gate = write_gate(&self.path)?;
         let conn = self.connection()?;
         let tx = begin_immediate_with_retry(&conn)?;
         tx.execute(
@@ -413,6 +433,7 @@ impl ObjectBackend for SqliteObjectBackend {
         Ok(())
     }
     fn put_batch_if_absent(&self, objects: &[(ObjectId, &[u8])]) -> Result<bool> {
+        let _gate = write_gate(&self.path)?;
         let mut conn = self.connection()?;
         Self::write_batch(&mut conn, objects)?;
         Ok(true)
