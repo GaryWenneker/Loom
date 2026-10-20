@@ -86,6 +86,7 @@ impl ReadPack {
     pub(crate) fn objects(&self) -> usize {
         self.index.len() / RECORD
     }
+    #[cfg(test)]
     pub(crate) fn open(path: &Path) -> Result<Self> {
         Self::open_with_index_reservation(path, |_| Ok(()))
     }
