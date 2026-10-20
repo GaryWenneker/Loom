@@ -9,14 +9,13 @@ use rusqlite::{
     params, Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
 };
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex, TryLockError};
 
 const READ_OBJECT_SQL: &str = "SELECT CASE WHEN length(envelope)<=?2 THEN envelope ELSE NULL END
      FROM loom_storage_objects WHERE oid=?1";
 const LOCK_RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const LOCK_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
 const WRITE_GATE_STRIPES: usize = 64;
-const SCALAR_READER_LIMIT: usize = 8;
 
 fn write_gates() -> &'static [Mutex<()>; WRITE_GATE_STRIPES] {
     static GATES: std::sync::OnceLock<[Mutex<()>; WRITE_GATE_STRIPES]> = std::sync::OnceLock::new();
@@ -72,27 +71,7 @@ fn begin_immediate_with_retry(connection: &Connection) -> rusqlite::Result<Trans
 pub struct SqliteObjectBackend {
     path: PathBuf,
     identity: DatabaseIdentity,
-    scalar_readers: ScalarReaderPool,
-}
-
-struct ScalarReaderPool {
-    state: Mutex<ScalarReaderState>,
-    ready: Condvar,
-}
-
-#[derive(Default)]
-struct ScalarReaderState {
-    idle: Vec<Connection>,
-    opened: usize,
-}
-
-impl ScalarReaderPool {
-    fn new() -> Self {
-        Self {
-            state: Mutex::new(ScalarReaderState::default()),
-            ready: Condvar::new(),
-        }
-    }
+    scalar_reader: Mutex<Option<Connection>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -193,7 +172,7 @@ impl SqliteObjectBackend {
         let backend = Self {
             path,
             identity,
-            scalar_readers: ScalarReaderPool::new(),
+            scalar_reader: Mutex::new(None),
         };
         let conn = backend.read_connection()?;
         let mode: String = conn.query_row("PRAGMA journal_mode", [], |r| r.get(0))?;
@@ -255,7 +234,7 @@ impl SqliteObjectBackend {
         Ok(Self {
             path,
             identity,
-            scalar_readers: ScalarReaderPool::new(),
+            scalar_reader: Mutex::new(None),
         })
     }
 
@@ -270,56 +249,32 @@ impl SqliteObjectBackend {
 
     fn scalar_read<T>(&self, read: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         self.check_identity()?;
-        let mut state = self
-            .scalar_readers
-            .state
-            .lock()
-            .map_err(|_| Error::Invalid("SQLite scalar reader pool poisoned".into()))?;
-        let connection = loop {
-            if let Some(connection) = state.idle.pop() {
-                break connection;
-            }
-            if state.opened < SCALAR_READER_LIMIT {
-                state.opened += 1;
-                drop(state);
-                match self.read_connection() {
-                    Ok(connection) => break connection,
-                    Err(error) => {
-                        let mut state = self.scalar_readers.state.lock().map_err(|_| {
-                            Error::Invalid("SQLite scalar reader pool poisoned".into())
-                        })?;
-                        state.opened -= 1;
-                        self.scalar_readers.ready.notify_one();
-                        return Err(error);
-                    }
+        match self.scalar_reader.try_lock() {
+            Ok(mut reader) => {
+                if reader.is_none() {
+                    *reader = Some(self.read_connection()?);
+                    self.check_identity()?;
                 }
+                let result = read(reader.as_ref().expect("initialized SQLite scalar reader"));
+                let identity_result = self.check_identity();
+                identity_result?;
+                result
             }
-            state = self
-                .scalar_readers
-                .ready
-                .wait(state)
-                .map_err(|_| Error::Invalid("SQLite scalar reader pool poisoned".into()))?;
-        };
-        if let Err(error) = self.check_identity() {
-            self.return_scalar_reader(connection)?;
-            return Err(error);
+            Err(TryLockError::WouldBlock) => {
+                // Never serialize independent callers behind the retained
+                // reader. The operation's existing worker bound also bounds
+                // these temporary read-only connections.
+                let connection = self.read_connection()?;
+                self.check_identity()?;
+                let result = read(&connection);
+                let identity_result = self.check_identity();
+                identity_result?;
+                result
+            }
+            Err(TryLockError::Poisoned(_)) => {
+                Err(Error::Invalid("SQLite scalar reader lock poisoned".into()))
+            }
         }
-        let result = read(&connection);
-        let identity_result = self.check_identity();
-        self.return_scalar_reader(connection)?;
-        identity_result?;
-        result
-    }
-
-    fn return_scalar_reader(&self, connection: Connection) -> Result<()> {
-        let mut state = self
-            .scalar_readers
-            .state
-            .lock()
-            .map_err(|_| Error::Invalid("SQLite scalar reader pool poisoned".into()))?;
-        state.idle.push(connection);
-        self.scalar_readers.ready.notify_one();
-        Ok(())
     }
 
     fn connection(&self) -> Result<Connection> {
@@ -451,9 +406,9 @@ impl ObjectBackend for SqliteObjectBackend {
     }
     fn get(&self, id: ObjectId) -> Result<Vec<u8>> {
         // Ordinary immutable queries never need a write-capable handle or the
-        // per-connection synchronous write policy. Lazily reuse a small bounded
-        // query-only pool; publication acknowledgment continues to use the
-        // separate fresh live-read path below.
+        // per-connection synchronous write policy. Lazily reuse one query-only
+        // connection without making independent callers wait behind it;
+        // publication acknowledgment uses the separate fresh live-read path.
         self.scalar_read(|connection| Self::read(connection, id))
     }
     fn get_batch_live(&self, ids: &[ObjectId], max_bytes: usize) -> Result<Option<Vec<Vec<u8>>>> {
@@ -933,7 +888,7 @@ mod tests {
         let substituted = SqliteObjectBackend {
             path: replacement_path,
             identity: backend.identity,
-            scalar_readers: ScalarReaderPool::new(),
+            scalar_reader: Mutex::new(None),
         };
         assert!(substituted.get(id).is_err());
         assert!(substituted.list_ids().is_err());
@@ -941,7 +896,7 @@ mod tests {
     }
 
     #[test]
-    fn scalar_reader_pool_allows_independent_reads_to_overlap() {
+    fn scalar_reader_contention_allows_independent_reads_to_overlap() {
         let dir = tempfile::tempdir().unwrap();
         let backend =
             Arc::new(SqliteObjectBackend::open(dir.path().join("objects.sqlite")).unwrap());
@@ -979,9 +934,7 @@ mod tests {
         first.join().unwrap().unwrap();
         second.join().unwrap().unwrap();
 
-        let state = backend.scalar_readers.state.lock().unwrap();
-        assert_eq!(state.opened, 2);
-        assert_eq!(state.idle.len(), 2);
+        assert!(backend.scalar_reader.lock().unwrap().is_some());
     }
 
     #[test]
