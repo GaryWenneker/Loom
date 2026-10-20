@@ -5,12 +5,53 @@ use crate::storage_backend::{
     ObjectBackend, ObjectReadSession, ObjectWriteSession, StoreCapabilities,
 };
 use crate::{Error, ObjectId, Result};
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
+use rusqlite::{
+    params, Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction,
+    TransactionBehavior,
+};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 const READ_OBJECT_SQL: &str = "SELECT CASE WHEN length(envelope)<=?2 THEN envelope ELSE NULL END
      FROM loom_storage_objects WHERE oid=?1";
+const LOCK_RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const LOCK_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
+
+fn is_retryable_lock_code(code: ErrorCode) -> bool {
+    matches!(
+        code,
+        ErrorCode::DatabaseBusy
+            | ErrorCode::DatabaseLocked
+            | ErrorCode::FileLockingProtocolFailed
+    )
+}
+
+fn is_retryable_lock_error(error: &rusqlite::Error) -> bool {
+    match error {
+        rusqlite::Error::SqliteFailure(error, _) => is_retryable_lock_code(error.code),
+        _ => false,
+    }
+}
+
+fn begin_immediate_with_retry(connection: &mut Connection) -> rusqlite::Result<Transaction<'_>> {
+    // SQLite's busy handler does not cover SQLITE_PROTOCOL. In WAL mode that
+    // result can be transient when many processes race to begin a write. Only
+    // retry BEGIN IMMEDIATE: after it succeeds, every statement and COMMIT is
+    // still reported directly so an ambiguous durable outcome is never replayed.
+    let deadline = std::time::Instant::now() + LOCK_RETRY_TIMEOUT;
+    loop {
+        match connection.transaction_with_behavior(TransactionBehavior::Immediate) {
+            Ok(transaction) => return Ok(transaction),
+            Err(error)
+                if is_retryable_lock_error(&error)
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(LOCK_RETRY_DELAY);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
 
 pub struct SqliteObjectBackend {
     path: PathBuf,
@@ -125,11 +166,11 @@ impl SqliteObjectBackend {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = checked_path(path.as_ref())?;
         let conn = Connection::open(&path)?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.busy_timeout(LOCK_RETRY_TIMEOUT)?;
         // Concurrent initializers can need a journal-mode lock upgrade, which
         // SQLite may reject without invoking its busy handler. Retry the
         // idempotent bootstrap within one bounded deadline.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + LOCK_RETRY_TIMEOUT;
         let mode = loop {
             let initialized = (|| -> rusqlite::Result<String> {
                 let current: String = conn.query_row("PRAGMA journal_mode", [], |r| r.get(0))?;
@@ -149,13 +190,10 @@ impl SqliteObjectBackend {
             })();
             match initialized {
                 Ok(mode) => break mode,
-                Err(rusqlite::Error::SqliteFailure(error, _))
-                    if matches!(
-                        error.code,
-                        rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
-                    ) && std::time::Instant::now() < deadline =>
+                Err(error)
+                    if is_retryable_lock_error(&error) && std::time::Instant::now() < deadline =>
                 {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    std::thread::sleep(LOCK_RETRY_DELAY);
                 }
                 Err(error) => return Err(error.into()),
             }
@@ -175,7 +213,7 @@ impl SqliteObjectBackend {
             &self.path,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.busy_timeout(LOCK_RETRY_TIMEOUT)?;
         conn.execute_batch("PRAGMA synchronous=FULL;")?;
         Ok(conn)
     }
@@ -186,7 +224,7 @@ impl SqliteObjectBackend {
             &self.path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.busy_timeout(LOCK_RETRY_TIMEOUT)?;
         conn.execute_batch("PRAGMA query_only=ON;")?;
         Ok(conn)
     }
@@ -247,7 +285,7 @@ impl SqliteObjectBackend {
             }
         }
 
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let tx = begin_immediate_with_retry(conn)?;
         {
             let mut insert = tx.prepare(
                 "INSERT OR IGNORE INTO loom_storage_objects(oid,envelope) VALUES(?1,?2)",
@@ -361,7 +399,7 @@ impl ObjectBackend for SqliteObjectBackend {
         }
         decode_object(bytes)?;
         let mut conn = self.connection()?;
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let tx = begin_immediate_with_retry(&mut conn)?;
         tx.execute(
             "INSERT OR IGNORE INTO loom_storage_objects(oid,envelope) VALUES(?1,?2)",
             params![id.to_string(), bytes],
@@ -411,6 +449,14 @@ mod tests {
     use super::*;
     use crate::format::{encode_object, BLOB};
     use std::sync::Arc;
+
+    #[test]
+    fn protocol_lock_failures_are_bounded_retry_candidates() {
+        assert!(is_retryable_lock_code(ErrorCode::FileLockingProtocolFailed));
+        assert!(is_retryable_lock_code(ErrorCode::DatabaseBusy));
+        assert!(is_retryable_lock_code(ErrorCode::DatabaseLocked));
+        assert!(!is_retryable_lock_code(ErrorCode::DatabaseCorrupt));
+    }
 
     #[test]
     fn bundled_sqlite_runtime_contains_wal_reset_fix() {
