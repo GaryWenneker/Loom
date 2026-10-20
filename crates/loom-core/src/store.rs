@@ -564,8 +564,7 @@ impl ObjectStore {
 
     #[cfg(test)]
     pub(crate) fn with_snapshot_cache_budget(mut self, bytes: usize) -> Self {
-        self.snapshot_cache_memory =
-            std::sync::Arc::new(SnapshotCacheMemory::new(bytes));
+        self.snapshot_cache_memory = std::sync::Arc::new(SnapshotCacheMemory::new(bytes));
         self
     }
 
