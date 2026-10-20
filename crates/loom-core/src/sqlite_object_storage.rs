@@ -35,13 +35,16 @@ fn begin_immediate_with_retry(connection: &Connection) -> rusqlite::Result<Trans
     // result can be transient when many processes race to begin a write. Only
     // retry BEGIN IMMEDIATE: after it succeeds, every statement and COMMIT is
     // still reported directly so an ambiguous durable outcome is never replayed.
-    let deadline = std::time::Instant::now() + LOCK_RETRY_TIMEOUT;
+    let mut retry_deadline = None;
     loop {
         match Transaction::new_unchecked(connection, TransactionBehavior::Immediate) {
             Ok(transaction) => return Ok(transaction),
-            Err(error)
-                if is_retryable_lock_error(&error) && std::time::Instant::now() < deadline =>
-            {
+            Err(error) if is_retryable_lock_error(&error) => {
+                let deadline = retry_deadline
+                    .get_or_insert_with(|| std::time::Instant::now() + LOCK_RETRY_TIMEOUT);
+                if std::time::Instant::now() >= *deadline {
+                    return Err(error);
+                }
                 std::thread::sleep(LOCK_RETRY_DELAY);
             }
             Err(error) => return Err(error),
@@ -394,8 +397,8 @@ impl ObjectBackend for SqliteObjectBackend {
             ));
         }
         decode_object(bytes)?;
-        let mut conn = self.connection()?;
-        let tx = begin_immediate_with_retry(&mut conn)?;
+        let conn = self.connection()?;
+        let tx = begin_immediate_with_retry(&conn)?;
         tx.execute(
             "INSERT OR IGNORE INTO loom_storage_objects(oid,envelope) VALUES(?1,?2)",
             params![id.to_string(), bytes],
