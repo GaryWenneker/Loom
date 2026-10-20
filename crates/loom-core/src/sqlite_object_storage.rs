@@ -169,7 +169,7 @@ impl SqliteObjectBackend {
         // Concurrent initializers can need a journal-mode lock upgrade, which
         // SQLite may reject without invoking its busy handler. Retry the
         // idempotent bootstrap within one bounded deadline.
-        let deadline = std::time::Instant::now() + LOCK_RETRY_TIMEOUT;
+        let mut retry_deadline = None;
         let mode = loop {
             let initialized = (|| -> rusqlite::Result<String> {
                 let current: String = conn.query_row("PRAGMA journal_mode", [], |r| r.get(0))?;
@@ -189,9 +189,12 @@ impl SqliteObjectBackend {
             })();
             match initialized {
                 Ok(mode) => break mode,
-                Err(error)
-                    if is_retryable_lock_error(&error) && std::time::Instant::now() < deadline =>
-                {
+                Err(error) if is_retryable_lock_error(&error) => {
+                    let deadline = retry_deadline
+                        .get_or_insert_with(|| std::time::Instant::now() + LOCK_RETRY_TIMEOUT);
+                    if std::time::Instant::now() >= *deadline {
+                        return Err(error.into());
+                    }
                     std::thread::sleep(LOCK_RETRY_DELAY);
                 }
                 Err(error) => return Err(error.into()),
