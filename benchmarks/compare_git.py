@@ -316,7 +316,17 @@ def main():
         report['scenarios'].append(scenario(args,count))
         args.output.parent.mkdir(parents=True,exist_ok=True)
         args.output.write_text(json.dumps(report,indent=2)+'\n')
-        print(json.dumps(report['scenarios'][-1]['git_over_loom_p50']),flush=True)
+        latest = report['scenarios'][-1]
+        compact = {
+            name: {key:value for key,value in values.items() if key != 'samples_ms'}
+            for name, values in latest['operations'].items()
+            if name in ('git_batch', 'loom_pack_batch', 'loom_pack_multi',
+                        'baseline_pack_batch', 'baseline_pack_multi')
+        }
+        print(json.dumps({'operations_ms': compact,
+                          'git_over_loom_p50': latest['git_over_loom_p50'],
+                          'baseline_over_loom_p50': latest['baseline_over_loom_p50']},
+                         sort_keys=True), flush=True)
 
 
 if __name__ == '__main__': main()
