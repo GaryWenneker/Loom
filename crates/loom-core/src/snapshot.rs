@@ -780,11 +780,9 @@ mod tests {
         crate::Repository::init(dir.path()).unwrap();
         let store = ObjectStore::new(&dir.path().join(".loom"));
         let blob = store.put(BLOB, b"bounded read pack").unwrap();
-        let root = crate::tree::write_snapshot(
-            &store,
-            &BTreeMap::from([("file".to_owned(), blob)]),
-        )
-        .unwrap();
+        let root =
+            crate::tree::write_snapshot(&store, &BTreeMap::from([("file".to_owned(), blob)]))
+                .unwrap();
         let path = dir.path().join("reads.pack");
         crate::read_pack::write(&store, root, &path).unwrap();
         let index_bytes = crate::read_pack::ReadPack::open(&path)
