@@ -165,7 +165,11 @@ inside its existing budget. These answers belong to one pinned root, are shared
 by scalar/grouped reads, and never enter the provider's publication or integrity
 paths. Cache accounting conservatively includes retained per-path payloads and
 both path-key copies, even when content Arcs are shared. A zero budget disables
-this layer too; misses still use the configured verified reader. See the
+this layer too; misses still use the configured verified reader. Snapshots from
+one cloned object-store handle also share a 256 MiB retained-cache ceiling.
+Admission is nonblocking: pressure causes local eviction or a cache miss, never a
+stalled query or a correctness failure. Separate store instances, caller Arcs,
+read-pack indexes and temporary read buffers remain outside that ceiling. See the
 [working-set comparison](../benchmarks/README.md#repeated-immutable-working-sets).
 
 `loom read-pack @REV FILE` can separately prepare an optional local acceleration

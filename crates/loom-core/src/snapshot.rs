@@ -25,6 +25,9 @@ pub struct SnapshotStats {
     pub cache_hits: u64,
     pub cache_bytes: usize,
     pub cache_entries: usize,
+    /// Entries not retained because the shared store-wide cache budget was
+    /// occupied by other live snapshots.
+    pub cache_admission_rejections: u64,
     pub path_cache_hits: u64,
     pub path_cache_entries: usize,
     /// Retained read-pack index allocation, separate from cache_bytes/budget.
@@ -69,6 +72,7 @@ struct Cache {
     paths: HashMap<String, PathEntry>,
     order: VecDeque<CacheKey>,
     budget: usize,
+    shared_memory: Arc<crate::store::SnapshotCacheMemory>,
     stats: SnapshotStats,
 }
 impl Cache {
@@ -80,19 +84,37 @@ impl Cache {
         }
         value
     }
-    fn make_room(&mut self, weight: usize) {
+    fn remove_oldest(&mut self) -> bool {
+        let Some(oldest) = self.order.pop_front() else {
+            return false;
+        };
+        let removed = match oldest {
+            CacheKey::Object(id) => self.entries.remove(&id).map(|(_, size)| size),
+            CacheKey::Path(path) => self.paths.remove(&path).map(|entry| entry.weight),
+        };
+        if let Some(size) = removed {
+            self.stats.cache_bytes -= size;
+            self.shared_memory.release(size);
+        }
+        self.update_counts();
+        true
+    }
+    fn reserve(&mut self, weight: usize) -> bool {
+        if weight > self.budget {
+            return false;
+        }
         while self.stats.cache_bytes.saturating_add(weight) > self.budget {
-            let Some(oldest) = self.order.pop_front() else {
-                break;
-            };
-            let removed = match oldest {
-                CacheKey::Object(id) => self.entries.remove(&id).map(|(_, size)| size),
-                CacheKey::Path(path) => self.paths.remove(&path).map(|entry| entry.weight),
-            };
-            if let Some(size) = removed {
-                self.stats.cache_bytes -= size;
+            if !self.remove_oldest() {
+                return false;
             }
         }
+        while !self.shared_memory.try_acquire(weight) {
+            if !self.remove_oldest() {
+                self.stats.cache_admission_rejections += 1;
+                return false;
+            }
+        }
+        true
     }
     fn update_counts(&mut self) {
         self.stats.path_cache_entries = self.paths.len();
@@ -107,10 +129,9 @@ impl Cache {
             .map_or(0, |bytes| bytes.len())
             .saturating_add(path.len().saturating_mul(2))
             .saturating_add(256);
-        if weight > self.budget || self.paths.contains_key(path) {
+        if self.paths.contains_key(path) || !self.reserve(weight) {
             return;
         }
-        self.make_room(weight);
         self.stats.cache_bytes += weight;
         self.paths.insert(
             path.to_owned(),
@@ -132,14 +153,20 @@ impl Cache {
     fn insert(&mut self, id: ObjectId, value: Cached, bytes: usize) {
         // Include an allowance for Arc, map and queue bookkeeping per object.
         let weight = bytes.saturating_add(128);
-        if weight > self.budget || self.entries.contains_key(&id) {
+        if self.entries.contains_key(&id) || !self.reserve(weight) {
             return;
         }
-        self.make_room(weight);
         self.stats.cache_bytes += weight;
         self.entries.insert(id, (value, weight));
         self.order.push_back(CacheKey::Object(id));
         self.update_counts();
+    }
+}
+
+impl Drop for Cache {
+    fn drop(&mut self) {
+        self.shared_memory.release(self.stats.cache_bytes);
+        self.stats.cache_bytes = 0;
     }
 }
 
@@ -169,6 +196,7 @@ impl Snapshot {
                 "snapshot cache exceeds 256 MiB limit".into(),
             ));
         }
+        let shared_memory = store.snapshot_cache_memory();
         let live = store.read_session()?;
         let mut stats = SnapshotStats::default();
         let reader: Arc<dyn crate::storage_backend::ObjectReadSession> = match pack {
@@ -188,6 +216,7 @@ impl Snapshot {
                 paths: HashMap::new(),
                 order: VecDeque::new(),
                 budget,
+                shared_memory,
                 stats,
             }),
         };
@@ -728,6 +757,41 @@ impl Snapshot {
 mod tests {
     use super::*;
     use crate::NativeTree;
+
+    #[test]
+    fn snapshot_caches_share_store_memory_and_recover_after_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::Repository::init(dir.path()).unwrap();
+        let store = ObjectStore::new(&dir.path().join(".loom"));
+        let blob = store.put(BLOB, b"shared cache budget").unwrap();
+        let state = BTreeMap::from([("file".to_owned(), blob)]);
+        let root = crate::tree::write_snapshot(&store, &state).unwrap();
+        let root_weight = IndexedTree::decode(store.read_session().unwrap().get(root).unwrap())
+            .unwrap()
+            .accounted_bytes()
+            + 128;
+        let store = store.with_snapshot_cache_budget(root_weight);
+
+        let first = Snapshot::new(root, store.clone(), root_weight).unwrap();
+        assert!(first.stats().unwrap().cache_bytes > 0);
+        assert!(first.stats().unwrap().cache_bytes <= root_weight);
+
+        // The second snapshot remains fully usable but cannot multiply the
+        // retained root allocation while the first owns the shared budget.
+        let second = Snapshot::new(root, store.clone(), root_weight).unwrap();
+        let second_stats = second.stats().unwrap();
+        assert_eq!(second_stats.cache_bytes, 0);
+        assert_eq!(second_stats.cache_admission_rejections, 1);
+        assert_eq!(
+            second.read_file("file").unwrap().as_deref(),
+            Some(&b"shared cache budget"[..])
+        );
+        drop(first);
+
+        let third = Snapshot::new(root, store, root_weight).unwrap();
+        assert!(third.stats().unwrap().cache_bytes > 0);
+        assert!(third.stats().unwrap().cache_bytes <= root_weight);
+    }
 
     #[test]
     fn bulk_traversal_shares_ancestors_and_directory_dags_without_a_cache() {

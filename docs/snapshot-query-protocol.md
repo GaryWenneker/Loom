@@ -61,7 +61,16 @@ ordinary owned trees and read views share one canonical validator.
 Default budget is 64 MiB, configurable from zero (disabled) through 256 MiB.
 Accounting includes content capacity and estimated per-entry bookkeeping; it is
 not a process RSS limit and excludes Arc values retained by API consumers.
-Stats expose physical tree/blob reads, cache hits, entries and accounted bytes.
+Snapshots cloned from one `ObjectStore` additionally share a 256 MiB retained
+cache ceiling. Admission never waits for another long-lived snapshot: the local
+FIFO is evicted where possible, then an entry is skipped when the shared ceiling
+is still occupied. The verified query result is returned either way. Dropping a
+snapshot releases all of its retained reservation. Separately opened stores and
+processes, read-pack indexes, caller-retained Arcs, temporary reads and OS cache
+remain outside this ceiling, so it is still not a total RSS limit.
+
+Stats expose physical tree/blob reads, cache hits, entries, accounted bytes and
+`cache_admission_rejections` for entries skipped under shared pressure.
 Sharing ancestors can reduce cache lookups/hits without increasing physical I/O.
 `path_cache_hits` and `path_cache_entries` identify exact-path reuse. Total
 `cache_entries` and `cache_hits` include both object and path entries.
