@@ -943,9 +943,8 @@ mod tests {
     #[test]
     fn scalar_reader_pool_allows_independent_reads_to_overlap() {
         let dir = tempfile::tempdir().unwrap();
-        let backend = Arc::new(
-            SqliteObjectBackend::open(dir.path().join("objects.sqlite")).unwrap(),
-        );
+        let backend =
+            Arc::new(SqliteObjectBackend::open(dir.path().join("objects.sqlite")).unwrap());
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let (release_first_tx, release_first_rx) = std::sync::mpsc::channel();
         let (release_second_tx, release_second_rx) = std::sync::mpsc::channel();
