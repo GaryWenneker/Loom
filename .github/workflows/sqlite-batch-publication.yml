@@ -12,12 +12,39 @@ on:
       - "benchmarks/sqlite_batch_publication.py"
       - "docs/sqlite-batch-publication.md"
       - "docs/sqlite-runtime-version.md"
+      - "docs/sqlite-lock-retry.md"
       - ".github/workflows/sqlite-batch-publication.yml"
 
 permissions:
   contents: read
 
 jobs:
+  windows-locking:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    name: bounded Windows locking retries
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Repeat concurrent SQLite regressions
+        shell: pwsh
+        run: |
+          1..10 | ForEach-Object {
+            cargo test --locked -p loom-core `
+              sqlite_object_storage::tests::concurrent_initializers_can_open_one_new_database `
+              -- --exact
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            cargo test --locked -p loom-core `
+              sqlite_object_storage::tests::concurrent_create_is_immutable_and_survives_reopen `
+              -- --exact
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
   benchmark:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: checked SQLite object batches
