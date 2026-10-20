@@ -13,6 +13,7 @@ pub(crate) const MAX_PUBLICATION_BYTES: usize = 8 * 1024 * 1024;
 /// Covers one maximum-size canonical v1 object and its independent live
 /// readback. This is shared by every publisher cloned from one ObjectStore.
 const DEFAULT_PUBLICATION_MEMORY_BYTES: usize = 2 * (crate::format::MAX_OBJECT_SIZE + 15);
+const DEFAULT_SNAPSHOT_CACHE_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 
 struct PublicationMemory {
     limit: usize,
@@ -55,6 +56,48 @@ impl PublicationMemory {
         debug_assert!(*used >= bytes);
         *used = used.saturating_sub(bytes);
         self.available.notify_all();
+    }
+}
+
+/// Process-local retained-query memory shared by snapshots cloned from one
+/// object store. Cache admission must never wait: snapshots may live for an
+/// arbitrary amount of time, so waiting for another snapshot to drop could
+/// deadlock a query. Callers instead evict local entries or skip caching.
+pub(crate) struct SnapshotCacheMemory {
+    limit: usize,
+    used: Mutex<usize>,
+}
+
+impl SnapshotCacheMemory {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            used: Mutex::new(0),
+        }
+    }
+
+    pub(crate) fn try_acquire(&self, bytes: usize) -> bool {
+        if bytes > self.limit {
+            return false;
+        }
+        let mut used = self.used.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(next) = used.checked_add(bytes) else {
+            return false;
+        };
+        if next > self.limit {
+            return false;
+        }
+        *used = next;
+        true
+    }
+
+    pub(crate) fn release(&self, bytes: usize) {
+        if bytes == 0 {
+            return;
+        }
+        let mut used = self.used.lock().unwrap_or_else(|error| error.into_inner());
+        debug_assert!(*used >= bytes);
+        *used = used.saturating_sub(bytes);
     }
 }
 
@@ -363,6 +406,7 @@ impl crate::storage_backend::ObjectBackend for FilesystemObjectBackend {
 pub(crate) struct ObjectStore {
     backend: std::sync::Arc<dyn crate::storage_backend::ObjectBackend>,
     publication_memory: std::sync::Arc<PublicationMemory>,
+    snapshot_cache_memory: std::sync::Arc<SnapshotCacheMemory>,
     external: bool,
     #[cfg(test)]
     local_dir: Option<PathBuf>,
@@ -375,6 +419,9 @@ impl ObjectStore {
             backend: std::sync::Arc::new(FilesystemObjectBackend { dir: dir.clone() }),
             publication_memory: std::sync::Arc::new(PublicationMemory::new(
                 DEFAULT_PUBLICATION_MEMORY_BYTES,
+            )),
+            snapshot_cache_memory: std::sync::Arc::new(SnapshotCacheMemory::new(
+                DEFAULT_SNAPSHOT_CACHE_MEMORY_BYTES,
             )),
             external: false,
             #[cfg(test)]
@@ -395,6 +442,9 @@ impl ObjectStore {
             backend,
             publication_memory: std::sync::Arc::new(PublicationMemory::new(
                 DEFAULT_PUBLICATION_MEMORY_BYTES,
+            )),
+            snapshot_cache_memory: std::sync::Arc::new(SnapshotCacheMemory::new(
+                DEFAULT_SNAPSHOT_CACHE_MEMORY_BYTES,
             )),
             external: true,
             #[cfg(test)]
@@ -506,6 +556,17 @@ impl ObjectStore {
         let mut store = Self::with_backend(backend)?;
         store.publication_memory = std::sync::Arc::new(PublicationMemory::new(bytes));
         Ok(store)
+    }
+
+    pub(crate) fn snapshot_cache_memory(&self) -> std::sync::Arc<SnapshotCacheMemory> {
+        self.snapshot_cache_memory.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_snapshot_cache_budget(mut self, bytes: usize) -> Self {
+        self.snapshot_cache_memory =
+            std::sync::Arc::new(SnapshotCacheMemory::new(bytes));
+        self
     }
 
     /// Shared bound for independent live object publications, including
