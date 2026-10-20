@@ -30,14 +30,14 @@ fn is_retryable_lock_error(error: &rusqlite::Error) -> bool {
     }
 }
 
-fn begin_immediate_with_retry(connection: &mut Connection) -> rusqlite::Result<Transaction<'_>> {
+fn begin_immediate_with_retry(connection: &Connection) -> rusqlite::Result<Transaction<'_>> {
     // SQLite's busy handler does not cover SQLITE_PROTOCOL. In WAL mode that
     // result can be transient when many processes race to begin a write. Only
     // retry BEGIN IMMEDIATE: after it succeeds, every statement and COMMIT is
     // still reported directly so an ambiguous durable outcome is never replayed.
     let deadline = std::time::Instant::now() + LOCK_RETRY_TIMEOUT;
     loop {
-        match connection.transaction_with_behavior(TransactionBehavior::Immediate) {
+        match Transaction::new_unchecked(connection, TransactionBehavior::Immediate) {
             Ok(transaction) => return Ok(transaction),
             Err(error)
                 if is_retryable_lock_error(&error) && std::time::Instant::now() < deadline =>
