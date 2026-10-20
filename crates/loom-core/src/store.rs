@@ -68,6 +68,18 @@ pub(crate) struct SnapshotCacheMemory {
     used: Mutex<usize>,
 }
 
+pub(crate) struct SnapshotMemoryReservation {
+    memory: std::sync::Arc<SnapshotCacheMemory>,
+    bytes: usize,
+}
+
+impl Drop for SnapshotMemoryReservation {
+    fn drop(&mut self) {
+        self.memory.release(self.bytes);
+        self.bytes = 0;
+    }
+}
+
 impl SnapshotCacheMemory {
     fn new(limit: usize) -> Self {
         Self {
@@ -89,6 +101,16 @@ impl SnapshotCacheMemory {
         }
         *used = next;
         true
+    }
+
+    pub(crate) fn try_reserve(
+        self: &std::sync::Arc<Self>,
+        bytes: usize,
+    ) -> Option<SnapshotMemoryReservation> {
+        self.try_acquire(bytes).then(|| SnapshotMemoryReservation {
+            memory: self.clone(),
+            bytes,
+        })
     }
 
     pub(crate) fn release(&self, bytes: usize) {

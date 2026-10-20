@@ -30,7 +30,9 @@ pub struct SnapshotStats {
     pub cache_admission_rejections: u64,
     pub path_cache_hits: u64,
     pub path_cache_entries: usize,
-    /// Retained read-pack index allocation, separate from cache_bytes/budget.
+    /// Retained read-pack index allocation. It is separate from this
+    /// snapshot's cache_bytes/budget, but shares the store-wide retained-memory
+    /// limit with every live snapshot cache and read-pack index.
     pub read_pack_index_bytes: usize,
     pub read_pack_objects: usize,
 }
@@ -180,6 +182,7 @@ pub struct Snapshot {
     root: ObjectId,
     reader: Arc<dyn crate::storage_backend::ObjectReadSession>,
     cache: Mutex<Cache>,
+    _read_pack_index_reservation: Option<crate::store::SnapshotMemoryReservation>,
 }
 impl Snapshot {
     pub(crate) fn new(root: ObjectId, store: ObjectStore, budget: usize) -> Result<Self> {
@@ -199,9 +202,21 @@ impl Snapshot {
         let shared_memory = store.snapshot_cache_memory();
         let live = store.read_session()?;
         let mut stats = SnapshotStats::default();
+        let mut read_pack_index_reservation = None;
         let reader: Arc<dyn crate::storage_backend::ObjectReadSession> = match pack {
             Some(path) => {
-                let pack = crate::read_pack::ReadPack::open(path)?;
+                let pack = crate::read_pack::ReadPack::open_with_index_reservation(
+                    path,
+                    |bytes| {
+                        read_pack_index_reservation = shared_memory.try_reserve(bytes);
+                        if read_pack_index_reservation.is_none() {
+                            return Err(Error::Invalid(
+                                "read-pack index exceeds available shared snapshot memory; close another snapshot or omit --read-pack".into(),
+                            ));
+                        }
+                        Ok(())
+                    },
+                )?;
                 stats.read_pack_index_bytes = pack.index_bytes();
                 stats.read_pack_objects = pack.objects();
                 Arc::new(crate::read_pack::PackedSession { pack, live })
@@ -219,6 +234,7 @@ impl Snapshot {
                 shared_memory,
                 stats,
             }),
+            _read_pack_index_reservation: read_pack_index_reservation,
         };
         snapshot.tree(root, 0)?;
         Ok(snapshot)
@@ -757,6 +773,39 @@ impl Snapshot {
 mod tests {
     use super::*;
     use crate::NativeTree;
+
+    #[test]
+    fn read_pack_indexes_share_store_memory_and_release_failed_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::Repository::init(dir.path()).unwrap();
+        let store = ObjectStore::new(&dir.path().join(".loom"));
+        let blob = store.put(BLOB, b"bounded read pack").unwrap();
+        let root =
+            crate::tree::write_snapshot(&store, &BTreeMap::from([("file".to_owned(), blob)]))
+                .unwrap();
+        let path = dir.path().join("reads.pack");
+        crate::read_pack::write(&store, root, &path).unwrap();
+        let index_bytes = crate::read_pack::ReadPack::open(&path)
+            .unwrap()
+            .index_bytes();
+        let store = store.with_snapshot_cache_budget(index_bytes);
+
+        let first = Snapshot::with_read_pack(root, store.clone(), 0, Some(&path)).unwrap();
+        assert_eq!(first.stats().unwrap().read_pack_index_bytes, index_bytes);
+
+        let error = match Snapshot::with_read_pack(root, store.clone(), 0, Some(&path)) {
+            Ok(_) => panic!("second retained pack index exceeded the shared limit"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("shared snapshot memory"));
+
+        drop(first);
+        let reopened = Snapshot::with_read_pack(root, store, 0, Some(&path)).unwrap();
+        assert_eq!(
+            reopened.read_file("file").unwrap().as_deref(),
+            Some(&b"bounded read pack"[..])
+        );
+    }
 
     #[test]
     fn snapshot_caches_share_store_memory_and_recover_after_drop() {

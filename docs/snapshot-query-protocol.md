@@ -62,12 +62,16 @@ Default budget is 64 MiB, configurable from zero (disabled) through 256 MiB.
 Accounting includes content capacity and estimated per-entry bookkeeping; it is
 not a process RSS limit and excludes Arc values retained by API consumers.
 Snapshots cloned from one `ObjectStore` additionally share a 256 MiB retained
-cache ceiling. Admission never waits for another long-lived snapshot: the local
-FIFO is evicted where possible, then an entry is skipped when the shared ceiling
-is still occupied. The verified query result is returned either way. Dropping a
-snapshot releases all of its retained reservation. Separately opened stores and
-processes, read-pack indexes, caller-retained Arcs, temporary reads and OS cache
-remain outside this ceiling, so it is still not a total RSS limit.
+memory ceiling across caches and read-pack indexes. Cache admission never waits
+for another long-lived snapshot: the local FIFO is evicted where possible, then
+an entry is skipped when the shared ceiling is still occupied. The verified
+query result is returned either way. An explicitly requested read-pack index
+cannot be skipped, so its opener reserves the declared index bytes before
+allocating the buffer and fails clearly when the shared ceiling is full.
+Dropping a snapshot, including every later validation-error path, releases its
+cache and pack-index reservations. Separately opened stores and processes,
+caller-retained Arcs, temporary reads and OS cache remain outside this ceiling,
+so it is still not a total RSS limit.
 
 Stats expose physical tree/blob reads, cache hits, entries, accounted bytes and
 `cache_admission_rejections` for entries skipped under shared pressure.
@@ -135,9 +139,12 @@ No remote authorization boundary is introduced.
 
 Each file is capped at 256 MiB and 1,000,000 indexed objects. Its full sorted
 index is loaded and checked at session startup: up to 48,000,000 bytes retained
-in one buffer, without a second decoded-index allocation. `stats` exposes `read_pack_objects`
-and `read_pack_index_bytes` separately from the snapshot cache budget. Pack data
-is read on demand, not all retained in memory. An object envelope buffer, copied
+in one buffer, without a second decoded-index allocation. The store-wide
+retained-memory ceiling is reserved before that allocation, so simultaneous
+pack sessions cannot multiply indexes beyond the process-local bound. `stats`
+exposes `read_pack_objects` and `read_pack_index_bytes` separately from the
+snapshot's local cache budget. Pack data is read on demand, not all retained in
+memory. An object envelope buffer, copied
 payload, owned tree parsing during preparation and OS page cache are additional;
 these caps are not a process RSS limit. The pack session requests one object
 worker. Unix uses positioned reads; Windows serializes seek/read pairs.

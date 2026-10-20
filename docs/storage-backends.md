@@ -166,10 +166,13 @@ by scalar/grouped reads, and never enter the provider's publication or integrity
 paths. Cache accounting conservatively includes retained per-path payloads and
 both path-key copies, even when content Arcs are shared. A zero budget disables
 this layer too; misses still use the configured verified reader. Snapshots from
-one cloned object-store handle also share a 256 MiB retained-cache ceiling.
+one cloned object-store handle also share a 256 MiB retained-memory ceiling
+across verified caches and explicitly opened read-pack indexes.
 Admission is nonblocking: pressure causes local eviction or a cache miss, never a
-stalled query or a correctness failure. Separate store instances, caller Arcs,
-read-pack indexes and temporary read buffers remain outside that ceiling. See the
+stalled query or a correctness failure. Explicit pack indexes reserve their
+declared bytes before allocation and fail clearly under shared pressure rather
+than silently dropping the selected accelerator. Separate store instances,
+caller Arcs and temporary read buffers remain outside that ceiling. See the
 [working-set comparison](../benchmarks/README.md#repeated-immutable-working-sets).
 
 `loom read-pack @REV FILE` can separately prepare an optional local acceleration
