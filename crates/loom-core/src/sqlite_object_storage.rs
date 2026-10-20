@@ -18,8 +18,7 @@ const LOCK_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(1
 const WRITE_GATE_STRIPES: usize = 64;
 
 fn write_gates() -> &'static [Mutex<()>; WRITE_GATE_STRIPES] {
-    static GATES: std::sync::OnceLock<[Mutex<()>; WRITE_GATE_STRIPES]> =
-        std::sync::OnceLock::new();
+    static GATES: std::sync::OnceLock<[Mutex<()>; WRITE_GATE_STRIPES]> = std::sync::OnceLock::new();
     GATES.get_or_init(|| std::array::from_fn(|_| Mutex::new(())))
 }
 
