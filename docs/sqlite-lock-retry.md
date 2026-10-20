@@ -8,9 +8,13 @@ the writer; it is distinct from corruption.
 
 The object backend treats `SQLITE_BUSY`, `SQLITE_LOCKED`, and
 `SQLITE_PROTOCOL` as transient only while acquiring `BEGIN IMMEDIATE` and while
-running the idempotent database bootstrap. Retries use a 10 ms delay and one
-five-second deadline. Once a transaction begins, statement or commit failures
-are returned without replay. This avoids retrying an ambiguous durable commit.
+running the idempotent database bootstrap. Retries use a 10 ms delay. The
+bootstrap has one five-second deadline; transaction acquisition starts one
+five-second retry window only after SQLite returns the first retryable failure.
+This distinction matters because SQLite can spend time in its own busy/protocol
+handling before returning. Once a transaction begins, statement or commit
+failures are returned without replay. This avoids retrying an ambiguous durable
+commit.
 
 The policy does not change:
 
