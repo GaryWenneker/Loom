@@ -541,6 +541,35 @@ impl ObjectStore {
         })
     }
 
+    pub fn integrity_session(
+        &self,
+    ) -> Result<std::sync::Arc<dyn crate::storage_backend::ObjectIntegritySession>> {
+        use crate::storage_backend::ObjectIntegritySession;
+        struct VerifiedSession(std::sync::Arc<dyn ObjectIntegritySession>);
+        impl ObjectIntegritySession for VerifiedSession {
+            fn get(&self, id: ObjectId) -> Result<Vec<u8>> {
+                let bytes = self.0.get(id)?;
+                if object_id(&bytes) != id {
+                    return Err(Error::Invalid(format!(
+                        "object integrity session returned a hash mismatch: {id}"
+                    )));
+                }
+                decode_object(&bytes)?;
+                Ok(bytes)
+            }
+        }
+        struct LiveSession(ObjectStore);
+        impl ObjectIntegritySession for LiveSession {
+            fn get(&self, id: ObjectId) -> Result<Vec<u8>> {
+                self.0.get(id)
+            }
+        }
+        Ok(match self.backend.open_integrity_session()? {
+            Some(session) => std::sync::Arc::new(VerifiedSession(session)),
+            None => std::sync::Arc::new(LiveSession(self.clone())),
+        })
+    }
+
     pub fn put(&self, kind: u8, payload: &[u8]) -> Result<ObjectId> {
         let bytes = encode_object(kind, payload)?;
         let id = object_id(&bytes);
@@ -1373,10 +1402,17 @@ mod tests {
     }
 
     #[test]
-    fn read_session_facade_does_not_trust_provider_hashes() {
-        use crate::storage_backend::{ObjectBackend, ObjectReadSession, StoreCapabilities};
+    fn read_and_integrity_session_facades_do_not_trust_provider_hashes() {
+        use crate::storage_backend::{
+            ObjectBackend, ObjectIntegritySession, ObjectReadSession, StoreCapabilities,
+        };
         struct Untrusted;
         impl ObjectReadSession for Untrusted {
+            fn get(&self, _: ObjectId) -> Result<Vec<u8>> {
+                encode_object(BLOB, b"wrong")
+            }
+        }
+        impl ObjectIntegritySession for Untrusted {
             fn get(&self, _: ObjectId) -> Result<Vec<u8>> {
                 encode_object(BLOB, b"wrong")
             }
@@ -1403,10 +1439,14 @@ mod tests {
             fn open_read_session(&self) -> Result<Option<Arc<dyn ObjectReadSession>>> {
                 Ok(Some(Arc::new(Untrusted)))
             }
+            fn open_integrity_session(&self) -> Result<Option<Arc<dyn ObjectIntegritySession>>> {
+                Ok(Some(Arc::new(Untrusted)))
+            }
         }
         let store = ObjectStore::with_backend(Arc::new(Untrusted)).unwrap();
         let id = object_id(&encode_object(BLOB, b"expected").unwrap());
         assert!(store.read_session().unwrap().get(id).is_err());
+        assert!(store.integrity_session().unwrap().get(id).is_err());
     }
 
     #[test]

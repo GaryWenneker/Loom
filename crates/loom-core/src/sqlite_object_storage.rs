@@ -2,7 +2,7 @@
 //! Object transactions finish before the repository publishes local branch refs.
 use crate::format::{decode_object, object_id, MAX_OBJECT_SIZE};
 use crate::storage_backend::{
-    ObjectBackend, ObjectReadSession, ObjectWriteSession, StoreCapabilities,
+    ObjectBackend, ObjectIntegritySession, ObjectReadSession, ObjectWriteSession, StoreCapabilities,
 };
 use crate::{Error, ObjectId, Result};
 use rusqlite::{
@@ -328,6 +328,50 @@ impl SqliteObjectBackend {
 }
 
 impl ObjectBackend for SqliteObjectBackend {
+    fn open_integrity_session(&self) -> Result<Option<Arc<dyn ObjectIntegritySession>>> {
+        struct Reader {
+            path: PathBuf,
+            identity: DatabaseIdentity,
+            connection: Mutex<Connection>,
+        }
+        impl ObjectIntegritySession for Reader {
+            fn get(&self, id: ObjectId) -> Result<Vec<u8>> {
+                if DatabaseIdentity::read(&self.path)? != self.identity {
+                    return Err(Error::Invalid(
+                        "SQLite object database changed during integrity check".into(),
+                    ));
+                }
+                let conn = self
+                    .connection
+                    .lock()
+                    .map_err(|_| Error::Invalid("SQLite integrity reader lock poisoned".into()))?;
+                // Reuse only the parsed SELECT. Each query completes before
+                // returning, so no read transaction or row snapshot is kept.
+                let mut query = conn.prepare_cached(READ_OBJECT_SQL)?;
+                let bytes =
+                    SqliteObjectBackend::read_bounded(&mut query, id, MAX_OBJECT_SIZE + 15)?;
+                if DatabaseIdentity::read(&self.path)? != self.identity {
+                    return Err(Error::Invalid(
+                        "SQLite object database changed during integrity check".into(),
+                    ));
+                }
+                Ok(bytes)
+            }
+        }
+
+        let identity = DatabaseIdentity::read(&self.path)?;
+        let connection = self.read_connection()?;
+        if DatabaseIdentity::read(&self.path)? != identity {
+            return Err(Error::Invalid(
+                "SQLite object database changed while opening integrity session".into(),
+            ));
+        }
+        Ok(Some(Arc::new(Reader {
+            path: self.path.clone(),
+            identity,
+            connection: Mutex::new(connection),
+        })))
+    }
     fn open_read_session(&self) -> Result<Option<Arc<dyn ObjectReadSession>>> {
         struct Reader(Mutex<Connection>);
         impl ObjectReadSession for Reader {
@@ -744,6 +788,21 @@ mod tests {
             .is_err());
         assert!(replacement.list_ids().unwrap().is_empty());
         assert!(original.list_ids().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn integrity_session_rejects_an_unlinked_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("objects.sqlite");
+        let backend = SqliteObjectBackend::open(&path).unwrap();
+        let bytes = encode_object(BLOB, b"integrity session").unwrap();
+        let id = object_id(&bytes);
+        backend.put_if_absent(id, &bytes).unwrap();
+        let reader = backend.open_integrity_session().unwrap().unwrap();
+        assert_eq!(reader.get(id).unwrap(), bytes);
+        std::fs::remove_file(&path).unwrap();
+        assert!(reader.get(id).is_err());
     }
 
     #[cfg(unix)]

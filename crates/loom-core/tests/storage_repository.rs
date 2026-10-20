@@ -1,5 +1,5 @@
 use loom_core::memory_storage::MemoryObjectBackend;
-use loom_core::storage_backend::{ObjectBackend, StoreCapabilities};
+use loom_core::storage_backend::{ObjectBackend, ObjectIntegritySession, StoreCapabilities};
 use loom_core::{Error, FilesystemObjectBackend, ObjectId, Repository, Result};
 use std::fs;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -8,19 +8,23 @@ use std::sync::{Arc, Mutex};
 type WriteHook = Box<dyn Fn() + Send>;
 
 struct Controlled {
-    inner: FilesystemObjectBackend,
+    inner: Arc<FilesystemObjectBackend>,
     fail: AtomicBool,
-    corrupt: AtomicBool,
+    corrupt: Arc<AtomicBool>,
     writes: AtomicUsize,
+    integrity_opens: Arc<AtomicUsize>,
+    integrity_reads: Arc<AtomicUsize>,
     hook: Mutex<Option<WriteHook>>,
 }
 impl Controlled {
     fn open(path: &std::path::Path) -> Self {
         Self {
-            inner: FilesystemObjectBackend::open(path).unwrap(),
+            inner: Arc::new(FilesystemObjectBackend::open(path).unwrap()),
             fail: AtomicBool::new(false),
-            corrupt: AtomicBool::new(false),
+            corrupt: Arc::new(AtomicBool::new(false)),
             writes: AtomicUsize::new(0),
+            integrity_opens: Arc::new(AtomicUsize::new(0)),
+            integrity_reads: Arc::new(AtomicUsize::new(0)),
             hook: Mutex::new(None),
         }
     }
@@ -51,6 +55,29 @@ impl ObjectBackend for Controlled {
     }
     fn list_ids(&self) -> Result<Vec<ObjectId>> {
         self.inner.list_ids()
+    }
+    fn open_integrity_session(&self) -> Result<Option<Arc<dyn ObjectIntegritySession>>> {
+        struct Session {
+            inner: Arc<FilesystemObjectBackend>,
+            corrupt: Arc<AtomicBool>,
+            reads: Arc<AtomicUsize>,
+        }
+        impl ObjectIntegritySession for Session {
+            fn get(&self, id: ObjectId) -> Result<Vec<u8>> {
+                self.reads.fetch_add(1, Ordering::SeqCst);
+                let mut bytes = self.inner.get(id)?;
+                if self.corrupt.load(Ordering::SeqCst) {
+                    bytes[0] ^= 1;
+                }
+                Ok(bytes)
+            }
+        }
+        self.integrity_opens.fetch_add(1, Ordering::SeqCst);
+        Ok(Some(Arc::new(Session {
+            inner: self.inner.clone(),
+            corrupt: self.corrupt.clone(),
+            reads: self.integrity_reads.clone(),
+        })))
     }
 }
 
@@ -91,6 +118,8 @@ fn selected_set_provider_failure_preserves_prepared_snapshot_and_retries() {
         Some(b"frozen".to_vec())
     );
     repo.fsck().unwrap();
+    assert_eq!(backend.integrity_opens.load(Ordering::SeqCst), 1);
+    assert!(backend.integrity_reads.load(Ordering::SeqCst) > 0);
 }
 
 #[test]
