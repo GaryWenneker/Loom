@@ -70,6 +70,8 @@ fn begin_immediate_with_retry(connection: &Connection) -> rusqlite::Result<Trans
 
 pub struct SqliteObjectBackend {
     path: PathBuf,
+    identity: DatabaseIdentity,
+    scalar_reader: Mutex<Option<Connection>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -165,8 +167,12 @@ fn checked_path(path: &Path) -> Result<PathBuf> {
 impl SqliteObjectBackend {
     /// Open an existing provider without creating a database or schema.
     pub fn open_existing(path: impl AsRef<Path>) -> Result<Self> {
+        let path = checked_path(path.as_ref())?;
+        let identity = DatabaseIdentity::read(&path)?;
         let backend = Self {
-            path: checked_path(path.as_ref())?,
+            path,
+            identity,
+            scalar_reader: Mutex::new(None),
         };
         let conn = backend.read_connection()?;
         let mode: String = conn.query_row("PRAGMA journal_mode", [], |r| r.get(0))?;
@@ -176,6 +182,7 @@ impl SqliteObjectBackend {
             ));
         }
         conn.prepare("SELECT oid,envelope FROM loom_storage_objects LIMIT 0")?;
+        backend.check_identity()?;
         Ok(backend)
     }
 
@@ -223,7 +230,37 @@ impl SqliteObjectBackend {
                 "SQLite object backend requires WAL journal mode".into(),
             ));
         }
-        Ok(Self { path })
+        let identity = DatabaseIdentity::read(&path)?;
+        Ok(Self {
+            path,
+            identity,
+            scalar_reader: Mutex::new(None),
+        })
+    }
+
+    fn check_identity(&self) -> Result<()> {
+        if DatabaseIdentity::read(&self.path)? != self.identity {
+            return Err(Error::Invalid(
+                "SQLite object database changed after backend open".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn scalar_read<T>(&self, read: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        self.check_identity()?;
+        let mut reader = self
+            .scalar_reader
+            .lock()
+            .map_err(|_| Error::Invalid("SQLite scalar reader lock poisoned".into()))?;
+        if reader.is_none() {
+            *reader = Some(self.read_connection()?);
+            self.check_identity()?;
+        }
+        let result = read(reader.as_ref().expect("initialized SQLite scalar reader"));
+        let identity_result = self.check_identity();
+        identity_result?;
+        result
     }
 
     fn connection(&self) -> Result<Connection> {
@@ -250,7 +287,7 @@ impl SqliteObjectBackend {
     }
 
     fn read(conn: &Connection, id: ObjectId) -> Result<Vec<u8>> {
-        let mut query = conn.prepare(READ_OBJECT_SQL)?;
+        let mut query = conn.prepare_cached(READ_OBJECT_SQL)?;
         Self::read_bounded(&mut query, id, MAX_OBJECT_SIZE + 15)
     }
 
@@ -355,10 +392,10 @@ impl ObjectBackend for SqliteObjectBackend {
     }
     fn get(&self, id: ObjectId) -> Result<Vec<u8>> {
         // Ordinary immutable queries never need a write-capable handle or the
-        // per-connection synchronous write policy. Open fresh existing state
-        // read-only; publication acknowledgment continues to use the separate
-        // bounded live-read path below.
-        Self::read(&self.read_connection()?, id)
+        // per-connection synchronous write policy. Lazily reuse one bounded
+        // query-only connection; publication acknowledgment continues to use
+        // the separate fresh live-read path below.
+        self.scalar_read(|connection| Self::read(connection, id))
     }
     fn get_batch_live(&self, ids: &[ObjectId], max_bytes: usize) -> Result<Option<Vec<Vec<u8>>>> {
         if ids.len() > crate::store::MAX_PUBLICATION_OBJECTS
@@ -459,10 +496,12 @@ impl ObjectBackend for SqliteObjectBackend {
         }
     }
     fn list_ids(&self) -> Result<Vec<ObjectId>> {
-        let conn = self.read_connection()?;
-        let mut statement = conn.prepare("SELECT oid FROM loom_storage_objects ORDER BY oid")?;
-        let rows = statement.query_map([], |r| r.get::<_, String>(0))?;
-        rows.map(|row| ObjectId::parse(&row?)).collect()
+        self.scalar_read(|connection| {
+            let mut statement =
+                connection.prepare_cached("SELECT oid FROM loom_storage_objects ORDER BY oid")?;
+            let rows = statement.query_map([], |r| r.get::<_, String>(0))?;
+            rows.map(|row| ObjectId::parse(&row?)).collect()
+        })
     }
 }
 
@@ -830,11 +869,16 @@ mod tests {
         assert_eq!(backend.get(id).unwrap(), bytes);
         assert_eq!(backend.list_ids().unwrap(), vec![id]);
 
-        drop(conn);
-        std::fs::remove_file(&path).unwrap();
-        Connection::open(&path).unwrap();
-        assert!(backend.get(id).is_err());
-        assert!(backend.list_ids().is_err());
+        let replacement_path = dir.path().join("replacement.sqlite");
+        let replacement = SqliteObjectBackend::open(&replacement_path).unwrap();
+        let substituted = SqliteObjectBackend {
+            path: replacement_path,
+            identity: backend.identity,
+            scalar_reader: Mutex::new(None),
+        };
+        assert!(substituted.get(id).is_err());
+        assert!(substituted.list_ids().is_err());
+        assert!(replacement.list_ids().unwrap().is_empty());
     }
 
     #[test]
