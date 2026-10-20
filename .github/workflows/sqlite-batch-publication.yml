@@ -4,11 +4,14 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
       - "crates/loom-core/src/storage_backend.rs"
       - "crates/loom-core/src/store.rs"
       - "crates/loom-core/src/sqlite_object_storage.rs"
       - "benchmarks/sqlite_batch_publication.py"
       - "docs/sqlite-batch-publication.md"
+      - "docs/sqlite-runtime-version.md"
       - ".github/workflows/sqlite-batch-publication.yml"
 
 permissions:
@@ -43,6 +46,12 @@ jobs:
         run: |
           CARGO_TARGET_DIR="${{ github.workspace }}/baseline-target" cargo build --release --locked -p loom-cli --manifest-path baseline/Cargo.toml
           CARGO_TARGET_DIR="${{ github.workspace }}/candidate-target" cargo build --release --locked -p loom-cli --manifest-path candidate/Cargo.toml
+      - name: Prove exact linked SQLite runtime
+        run: |
+          CARGO_TARGET_DIR="${{ github.workspace }}/candidate-test-target" \
+            cargo test --locked --manifest-path candidate/Cargo.toml -p loom-core \
+            sqlite_object_storage::tests::bundled_sqlite_runtime_contains_wal_reset_fix \
+            -- --exact --nocapture
       - name: Run complete checked workflows
         working-directory: candidate
         run: |

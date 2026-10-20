@@ -330,6 +330,24 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
+    fn bundled_sqlite_runtime_contains_wal_reset_fix() {
+        const EXPECTED_VERSION: &str = "3.51.3";
+        const EXPECTED_SOURCE_ID: &str =
+            "2026-03-13 10:38:09 737ae4a34738ffa0c3ff7f9bb18df914dd1cad163f28fd6b6e114a344fe6d618";
+
+        let connection = Connection::open_in_memory().unwrap();
+        let source_id: String = connection
+            .query_row("SELECT sqlite_source_id()", [], |row| row.get(0))
+            .unwrap();
+        println!(
+            "linked SQLite runtime={} source_id={source_id}",
+            rusqlite::version()
+        );
+        assert_eq!(rusqlite::version(), EXPECTED_VERSION);
+        assert_eq!(source_id, EXPECTED_SOURCE_ID);
+    }
+
+    #[test]
     fn concurrent_initializers_can_open_one_new_database() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("objects.sqlite");
