@@ -31,7 +31,14 @@ providers retain the scalar live-read fallback; errors never request fallback.
 The readback budget is the deduplicated publication window's exact encoded byte
 total: at most 128 objects and 8 MiB, or one existing-format oversized object.
 SQLite checks row lengths against the remaining budget before loading payloads.
-Readback buffers are additional to the publication buffers, not a total RSS cap.
+Across cloned handles to one `ObjectStore`, publishers now reserve both their
+canonical envelopes and the maximum independent readback allocation from one
+shared budget. The default is twice the maximum v1 canonical-object size, so a
+single valid large object remains supported while competing managed publishers
+receive backpressure. Reservations are returned after every verified window and
+when an unfinished or failed publisher is dropped. Caller-owned inputs,
+SQLite/page caches, allocator overhead and separately opened stores are not
+covered, so this remains a managed publication bound rather than a total RSS cap.
 The database path is rechecked before return; Unix also compares device/inode,
 and Windows checks creation time. These observations do not constitute a lease
 or protection from every concurrent filesystem substitution. Ordinary scalar

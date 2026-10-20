@@ -61,8 +61,15 @@ cap or a streaming worktree scan.
 suggest four; SQLite, replicas and custom providers retain the serial default
 unless explicitly implemented otherwise. The core caps workers at eight and
 available CPUs and only starts scoped workers for 32 or more distinct objects.
-CPU/cgroup discovery is reused across the windows of one operation. This bound
-is per publisher, not a global limit across independent agent workspaces.
+CPU/cgroup discovery is reused across the windows of one operation. Publisher
+windows also share one 128-MiB-plus-envelope memory reservation per cloned
+`ObjectStore`. The reservation covers retained canonical envelopes and the
+maximum independent live-readback allocation. Producers wait before Loom accepts
+another managed buffer when the shared budget is full, and failed or abandoned
+publishers return their reservation. One maximum-size v1 object remains valid
+but necessarily occupies the complete shared budget while it is published and
+verified. Caller-owned input, SQLite/page caches, allocator overhead and separate
+`ObjectStore` instances remain outside this bound; it is not a total RSS claim.
 
 Buffers are hash/envelope validated before provider I/O. Equal IDs within a
 window share one physical publication, and ID order improves fanout locality.

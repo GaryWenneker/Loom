@@ -4,11 +4,59 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Condvar, Mutex};
 
 static NONCE: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) const MAX_PUBLICATION_OBJECTS: usize = 128;
 pub(crate) const MAX_PUBLICATION_BYTES: usize = 8 * 1024 * 1024;
+/// Covers one maximum-size canonical v1 object and its independent live
+/// readback. This is shared by every publisher cloned from one ObjectStore.
+const DEFAULT_PUBLICATION_MEMORY_BYTES: usize = 2 * (crate::format::MAX_OBJECT_SIZE + 15);
+
+struct PublicationMemory {
+    limit: usize,
+    used: Mutex<usize>,
+    available: Condvar,
+}
+
+impl PublicationMemory {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            used: Mutex::new(0),
+            available: Condvar::new(),
+        }
+    }
+
+    fn acquire(&self, bytes: usize) -> Result<()> {
+        if bytes > self.limit {
+            return Err(Error::Invalid(format!(
+                "publication memory request exceeds shared {} byte limit",
+                self.limit
+            )));
+        }
+        let mut used = self.used.lock().unwrap_or_else(|error| error.into_inner());
+        while used.saturating_add(bytes) > self.limit {
+            used = self
+                .available
+                .wait(used)
+                .unwrap_or_else(|error| error.into_inner());
+        }
+        *used += bytes;
+        Ok(())
+    }
+
+    fn release(&self, bytes: usize) {
+        if bytes == 0 {
+            return;
+        }
+        let mut used = self.used.lock().unwrap_or_else(|error| error.into_inner());
+        debug_assert!(*used >= bytes);
+        *used = used.saturating_sub(bytes);
+        self.available.notify_all();
+    }
+}
 
 pub struct FilesystemObjectBackend {
     dir: PathBuf,
@@ -314,6 +362,7 @@ impl crate::storage_backend::ObjectBackend for FilesystemObjectBackend {
 #[derive(Clone)]
 pub(crate) struct ObjectStore {
     backend: std::sync::Arc<dyn crate::storage_backend::ObjectBackend>,
+    publication_memory: std::sync::Arc<PublicationMemory>,
     external: bool,
     #[cfg(test)]
     local_dir: Option<PathBuf>,
@@ -324,6 +373,9 @@ impl ObjectStore {
         let dir = meta.join("objects");
         Self {
             backend: std::sync::Arc::new(FilesystemObjectBackend { dir: dir.clone() }),
+            publication_memory: std::sync::Arc::new(PublicationMemory::new(
+                DEFAULT_PUBLICATION_MEMORY_BYTES,
+            )),
             external: false,
             #[cfg(test)]
             local_dir: Some(dir),
@@ -341,6 +393,9 @@ impl ObjectStore {
         }
         Ok(Self {
             backend,
+            publication_memory: std::sync::Arc::new(PublicationMemory::new(
+                DEFAULT_PUBLICATION_MEMORY_BYTES,
+            )),
             external: true,
             #[cfg(test)]
             local_dir: None,
@@ -439,7 +494,18 @@ impl ObjectStore {
             workers: None,
             writer: None,
             writer_checked: false,
+            reserved_bytes: 0,
         }
+    }
+
+    #[cfg(test)]
+    fn with_backend_and_publication_budget(
+        backend: std::sync::Arc<dyn crate::storage_backend::ObjectBackend>,
+        bytes: usize,
+    ) -> Result<Self> {
+        let mut store = Self::with_backend(backend)?;
+        store.publication_memory = std::sync::Arc::new(PublicationMemory::new(bytes));
+        Ok(store)
     }
 
     /// Shared bound for independent live object publications, including
@@ -572,6 +638,8 @@ pub(crate) struct ObjectPublisher<'a> {
     workers: Option<usize>,
     writer: Option<Box<dyn crate::storage_backend::ObjectWriteSession>>,
     writer_checked: bool,
+    /// Canonical bytes plus the maximum independent live-readback allocation.
+    reserved_bytes: usize,
 }
 impl ObjectPublisher<'_> {
     pub fn push(&mut self, id: ObjectId, data: Vec<u8>) -> Result<()> {
@@ -586,6 +654,18 @@ impl ObjectPublisher<'_> {
         {
             self.flush()?;
         }
+        let required = self
+            .bytes
+            .checked_add(data.len())
+            .and_then(|bytes| bytes.checked_mul(2))
+            .ok_or_else(|| Error::Invalid("publication memory reservation overflow".into()))?;
+        let normal_window = MAX_PUBLICATION_BYTES * 2;
+        let target = required.max(normal_window.min(self.store.publication_memory.limit));
+        let reservation = target
+            .checked_sub(self.reserved_bytes)
+            .ok_or_else(|| Error::Invalid("publication memory accounting underflow".into()))?;
+        self.store.publication_memory.acquire(reservation)?;
+        self.reserved_bytes = target;
         self.bytes += data.len();
         self.objects.push((id, data));
         if self.bytes > MAX_PUBLICATION_BYTES {
@@ -646,6 +726,7 @@ impl ObjectPublisher<'_> {
             }
             self.objects.clear();
             self.bytes = 0;
+            self.release_memory();
             return Ok(());
         }
         let workers = if work.len() >= 32 {
@@ -665,11 +746,23 @@ impl ObjectPublisher<'_> {
         })?;
         self.objects.clear();
         self.bytes = 0;
+        self.release_memory();
         Ok(())
+    }
+
+    fn release_memory(&mut self) {
+        self.store.publication_memory.release(self.reserved_bytes);
+        self.reserved_bytes = 0;
     }
 
     pub fn finish(mut self) -> Result<()> {
         self.flush()
+    }
+}
+
+impl Drop for ObjectPublisher<'_> {
+    fn drop(&mut self) {
+        self.release_memory();
     }
 }
 
@@ -772,6 +865,62 @@ mod tests {
             MAX_PUBLICATION_OBJECTS + 4
         );
         assert_eq!(backend.threads.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn publication_memory_is_shared_and_released_when_a_publisher_is_dropped() {
+        let backend = Arc::new(Recording::default());
+        let first = encode_object(BLOB, b"aaaaaaaaaaaaaaaa").unwrap();
+        let second = encode_object(BLOB, b"bbbbbbbbbbbbbbbb").unwrap();
+        assert_eq!(first.len(), second.len());
+        let store = ObjectStore::with_backend_and_publication_budget(
+            backend,
+            first.len().checked_mul(2).unwrap(),
+        )
+        .unwrap();
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let first_store = store.clone();
+        let first_thread = std::thread::spawn(move || {
+            let mut publisher = first_store.publisher();
+            publisher.push(object_id(&first), first).unwrap();
+            held_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            // Dropping an unfinished publisher must return its reservation
+            // without publishing the buffered object.
+        });
+        held_rx.recv().unwrap();
+
+        let (second_tx, second_rx) = std::sync::mpsc::channel();
+        let second_store = store.clone();
+        let second_thread = std::thread::spawn(move || {
+            let mut publisher = second_store.publisher();
+            publisher.push(object_id(&second), second).unwrap();
+            second_tx.send(()).unwrap();
+        });
+        assert!(second_rx
+            .recv_timeout(std::time::Duration::from_millis(50))
+            .is_err());
+        release_tx.send(()).unwrap();
+        first_thread.join().unwrap();
+        second_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        second_thread.join().unwrap();
+    }
+
+    #[test]
+    fn publication_memory_accounts_for_canonical_bytes_and_live_readback() {
+        let backend = Arc::new(Recording::default());
+        let bytes = encode_object(BLOB, b"one object").unwrap();
+        let store = ObjectStore::with_backend_and_publication_budget(
+            backend,
+            bytes.len().checked_mul(2).unwrap() - 1,
+        )
+        .unwrap();
+        let mut publisher = store.publisher();
+        let error = publisher.push(object_id(&bytes), bytes).unwrap_err();
+        assert!(error.to_string().contains("publication memory request"));
     }
 
     #[test]
