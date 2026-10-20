@@ -12,8 +12,7 @@ pub(crate) const MAX_PUBLICATION_OBJECTS: usize = 128;
 pub(crate) const MAX_PUBLICATION_BYTES: usize = 8 * 1024 * 1024;
 /// Covers one maximum-size canonical v1 object and its independent live
 /// readback. This is shared by every publisher cloned from one ObjectStore.
-const DEFAULT_PUBLICATION_MEMORY_BYTES: usize =
-    2 * (crate::format::MAX_OBJECT_SIZE + 15);
+const DEFAULT_PUBLICATION_MEMORY_BYTES: usize = 2 * (crate::format::MAX_OBJECT_SIZE + 15);
 
 struct PublicationMemory {
     limit: usize,
@@ -37,10 +36,7 @@ impl PublicationMemory {
                 self.limit
             )));
         }
-        let mut used = self
-            .used
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut used = self.used.lock().unwrap_or_else(|error| error.into_inner());
         while used.saturating_add(bytes) > self.limit {
             used = self
                 .available
@@ -55,10 +51,7 @@ impl PublicationMemory {
         if bytes == 0 {
             return;
         }
-        let mut used = self
-            .used
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut used = self.used.lock().unwrap_or_else(|error| error.into_inner());
         debug_assert!(*used >= bytes);
         *used = used.saturating_sub(bytes);
         self.available.notify_all();
