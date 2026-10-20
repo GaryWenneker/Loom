@@ -437,6 +437,8 @@ impl ObjectStore {
             objects: Vec::new(),
             bytes: 0,
             workers: None,
+            writer: None,
+            writer_checked: false,
         }
     }
 
@@ -568,6 +570,8 @@ pub(crate) struct ObjectPublisher<'a> {
     objects: Vec<(ObjectId, Vec<u8>)>,
     bytes: usize,
     workers: Option<usize>,
+    writer: Option<Box<dyn crate::storage_backend::ObjectWriteSession>>,
+    writer_checked: bool,
 }
 impl ObjectPublisher<'_> {
     pub fn push(&mut self, id: ObjectId, data: Vec<u8>) -> Result<()> {
@@ -607,7 +611,15 @@ impl ObjectPublisher<'_> {
             .iter()
             .map(|(id, data)| (*id, data.as_slice()))
             .collect();
-        if self.store.backend.put_batch_if_absent(&batch)? {
+        if !self.writer_checked {
+            self.writer = self.store.backend.open_write_session()?;
+            self.writer_checked = true;
+        }
+        let batched = match self.writer.as_mut() {
+            Some(writer) => writer.put_batch_if_absent(&batch)?,
+            None => self.store.backend.put_batch_if_absent(&batch)?,
+        };
+        if batched {
             // The provider transaction is complete, but ref publication still
             // requires a fresh live read rather than trusting its acknowledgement.
             let ids: Vec<_> = work.iter().map(|(id, _)| *id).collect();
@@ -950,6 +962,96 @@ mod tests {
                 assert_eq!(backend.values.lock().unwrap().len(), 64);
             }
         }
+    }
+
+    #[test]
+    fn publication_reuses_one_bounded_write_session_across_windows() {
+        use crate::storage_backend::{ObjectBackend, ObjectWriteSession, StoreCapabilities};
+        #[derive(Default)]
+        struct State {
+            values: std::sync::Mutex<std::collections::HashMap<ObjectId, Vec<u8>>>,
+            opens: std::sync::atomic::AtomicUsize,
+            session_batches: std::sync::atomic::AtomicUsize,
+            direct_batches: std::sync::atomic::AtomicUsize,
+            live_reads: std::sync::atomic::AtomicUsize,
+        }
+        struct Session(std::sync::Arc<State>);
+        impl ObjectWriteSession for Session {
+            fn put_batch_if_absent(&mut self, objects: &[(ObjectId, &[u8])]) -> Result<bool> {
+                self.0.session_batches.fetch_add(1, Ordering::SeqCst);
+                let mut values = self.0.values.lock().unwrap();
+                for (id, bytes) in objects {
+                    values.entry(*id).or_insert_with(|| bytes.to_vec());
+                }
+                Ok(true)
+            }
+        }
+        struct SessionBackend(std::sync::Arc<State>);
+        impl ObjectBackend for SessionBackend {
+            fn capabilities(&self) -> StoreCapabilities {
+                StoreCapabilities {
+                    durable_writes: true,
+                    conditional_create: true,
+                    streaming_reads: false,
+                    streaming_writes: false,
+                    list_objects: false,
+                }
+            }
+            fn get(&self, id: ObjectId) -> Result<Vec<u8>> {
+                self.0
+                    .values
+                    .lock()
+                    .unwrap()
+                    .get(&id)
+                    .cloned()
+                    .ok_or_else(|| Error::Io(std::io::ErrorKind::NotFound.into()))
+            }
+            fn get_batch_live(&self, ids: &[ObjectId], _: usize) -> Result<Option<Vec<Vec<u8>>>> {
+                self.0.live_reads.fetch_add(1, Ordering::SeqCst);
+                let values = self.0.values.lock().unwrap();
+                ids.iter()
+                    .map(|id| {
+                        values
+                            .get(id)
+                            .cloned()
+                            .ok_or_else(|| Error::Io(std::io::ErrorKind::NotFound.into()))
+                    })
+                    .collect::<Result<Vec<_>>>()
+                    .map(Some)
+            }
+            fn put_if_absent(&self, _: ObjectId, _: &[u8]) -> Result<()> {
+                unreachable!("session-capable backend must not use scalar publication")
+            }
+            fn put_batch_if_absent(&self, _: &[(ObjectId, &[u8])]) -> Result<bool> {
+                self.0.direct_batches.fetch_add(1, Ordering::SeqCst);
+                Ok(false)
+            }
+            fn open_write_session(&self) -> Result<Option<Box<dyn ObjectWriteSession>>> {
+                self.0.opens.fetch_add(1, Ordering::SeqCst);
+                Ok(Some(Box::new(Session(self.0.clone()))))
+            }
+            fn exists(&self, id: ObjectId) -> Result<bool> {
+                Ok(self.0.values.lock().unwrap().contains_key(&id))
+            }
+        }
+
+        let state = std::sync::Arc::new(State::default());
+        let store =
+            ObjectStore::with_backend(std::sync::Arc::new(SessionBackend(state.clone()))).unwrap();
+        let mut publication = store.publisher();
+        for index in 0..=MAX_PUBLICATION_OBJECTS {
+            let bytes = encode_object(BLOB, format!("session object {index}").as_bytes()).unwrap();
+            publication.push(object_id(&bytes), bytes).unwrap();
+        }
+        publication.finish().unwrap();
+        assert_eq!(state.opens.load(Ordering::SeqCst), 1);
+        assert_eq!(state.session_batches.load(Ordering::SeqCst), 2);
+        assert_eq!(state.direct_batches.load(Ordering::SeqCst), 0);
+        assert_eq!(state.live_reads.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            state.values.lock().unwrap().len(),
+            MAX_PUBLICATION_OBJECTS + 1
+        );
     }
 
     #[test]

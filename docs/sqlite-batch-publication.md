@@ -3,6 +3,10 @@
 Loom's generic object publisher buffers at most 128 canonical objects or 8 MiB
 before flushing. SQLite now consumes each such window in one `BEGIN IMMEDIATE`
 transaction instead of opening and committing one transaction per object.
+For one `ObjectPublisher`, SQLite now also retains one write connection across
+successive bounded windows. Every window still starts and commits its own
+`BEGIN IMMEDIATE` transaction with WAL and `synchronous=FULL`; the session does
+not combine durability boundaries or let buffers grow past the existing limits.
 
 The optimization does not change object IDs or ref publication. Every envelope
 and hash is validated before the transaction starts. Inserts retain
@@ -11,6 +15,9 @@ and hash-checked inside the transaction before commit. Any SQL error, missing or
 corrupt existing row, or immutable collision rolls the complete new window back.
 After commit, `ObjectPublisher` performs a fresh live read of every object before
 the repository may publish a tree, changeset or compare-and-swap ref update.
+Those reads use independent read-only connections and never trust the retained
+writer. The writer checks the database file identity before and after every
+window and fails closed if the configured path disappears or is replaced.
 
 SQLite now opens one fresh, read-only connection per live readback window,
 instead of opening a new connection for each object. Prepared SELECT and INSERT
@@ -50,7 +57,8 @@ Retries are idempotent: an already committed batch verifies the same immutable
 rows without replacing them. SQLite remains in WAL mode with
 `synchronous=FULL`; no sync or durability control is disabled for performance.
 Providers that do not implement atomic batches retain the existing bounded
-scalar/parallel fallback.
+scalar/parallel fallback. The generic session capability is optional and scoped
+to one publisher; providers without it preserve their previous behavior.
 
 Retained immutable-query sessions reuse one parsed SELECT, not object payloads
 or an open read transaction. Every read still checks the row length, canonical

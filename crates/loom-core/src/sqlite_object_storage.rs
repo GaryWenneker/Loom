@@ -1,7 +1,9 @@
 //! Immutable canonical objects in a durable SQLite database.
 //! Object transactions finish before the repository publishes local branch refs.
 use crate::format::{decode_object, object_id, MAX_OBJECT_SIZE};
-use crate::storage_backend::{ObjectBackend, ObjectReadSession, StoreCapabilities};
+use crate::storage_backend::{
+    ObjectBackend, ObjectReadSession, ObjectWriteSession, StoreCapabilities,
+};
 use crate::{Error, ObjectId, Result};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use std::path::{Path, PathBuf};
@@ -12,6 +14,68 @@ const READ_OBJECT_SQL: &str = "SELECT CASE WHEN length(envelope)<=?2 THEN envelo
 
 pub struct SqliteObjectBackend {
     path: PathBuf,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DatabaseIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(windows)]
+    creation_time: u64,
+}
+
+impl DatabaseIdentity {
+    fn read(path: &Path) -> Result<Self> {
+        let metadata = std::fs::symlink_metadata(path)?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err(Error::Invalid(
+                "SQLite object database must be a regular file".into(),
+            ));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Ok(Self {
+                device: metadata.dev(),
+                inode: metadata.ino(),
+            })
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            Ok(Self {
+                creation_time: metadata.creation_time(),
+            })
+        }
+    }
+}
+
+struct SqliteWriteSession {
+    path: PathBuf,
+    identity: DatabaseIdentity,
+    connection: Connection,
+}
+
+impl SqliteWriteSession {
+    fn check_identity(&self) -> Result<()> {
+        if DatabaseIdentity::read(&self.path)? != self.identity {
+            return Err(Error::Invalid(
+                "SQLite object database changed during write session".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl ObjectWriteSession for SqliteWriteSession {
+    fn put_batch_if_absent(&mut self, objects: &[(ObjectId, &[u8])]) -> Result<bool> {
+        self.check_identity()?;
+        SqliteObjectBackend::write_batch(&mut self.connection, objects)?;
+        self.check_identity()?;
+        Ok(true)
+    }
 }
 
 fn checked_path(path: &Path) -> Result<PathBuf> {
@@ -163,6 +227,46 @@ impl SqliteObjectBackend {
         decode_object(&bytes)?;
         Ok(bytes)
     }
+
+    fn write_batch(conn: &mut Connection, objects: &[(ObjectId, &[u8])]) -> Result<()> {
+        // Reject the complete window before BEGIN IMMEDIATE so malformed input
+        // cannot flush an earlier prefix. ObjectPublisher already bounds normal
+        // calls to 128 objects / 8 MiB, while direct callers retain format limits.
+        let mut unique = std::collections::BTreeMap::new();
+        for (id, bytes) in objects {
+            if object_id(bytes) != *id {
+                return Err(Error::Invalid(
+                    "object ID does not match canonical envelope".into(),
+                ));
+            }
+            decode_object(bytes)?;
+            if let Some(previous) = unique.insert(*id, *bytes) {
+                if previous != *bytes {
+                    return Err(Error::Invalid("SQLite batch object collision".into()));
+                }
+            }
+        }
+
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        {
+            let mut insert = tx.prepare(
+                "INSERT OR IGNORE INTO loom_storage_objects(oid,envelope) VALUES(?1,?2)",
+            )?;
+            for (id, bytes) in &unique {
+                insert.execute(params![id.to_string(), bytes])?;
+            }
+        }
+        {
+            let mut query = tx.prepare(READ_OBJECT_SQL)?;
+            for (id, bytes) in &unique {
+                if Self::read_bounded(&mut query, *id, MAX_OBJECT_SIZE + 15)?.as_slice() != *bytes {
+                    return Err(Error::Invalid("SQLite immutable object collision".into()));
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
 }
 
 impl ObjectBackend for SqliteObjectBackend {
@@ -269,44 +373,23 @@ impl ObjectBackend for SqliteObjectBackend {
         Ok(())
     }
     fn put_batch_if_absent(&self, objects: &[(ObjectId, &[u8])]) -> Result<bool> {
-        // Reject the complete window before BEGIN IMMEDIATE so malformed input
-        // cannot flush an earlier prefix. ObjectPublisher already bounds normal
-        // calls to 128 objects / 8 MiB, while direct callers retain format limits.
-        let mut unique = std::collections::BTreeMap::new();
-        for (id, bytes) in objects {
-            if object_id(bytes) != *id {
-                return Err(Error::Invalid(
-                    "object ID does not match canonical envelope".into(),
-                ));
-            }
-            decode_object(bytes)?;
-            if let Some(previous) = unique.insert(*id, *bytes) {
-                if previous != *bytes {
-                    return Err(Error::Invalid("SQLite batch object collision".into()));
-                }
-            }
-        }
-
         let mut conn = self.connection()?;
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        {
-            let mut insert = tx.prepare(
-                "INSERT OR IGNORE INTO loom_storage_objects(oid,envelope) VALUES(?1,?2)",
-            )?;
-            for (id, bytes) in &unique {
-                insert.execute(params![id.to_string(), bytes])?;
-            }
-        }
-        {
-            let mut query = tx.prepare(READ_OBJECT_SQL)?;
-            for (id, bytes) in &unique {
-                if Self::read_bounded(&mut query, *id, MAX_OBJECT_SIZE + 15)?.as_slice() != *bytes {
-                    return Err(Error::Invalid("SQLite immutable object collision".into()));
-                }
-            }
-        }
-        tx.commit()?;
+        Self::write_batch(&mut conn, objects)?;
         Ok(true)
+    }
+    fn open_write_session(&self) -> Result<Option<Box<dyn ObjectWriteSession>>> {
+        let identity = DatabaseIdentity::read(&self.path)?;
+        let connection = self.connection()?;
+        if DatabaseIdentity::read(&self.path)? != identity {
+            return Err(Error::Invalid(
+                "SQLite object database changed while opening write session".into(),
+            ));
+        }
+        Ok(Some(Box::new(SqliteWriteSession {
+            path: self.path.clone(),
+            identity,
+            connection,
+        })))
     }
     fn exists(&self, id: ObjectId) -> Result<bool> {
         match self.get(id) {
@@ -553,13 +636,14 @@ mod tests {
             rejected
         ))
         .unwrap();
-        assert!(backend.put_batch_if_absent(&objects).is_err());
+        let mut writer = backend.open_write_session().unwrap().unwrap();
+        assert!(writer.put_batch_if_absent(&objects).is_err());
         assert!(backend.list_ids().unwrap().is_empty());
 
         conn.execute_batch("DROP TRIGGER reject_batch_insert;")
             .unwrap();
-        assert!(backend.put_batch_if_absent(&objects).unwrap());
-        assert!(backend.put_batch_if_absent(&objects).unwrap());
+        assert!(writer.put_batch_if_absent(&objects).unwrap());
+        assert!(writer.put_batch_if_absent(&objects).unwrap());
         assert_eq!(backend.list_ids().unwrap(), {
             let mut ids: Vec<_> = objects.iter().map(|(id, _)| *id).collect();
             ids.sort_unstable();
@@ -568,6 +652,45 @@ mod tests {
         for (id, bytes) in objects {
             assert_eq!(backend.get(id).unwrap(), bytes);
         }
+    }
+
+    #[test]
+    fn write_session_rejects_a_changed_database_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let original_path = dir.path().join("original.sqlite");
+        let replacement_path = dir.path().join("replacement.sqlite");
+        let original = SqliteObjectBackend::open(&original_path).unwrap();
+        let replacement = SqliteObjectBackend::open(&replacement_path).unwrap();
+        let bytes = encode_object(BLOB, b"must not reach another database").unwrap();
+        let id = object_id(&bytes);
+
+        // Model a path replacement without relying on platform-specific rules
+        // for renaming an open database file (Windows can deny that rename).
+        let mut writer = SqliteWriteSession {
+            path: replacement_path,
+            identity: DatabaseIdentity::read(&original_path).unwrap(),
+            connection: original.connection().unwrap(),
+        };
+        assert!(writer
+            .put_batch_if_absent(&[(id, bytes.as_slice())])
+            .is_err());
+        assert!(replacement.list_ids().unwrap().is_empty());
+        assert!(original.list_ids().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_session_does_not_acknowledge_an_unlinked_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("objects.sqlite");
+        let backend = SqliteObjectBackend::open(&path).unwrap();
+        let mut writer = backend.open_write_session().unwrap().unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let bytes = encode_object(BLOB, b"unlinked writer").unwrap();
+        assert!(writer
+            .put_batch_if_absent(&[(object_id(&bytes), bytes.as_slice())])
+            .is_err());
+        assert!(!path.exists());
     }
 
     #[test]

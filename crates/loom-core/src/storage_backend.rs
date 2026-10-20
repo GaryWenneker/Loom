@@ -18,6 +18,15 @@ pub trait ObjectReadSession: Send + Sync {
     }
 }
 
+/// Operation-scoped durable writer. A session may retain backend resources
+/// between bounded publication windows, but every successful call must still
+/// be an independently durable transaction with the same conditional-create,
+/// validation and rollback contract as [`ObjectBackend::put_batch_if_absent`].
+/// It is never evidence for live publication or object closure.
+pub trait ObjectWriteSession: Send {
+    fn put_batch_if_absent(&mut self, objects: &[(ObjectId, &[u8])]) -> Result<bool>;
+}
+
 /// Capability declaration, not a guarantee inferred from a provider name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StoreCapabilities {
@@ -56,6 +65,13 @@ pub trait ObjectBackend: Send + Sync {
     /// complete window back on any error.
     fn put_batch_if_absent(&self, _objects: &[(ObjectId, &[u8])]) -> Result<bool> {
         Ok(false)
+    }
+    /// Optionally retain bounded write-side resources for one object publisher.
+    /// Sessions must fail closed if their backing storage path is removed or
+    /// replaced. The core continues to perform fresh live readback after every
+    /// durable window and drops the session when the publisher finishes.
+    fn open_write_session(&self) -> Result<Option<Box<dyn ObjectWriteSession>>> {
+        Ok(None)
     }
     /// Opt in to independent durable object publications. This is a hint,
     /// not a durability relaxation: every write must finish its normal sync
