@@ -15,6 +15,15 @@ because SQLite can spend time in its own busy/protocol handling before
 returning. Once a transaction begins, statement or commit failures are returned
 without replay. This avoids retrying an ambiguous durable commit.
 
+Within one process, Loom also hashes each canonical database path onto one of
+64 fixed write gates. A gate covers bootstrap or the complete object
+transaction, preventing same-database threads from repeatedly entering
+SQLite's single-writer election together. The fixed stripe table cannot grow
+with repositories or agents. Independent databases normally use different
+stripes; a hash collision can conservatively serialize two databases but
+cannot change their contents. Separate processes still coordinate through
+SQLite WAL locks and the bounded retry policy above.
+
 The policy does not change:
 
 - WAL mode or `synchronous=FULL`;
