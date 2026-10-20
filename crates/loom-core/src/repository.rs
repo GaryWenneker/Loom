@@ -3654,21 +3654,25 @@ impl Repository {
 
     pub fn fsck(&self) -> Result<usize> {
         let ids = self.store.ids()?;
+        // Integrity scans get a dedicated operation-scoped reader. SQLite can
+        // amortize connection and statement setup without changing ordinary
+        // query/commit paths or weakening canonical byte verification.
+        let integrity = self.store.integrity_session()?;
         let mut checked = 0usize;
         for id in &ids {
-            let data = self.store.get(*id)?;
+            let data = integrity.get(*id)?;
             let (kind, _) = decode_object(&data)?;
             if kind == CHANGESET {
                 let c = Changeset::decode(&data)?;
                 for parent in c.parents {
-                    let raw = self.store.get(parent)?;
+                    let raw = integrity.get(parent)?;
                     if decode_object(&raw)?.0 != CHANGESET {
                         return Err(Error::Invalid(format!("non-changeset parent: {parent}")));
                     }
                 }
                 for ch in c.changes {
                     if let Some(blob) = ch.blob {
-                        let raw = self.store.get(blob)?;
+                        let raw = integrity.get(blob)?;
                         if decode_object(&raw)?.0 != BLOB {
                             return Err(Error::Invalid(format!(
                                 "non-blob referenced at {}",
@@ -3681,7 +3685,7 @@ impl Repository {
             if kind == crate::format::TREE {
                 let node = crate::tree::NativeTree::decode(&data)?;
                 for entry in node.entries {
-                    let target = self.store.get(entry.object)?;
+                    let target = integrity.get(entry.object)?;
                     let (actual_kind, _) = decode_object(&target)?;
                     let expected = match entry.kind {
                         crate::tree::TreeEntryKind::File => BLOB,

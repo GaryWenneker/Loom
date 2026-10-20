@@ -18,6 +18,16 @@ pub trait ObjectReadSession: Send + Sync {
     }
 }
 
+/// Operation-scoped reader for authoritative offline integrity checks. Unlike
+/// [`ObjectReadSession`], this handle may be used by fsck, but it must open
+/// current storage state when the check starts and must not outlive that check.
+/// Implementations retaining an OS/database handle must fail closed when the
+/// configured storage path is removed or replaced. Core still verifies the
+/// canonical envelope and object hash returned for every ID.
+pub trait ObjectIntegritySession: Send + Sync {
+    fn get(&self, id: ObjectId) -> Result<Vec<u8>>;
+}
+
 /// Operation-scoped durable writer. A session may retain backend resources
 /// between bounded publication windows, but every successful call must still
 /// be an independently durable transaction with the same conditional-create,
@@ -83,6 +93,13 @@ pub trait ObjectBackend: Send + Sync {
     /// Optional retained read handle for repeated immutable queries. Never use
     /// this handle for durability, closure validation, recovery or fsck.
     fn open_read_session(&self) -> Result<Option<Arc<dyn ObjectReadSession>>> {
+        Ok(None)
+    }
+    /// Optionally retain read-side resources for one complete offline fsck.
+    /// This is separate from ordinary cached query sessions so an optimization
+    /// for integrity scans cannot serialize or otherwise affect user queries,
+    /// history traversal, listings, commits, recovery or publication checks.
+    fn open_integrity_session(&self) -> Result<Option<Arc<dyn ObjectIntegritySession>>> {
         Ok(None)
     }
     /// Optional complete enumeration for offline integrity checks. Backends
