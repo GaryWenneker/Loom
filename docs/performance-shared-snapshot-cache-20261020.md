@@ -37,6 +37,14 @@ CPU, peak RSS, block I/O, output footprint, binary/harness/tree hashes and Git's
 separate diagnostic export. A CLI invocation creates only one snapshot, so this
 is a no-regression control rather than proof of the shared ceiling.
 
+An initial candidate run incorrectly sent previous Loom through a decomposed
+`files`/`query` compatibility client even though previous main supports native
+`sparse-export`. That run is diagnostic only and must not be presented as a
+version speedup. The corrected harness starts both binaries with the same native
+command shape and identical directory selections. `sparse-export` has no worker
+control, so neither side receives a hidden or unequal worker request. Genuine
+baseline failures are not masked as unsupported.
+
 The deterministic in-process regression is the direct bound proof. A future
 embedded benchmark must retain 1/10/100/500 simultaneous snapshots, drive hot,
 cold and churned working sets, and record aggregate cache bytes, rejected

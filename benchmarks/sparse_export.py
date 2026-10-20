@@ -163,20 +163,14 @@ def scenario(args, count, mode):
             for engine in order:
                 destination = root / engine
                 if engine == "candidate":
-                    action = lambda: run(workspace, [args.loom, "sparse-export", "@" + revision, str(destination), *prefixes])
+                    action = lambda: run(workspace, [
+                        args.loom, "sparse-export", "@" + revision, str(destination), *prefixes,
+                    ])
                 elif engine == "baseline":
-                    def action():
-                        listed = []
-                        for prefix in prefixes:
-                            output = run(workspace, [args.baseline_loom, "files", "@" + revision, prefix, "--null"])
-                            listed.extend(item.decode() for item in output.split(b"\0") if item)
-                        listed = sorted(set(listed))
-                        requests = b"".join(
-                            json.dumps({"id": index, "op": "cat", "path": path}).encode() + b"\n"
-                            for index, path in enumerate(listed)
-                        )
-                        output = run(workspace, [args.baseline_loom, "query", "--batch", "@" + revision], requests)
-                        write_files(destination, listed, parse_loom(output, [expected_by_path[p] for p in listed]))
+                    action = lambda: run(workspace, [
+                        args.baseline_loom, "sparse-export", "@" + revision,
+                        str(destination), *prefixes,
+                    ])
                 else:
                     def action():
                         listing = run(workspace, ["git", "ls-tree", "-r", "--name-only", "-z", "HEAD", "--", *prefixes])
@@ -184,7 +178,7 @@ def scenario(args, count, mode):
                         destination.mkdir()
                         run(workspace, ["git", "checkout-index", "-z", "--stdin", "--prefix=" + str(destination) + os.sep], b"\0".join(path.encode() for path in git_paths) + b"\0")
                 samples[engine].append(measure(action))
-                verify(destination, wanted_paths, wanted, engine == "candidate")
+                verify(destination, wanted_paths, wanted, engine != "git")
                 footprints[engine].append(footprint(destination))
 
     operations = {
@@ -218,13 +212,13 @@ def main():
         "schema_version": 1,
         "host": {"platform": platform.platform(), "cpus": os.cpu_count()},
         "conditions": [
-            "candidate, prior Loom compatibility client and Git materialize identical selected bytes",
-            "candidate uses one sparse-export process; prior Loom uses public files/query commands",
+            "candidate, prior Loom and Git materialize identical selected bytes",
+            "candidate and prior Loom use one native sparse-export process with identical directory arguments; this command has no worker control",
             "Git uses ls-tree plus checkout-index; command startup and framing differ",
             "fresh repository and destination per engine/sample; setup and verification are outside timing",
             "file fsync is retained; directory-entry power-loss durability is not certified",
             "OS caches are not flushed; network, remote cache and concurrent agents are unmeasured",
-            "resource counters include the Python compatibility client and its child processes",
+            "resource counters include the Python harness and its child processes",
         ],
         "scenarios": [],
     }
