@@ -6,8 +6,7 @@ use crate::storage_backend::{
 };
 use crate::{Error, ObjectId, Result};
 use rusqlite::{
-    params, Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction,
-    TransactionBehavior,
+    params, Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
 };
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -20,9 +19,7 @@ const LOCK_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(1
 fn is_retryable_lock_code(code: ErrorCode) -> bool {
     matches!(
         code,
-        ErrorCode::DatabaseBusy
-            | ErrorCode::DatabaseLocked
-            | ErrorCode::FileLockingProtocolFailed
+        ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked | ErrorCode::FileLockingProtocolFailed
     )
 }
 
@@ -43,8 +40,7 @@ fn begin_immediate_with_retry(connection: &mut Connection) -> rusqlite::Result<T
         match connection.transaction_with_behavior(TransactionBehavior::Immediate) {
             Ok(transaction) => return Ok(transaction),
             Err(error)
-                if is_retryable_lock_error(&error)
-                    && std::time::Instant::now() < deadline =>
+                if is_retryable_lock_error(&error) && std::time::Instant::now() < deadline =>
             {
                 std::thread::sleep(LOCK_RETRY_DELAY);
             }
