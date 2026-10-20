@@ -2,8 +2,7 @@
 //! Object transactions finish before the repository publishes local branch refs.
 use crate::format::{decode_object, object_id, MAX_OBJECT_SIZE};
 use crate::storage_backend::{
-    ObjectBackend, ObjectIntegritySession, ObjectReadSession, ObjectWriteSession,
-    StoreCapabilities,
+    ObjectBackend, ObjectIntegritySession, ObjectReadSession, ObjectWriteSession, StoreCapabilities,
 };
 use crate::{Error, ObjectId, Result};
 use rusqlite::{
